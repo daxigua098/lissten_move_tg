@@ -22,7 +22,7 @@ from app.core.content_cleaner import (
     KIND_VIDEO,
     MessageView,
 )
-from app.core.errors import ValidationFailedError
+from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.source_resolver import ResolvedTarget
 
 DEFAULT_SESSION_DIR = "data/sessions"
@@ -292,20 +292,84 @@ async def connect_user_client(
         raise ValidationFailedError(
             "该执行账号尚未登录，请先运行：python main.py account-login --name 别名"
         )
+    with contextlib.suppress(Exception):
+        # 预热实体缓存：失败不影响连接本身，解析时还有 resolve_entity 兜底
+        await warm_entity_cache(client)
     return client
 
 
-async def fetch_dialogs(client: Any, *, limit: int = 500) -> list[ChatProfile]:
-    """拉取账号已加入的群组与频道（忽略私聊与用户）。"""
-    profiles: list[ChatProfile] = []
+def _is_basic_group(entity: Any) -> bool:
+    """基础群：Telegram 早期的小群，Telethon 里是 ``Chat``，没有广播/超级群标志。"""
+    try:
+        from telethon.tl import types as tl_types
+    except ImportError:  # pragma: no cover - 演练模式的替身实体不依赖 telethon
+        return False
+    if not isinstance(entity, tl_types.Chat):
+        return False
+    # 已经升级成超级群的旧群，内容在新群里，跳过以免重复
+    if getattr(entity, "migrated_to", None) is not None:
+        return False
+    return not getattr(entity, "deactivated", False)
+
+
+def is_group_or_channel(entity: Any) -> bool:
+    """是否是群组或频道（含基础群）。
+
+    只按 ``broadcast`` / ``megagroup`` 判断会把基础群整批漏掉——它们这两个标志都是
+    假的，于是「本号明明加了这个群，后台里却看不到」。私聊与机器人则要排除。
+    """
+    if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+        return True
+    return _is_basic_group(entity)
+
+
+async def fetch_dialog_entities(client: Any, *, limit: int = 500) -> list[Any]:
+    """拉取账号已加入的群组/频道实体（含基础群，不含私聊与用户）。"""
+    entities: list[Any] = []
     async for dialog in client.iter_dialogs(limit=limit):
         entity = getattr(dialog, "entity", None)
         if entity is None or getattr(entity, "id", None) is None:
             continue
-        if not (getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False)):
+        if not is_group_or_channel(entity):
             continue
-        profiles.append(profile_from_entity(entity))
-    return profiles
+        entities.append(entity)
+    return entities
+
+
+async def fetch_dialogs(client: Any, *, limit: int = 500) -> list[ChatProfile]:
+    """拉取账号已加入的群组与频道资料（含基础群，忽略私聊与用户）。"""
+    entities = await fetch_dialog_entities(client, limit=limit)
+    return [profile_from_entity(entity) for entity in entities]
+
+
+async def warm_entity_cache(client: Any, *, limit: int = 500) -> int:
+    """把账号可见的对话灌进 Telethon 的实体缓存，返回预热条数。
+
+    本地只保存数字 id，Telethon 按裸 id 解析对象时依赖内存里的实体缓存；新进程
+    刚连上时缓存是空的，基础群这种正数 id 又无法从号段推断类型，最容易解析失败。
+    先遍历一次对话列表即可填满缓存，后续 ``get_entity(tg_id)`` 才能稳定命中。
+    """
+    count = 0
+    async for dialog in client.iter_dialogs(limit=limit):
+        if getattr(dialog, "entity", None) is not None:
+            count += 1
+    return count
+
+
+async def resolve_entity(client: Any, tg_id: int) -> Any:
+    """按本地保存的 tg_id 解析 Telegram 实体。
+
+    直接解析失败时退化为扫描一次对话列表，避免因为实体缓存不完整而整条线路报错。
+    """
+    try:
+        return await client.get_entity(int(tg_id))
+    except Exception:  # noqa: BLE001 - 解析失败时走下面的兜底
+        pass
+    async for dialog in client.iter_dialogs(limit=None):
+        entity = getattr(dialog, "entity", None)
+        if entity is not None and int(getattr(entity, "id", 0) or 0) == int(tg_id):
+            return entity
+    raise NotFoundError(f"Telegram 里找不到对象 {tg_id}：可能已退出该群/频道，或该账号无权访问")
 
 
 async def join_invite(client: Any, invite_hash: str) -> ChatProfile:
@@ -322,7 +386,7 @@ async def join_invite(client: Any, invite_hash: str) -> ChatProfile:
 async def check_can_post(client: Any, tg_id: int) -> bool | None:
     """尽力检查是否具备发言权限；无法判断时返回 None。"""
     try:
-        entity = await client.get_entity(int(tg_id))
+        entity = await resolve_entity(client, tg_id)
         permissions = await client.get_permissions(entity)
     except Exception:  # noqa: BLE001 - 权限预检失败不应阻断添加流程
         return None

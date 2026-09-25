@@ -18,7 +18,7 @@ from app.core.heartbeat import write_status
 from app.core.route_config import load_a_config
 from app.core.runtime_control import is_paused, is_stop_requested
 from app.core.runtime_lock import RuntimeLock, RuntimeLockError
-from app.core.telegram_client import message_view_from_telethon
+from app.core.telegram_client import message_view_from_telethon, resolve_entity
 from app.db.models import (
     ACCOUNT_ACTIVE,
     BUSINESS_CARRY,
@@ -152,7 +152,7 @@ class RuntimeService:
             if not tg_id:
                 continue
             try:
-                entity = await client.get_entity(tg_id)
+                entity = await resolve_entity(client, tg_id)
             except Exception as exc:  # noqa: BLE001 - 单个源解析失败跳过
                 logger.warning("监听源 {} 解析失败：{}", chat_id, exc)
                 continue
@@ -252,8 +252,8 @@ class RuntimeService:
                 ad_asset = await session.get(AdAsset, a_config.ad_asset_id)
 
             try:
-                source_entity = await client.get_entity(int(source_chat.tg_id))
-                target_entity = await client.get_entity(int(target_chat.tg_id))
+                source_entity = await resolve_entity(client, int(source_chat.tg_id))
+                target_entity = await resolve_entity(client, int(target_chat.tg_id))
             except Exception as exc:  # noqa: BLE001 - 解析失败按投递失败处理
                 await delivery_service.mark_failure(session, job, error=str(exc))
                 return 1

@@ -14,7 +14,11 @@ from app.core.content_cleaner import (
     resolve_caption,
 )
 from app.core.route_config import ACarryConfig
-from app.core.telegram_client import iter_source_messages, message_view_from_telethon
+from app.core.telegram_client import (
+    iter_source_messages,
+    message_view_from_telethon,
+    resolve_entity,
+)
 from app.db.models import Chat, Route, RouteTarget, RouteTargetProgress
 from app.services import delivery_service
 
@@ -165,7 +169,7 @@ async def sync_all_routes(
             results.append({"route": route.name, "error": "监听源不存在"})
             continue
         try:
-            source_entity = await client.get_entity(int(source.tg_id))
+            source_entity = await resolve_entity(client, int(source.tg_id))
         except Exception as exc:  # noqa: BLE001 - 单个源失败不影响其他线路
             results.append({"route": route.name, "error": str(exc)})
             continue

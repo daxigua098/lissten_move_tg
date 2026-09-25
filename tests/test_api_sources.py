@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from conftest import ADMIN_API_TOKEN, auth_header, login, make_entity
+from telethon.tl import types
 
 
 def _headers() -> dict[str, str]:
@@ -22,6 +23,18 @@ def _fill(client) -> None:
     client.imported = make_entity(1004, "私有素材群", username=None)
 
 
+def _basic_group(tg_id: int, title: str) -> types.Chat:
+    """基础群（Telegram 早期小群）：没有广播/超级群标志。"""
+    return types.Chat(
+        id=tg_id,
+        title=title,
+        photo=None,
+        participants_count=5,
+        date=None,
+        version=0,
+    )
+
+
 async def test_sync_dialogs_populates_pool(chat_client, fake_account_client) -> None:
     _fill(fake_account_client)
 
@@ -38,6 +51,25 @@ async def test_sync_dialogs_populates_pool(chat_client, fake_account_client) -> 
     second = await chat_client.post("/api/sources/sync", headers=_headers())
     assert second.json()["updated"] == 2
     assert second.json()["created"] == 0
+
+
+async def test_sync_keeps_basic_group_and_drops_users(chat_client, fake_account_client) -> None:
+    """基础群要同步进来，私聊用户要排除：只按 broadcast/megagroup 判断会漏群。"""
+    channel = make_entity(2001, "素材频道", broadcast=True, username="mat2001")
+    basic = _basic_group(2002, "飞机镜像")
+    user = types.User(id=2003, first_name="某人")
+    fake_account_client.dialogs = [channel, basic, user]
+
+    response = await chat_client.post("/api/sources/sync", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["fetched"] == 2
+
+    available = await chat_client.get("/api/sources/available", headers=_headers())
+    items = {item["title"]: item for item in available.json()["items"]}
+    assert set(items) == {"素材频道", "飞机镜像"}
+    assert items["飞机镜像"]["chat_type"] == "group"
+    assert items["飞机镜像"]["chat_type_label"] == "群组"
 
 
 async def test_add_sources_from_pool_then_remove(chat_client, fake_account_client) -> None:

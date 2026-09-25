@@ -132,7 +132,7 @@ onMounted(load);
             <el-option
               v-for="item in sources"
               :key="item.id"
-              :label="item.title || item.username"
+              :label="item.name || item.title || item.username"
               :value="item.id"
             />
           </el-select>
@@ -149,7 +149,7 @@ onMounted(load);
             <el-option
               v-for="item in targets"
               :key="item.id"
-              :label="`${item.title || item.username}（${item.target_role_label}）`"
+              :label="`${item.name || item.title || item.username}（${item.target_role_label}）`"
               :value="item.id"
             />
           </el-select>
@@ -176,12 +176,12 @@ onMounted(load);
           </template>
         </el-table-column>
         <el-table-column label="监听源" min-width="150">
-          <template #default="{ row }">{{ row.source?.title || row.source?.username || "-" }}</template>
+          <template #default="{ row }">{{ row.source?.name || row.source?.title || "-" }}</template>
         </el-table-column>
         <el-table-column label="接收目标" min-width="200">
           <template #default="{ row }">
             <span v-if="row.targets.length">
-              {{ row.targets.map((item) => item.title || item.username).join("、") }}
+              {{ row.targets.map((item) => item.name || item.title || item.username).join("、") }}
             </span>
             <span v-else class="card-hint">未配置</span>
           </template>

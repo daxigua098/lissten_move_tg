@@ -137,11 +137,33 @@ async function editTags(row) {
   try {
     const { value } = await ElMessageBox.prompt(
       "多个标签用逗号分隔（会覆盖原有标签）",
-      `${row.title} 的标签`,
+      `${row.name || row.title || row.username} 的标签`,
       { inputValue: (row.tags || []).join(","), confirmButtonText: "保存", cancelButtonText: "取消" },
     );
     await sourcesApi.update(row.id, { tags: parseTags(value) });
     ElMessage.success("标签已更新");
+    load();
+  } catch (error) {
+    if (error?.message && !error.message.includes("cancel")) {
+      ElMessage.error(error.message);
+    }
+  }
+}
+
+async function renameChat(row) {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "起一个好认的名字，列表里会优先显示它（留空则恢复显示原标题）",
+      "给群/频道起备注名",
+      {
+        inputValue: row.display_name || "",
+        inputPlaceholder: row.title || row.username || "",
+        confirmButtonText: "保存",
+        cancelButtonText: "取消",
+      },
+    );
+    await sourcesApi.update(row.id, { display_name: value ?? "" });
+    ElMessage.success("备注名已更新");
     load();
   } catch (error) {
     if (error?.message && !error.message.includes("cancel")) {
@@ -175,7 +197,7 @@ onMounted(load);
               <label v-for="item in filteredAvailable" :key="item.id" class="row">
                 <el-checkbox :value="item.id" />
                 <span class="grow">
-                  {{ item.title || item.username }}
+                  <b class="chat-name">{{ item.name || item.title || item.username }}</b>
                   <span class="card-hint">
                     {{ item.chat_type_label }}
                     <template v-if="item.username"> · @{{ item.username }}</template>
@@ -215,7 +237,7 @@ onMounted(load);
               <label v-for="item in sources" :key="item.id" class="row">
                 <el-checkbox :value="item.id" />
                 <span class="grow">
-                  {{ item.title || item.username }}
+                  <b class="chat-name">{{ item.name || item.title || item.username }}</b>
                   <span class="card-hint">
                     {{ item.chat_type_label }}
                     <template v-if="item.is_private"> · 私有</template>
@@ -230,6 +252,7 @@ onMounted(load);
                   @change="() => toggleEnabled(item)"
                 />
                 <el-button size="small" link type="primary" @click.prevent="editTags(item)">标签</el-button>
+                <el-button size="small" link @click.prevent="renameChat(item)">改名</el-button>
               </label>
               <div v-if="!sources.length" class="card-hint empty">还没有监听源，从左侧勾选后点 → 添加。</div>
             </el-checkbox-group>
@@ -312,6 +335,16 @@ onMounted(load);
 .grow {
   flex: 1;
   min-width: 0;
+}
+
+.chat-name {
+  font-weight: 500;
+  margin-right: 6px;
+}
+
+.grow .card-hint {
+  display: block;
+  margin-top: 2px;
 }
 
 .tags {

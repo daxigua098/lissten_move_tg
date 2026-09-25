@@ -154,6 +154,8 @@ async def update_source(
     chat = await chat_service.get_chat(session, chat_id)
     if chat is None or not chat.is_source:
         raise NotFoundError("监听源不存在")
+    if payload.display_name is not None:
+        chat.display_name = payload.display_name.strip() or None
     if payload.enabled is not None:
         chat.source_enabled = payload.enabled
     if payload.tags is not None:

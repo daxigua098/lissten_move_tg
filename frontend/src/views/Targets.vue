@@ -1,5 +1,5 @@
 <script setup>
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, ref } from "vue";
 
 import { targetsApi } from "../api";
@@ -87,6 +87,28 @@ async function updateTarget(row, payload) {
   }
 }
 
+async function renameChat(row) {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      "起一个好认的名字，列表里会优先显示它（留空则恢复显示原标题）",
+      "给群/频道起备注名",
+      {
+        inputValue: row.display_name || "",
+        inputPlaceholder: row.title || row.username || "",
+        confirmButtonText: "保存",
+        cancelButtonText: "取消",
+      },
+    );
+    await targetsApi.update(row.id, { display_name: value ?? "" });
+    ElMessage.success("备注名已更新");
+    load();
+  } catch (error) {
+    if (error?.message && !error.message.includes("cancel")) {
+      ElMessage.error(error.message);
+    }
+  }
+}
+
 function canPostLabel(value) {
   if (value === true) return { text: "可发帖", type: "success" };
   if (value === false) return { text: "无发帖权限", type: "danger" };
@@ -122,7 +144,7 @@ onMounted(load);
               <label v-for="item in filteredAvailable" :key="item.id" class="row">
                 <el-checkbox :value="item.id" />
                 <span class="grow">
-                  {{ item.title || item.username }}
+                  <b class="chat-name">{{ item.name || item.title || item.username }}</b>
                   <span class="card-hint">
                     {{ item.chat_type_label }}
                     <template v-if="item.username"> · @{{ item.username }}</template>
@@ -151,7 +173,7 @@ onMounted(load);
               <label v-for="item in targets" :key="item.id" class="row">
                 <el-checkbox :value="item.id" />
                 <span class="grow">
-                  {{ item.title || item.username }}
+                  <b class="chat-name">{{ item.name || item.title || item.username }}</b>
                   <span class="card-hint">
                     {{ item.chat_type_label }}
                     <template v-if="item.is_private"> · 私有</template>
@@ -174,6 +196,7 @@ onMounted(load);
                   size="small"
                   @change="() => updateTarget(item, { enabled: item.target_enabled })"
                 />
+                <el-button size="small" link @click.prevent="renameChat(item)">改名</el-button>
               </label>
               <div v-if="!targets.length" class="card-hint empty">
                 还没有接收组，从左侧勾选后点 → 添加。
@@ -248,6 +271,16 @@ onMounted(load);
 .grow {
   flex: 1;
   min-width: 0;
+}
+
+.chat-name {
+  font-weight: 500;
+  margin-right: 6px;
+}
+
+.grow .card-hint {
+  display: block;
+  margin-top: 2px;
 }
 
 .empty {

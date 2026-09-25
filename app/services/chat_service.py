@@ -149,6 +149,7 @@ async def update_chat(
     session: AsyncSession,
     chat_id: int,
     *,
+    display_name: str | None = None,
     tags: list[str] | None = None,
     note: str | None = None,
     joined: bool | None = None,
@@ -158,6 +159,8 @@ async def update_chat(
     chat = await get_chat(session, chat_id)
     if chat is None:
         raise NotFoundError("聊天对象不存在")
+    if display_name is not None:
+        chat.display_name = display_name.strip() or None
     if tags is not None:
         chat.tags = dump_tags(tags)
     if note is not None:

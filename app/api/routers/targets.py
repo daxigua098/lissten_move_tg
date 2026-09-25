@@ -138,6 +138,8 @@ async def update_target(
     chat = await chat_service.get_chat(session, chat_id)
     if chat is None or not chat.is_target:
         raise NotFoundError("接收组不存在")
+    if payload.display_name is not None:
+        chat.display_name = payload.display_name.strip() or None
     if payload.enabled is not None:
         chat.target_enabled = payload.enabled
     if payload.role is not None:

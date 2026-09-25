@@ -30,7 +30,11 @@ async def _titles(session: AsyncSession, chat_ids: set[int]) -> dict[int, str]:
     if not chat_ids:
         return {}
     rows = await session.scalars(select(Chat).where(Chat.id.in_(chat_ids)))
-    return {item.id: (item.title or item.username or f"#{item.id}") for item in rows}
+
+    def display(item: Chat) -> str:
+        return item.display_name or item.title or item.username or f"#{item.id}"
+
+    return {item.id: display(item) for item in rows}
 
 
 @router.get("", dependencies=[Depends(current_identity)])

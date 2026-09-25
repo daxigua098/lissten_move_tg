@@ -35,6 +35,7 @@ class TargetAddRequest(BaseModel):
 class SourceUpdateRequest(BaseModel):
     """更新监听源。"""
 
+    display_name: str | None = Field(default=None, max_length=64)
     enabled: bool | None = None
     tags: list[str] | None = None
     note: str | None = Field(default=None, max_length=255)
@@ -43,6 +44,7 @@ class SourceUpdateRequest(BaseModel):
 class TargetUpdateRequest(BaseModel):
     """更新接收组。"""
 
+    display_name: str | None = Field(default=None, max_length=64)
     enabled: bool | None = None
     role: TargetRoleLiteral | None = None
     tags: list[str] | None = None

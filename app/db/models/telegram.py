@@ -84,6 +84,8 @@ class Chat(TimestampMixin, Base):
     tg_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     chat_type: Mapped[str] = mapped_column(String(16), default=CHAT_GROUP, index=True)
     title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 用户自定义备注名，优先于 Telegram 原标题显示
+    display_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     is_private: Mapped[bool] = mapped_column(Boolean, default=False)
     joined: Mapped[bool] = mapped_column(Boolean, default=False)

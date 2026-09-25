@@ -52,6 +52,8 @@ async def serialize_route(session: AsyncSession, route: Route) -> dict[str, Any]
             {
                 "chat_id": chat.id,
                 "title": chat.title,
+                "display_name": chat.display_name,
+                "name": chat.display_name or chat.title or chat.username or f"#{chat.tg_id}",
                 "username": chat.username,
                 "chat_type": chat.chat_type,
                 "is_private": chat.is_private,
@@ -85,6 +87,10 @@ async def serialize_route(session: AsyncSession, route: Route) -> dict[str, Any]
             {
                 "chat_id": source.id,
                 "title": source.title,
+                "display_name": source.display_name,
+                "name": (
+                    source.display_name or source.title or source.username or f"#{source.tg_id}"
+                ),
                 "username": source.username,
                 "chat_type": source.chat_type,
             }

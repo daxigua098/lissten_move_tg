@@ -329,7 +329,7 @@ async function resetProgress(row) {
             <el-option
               v-for="item in sources"
               :key="item.id"
-              :label="item.title || item.username"
+              :label="item.name || item.title || item.username"
               :value="item.id"
             />
           </el-select>
@@ -360,7 +360,7 @@ async function resetProgress(row) {
       <div class="targets">
         <div v-for="item in detailTargets" :key="item.chat_id" class="target-row">
           <span class="grow">
-            {{ item.title || item.username }}
+            {{ item.name || item.title || item.username }}
             <el-tag size="small" type="info">{{ item.target_role_label }}</el-tag>
             <el-tag v-if="item.can_post === false" size="small" type="danger">无发帖权限</el-tag>
           </span>
@@ -382,7 +382,7 @@ async function resetProgress(row) {
           <el-option
             v-for="item in targets"
             :key="item.id"
-            :label="item.title || item.username"
+            :label="item.name || item.title || item.username"
             :value="item.id"
           />
         </el-select>

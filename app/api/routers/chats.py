@@ -27,6 +27,9 @@ def serialize_chat(chat: Chat) -> dict[str, Any]:
         "chat_type": chat.chat_type,
         "chat_type_label": CHAT_TYPE_LABEL.get(chat.chat_type, chat.chat_type),
         "title": chat.title,
+        "display_name": chat.display_name,
+        # 展示用名称：备注名 > 原标题 > 用户名
+        "name": chat.display_name or chat.title or chat.username or f"#{chat.tg_id}",
         "username": chat.username,
         "is_private": chat.is_private,
         "joined": chat.joined,

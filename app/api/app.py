@@ -6,8 +6,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from loguru import logger
 
@@ -97,9 +98,32 @@ def create_app(
 
 
 def mount_frontend(app: FastAPI, config: AppConfig) -> None:
-    """前端构建产物存在时挂载为静态站点（同域，无需额外反代）。"""
+    """挂载前端构建产物，并为前端路由提供 SPA 回退。
+
+    只挂 StaticFiles 的话，浏览器刷新 `/routes` 这类前端路由会拿到
+    `{"detail":"Not Found"}`——因为磁盘上没有对应文件。这里加一条兜底路由：
+    能命中的静态文件照常返回，其余非 API 路径统一回 index.html。
+    """
     dist = config.project_root / "frontend" / "dist"
-    if dist.is_dir():
-        app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
-    else:
+    if not dist.is_dir():
         logger.info("未找到前端构建产物 {}，仅提供 API。", dist)
+        return
+
+    assets_dir = dist / "assets"
+    if assets_dir.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    index_file = dist / "index.html"
+    resolved_dist = dist.resolve()
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str) -> FileResponse:
+        """前端路由回退：非 API 路径一律返回入口页面。"""
+        if full_path.startswith(("api/", "uploads/", "assets/")) or full_path == "health":
+            raise HTTPException(status_code=404, detail="Not Found")
+        candidate = (dist / full_path).resolve()
+        if full_path and candidate.is_file() and candidate.is_relative_to(resolved_dist):
+            return FileResponse(candidate)
+        if not index_file.is_file():
+            raise HTTPException(status_code=404, detail="前端尚未构建")
+        return FileResponse(index_file)

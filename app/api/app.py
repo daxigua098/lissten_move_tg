@@ -15,10 +15,12 @@ from app.api.errors import register_exception_handlers
 from app.api.middleware import register_middlewares
 from app.api.routers import (
     accounts,
+    ad_assets,
     auth,
     bots,
     health,
     logs,
+    routes,
     sources,
     system,
     targets,
@@ -87,6 +89,8 @@ def create_app(
     app.include_router(bots.router)
     app.include_router(sources.router)
     app.include_router(targets.router)
+    app.include_router(routes.router)
+    app.include_router(ad_assets.router)
 
     mount_frontend(app, resolved)
     return app

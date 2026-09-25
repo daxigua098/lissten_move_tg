@@ -116,6 +116,9 @@ async def test_update_status_and_delete(admin_client) -> None:
         json={"status": "unknown"},
     )
     assert invalid.status_code == 422
+    # 校验错误也要走统一的 {detail, code} 结构，前端才能正常提示
+    assert invalid.json()["code"] == "VALIDATION_ERROR"
+    assert "参数校验失败" in invalid.json()["detail"]
 
     deleted = await admin_client.delete(f"/api/accounts/{account_id}", headers=_headers())
     assert deleted.status_code == 200

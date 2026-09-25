@@ -99,3 +99,26 @@ export const targetsApi = {
   remove: (id) => http.delete(`/api/targets/${id}`),
   batchTags: (payload) => http.post("/api/targets/tags/batch", payload),
 };
+
+export const routesApi = {
+  list: (params) => http.get("/api/routes", { params }),
+  detail: (id) => http.get(`/api/routes/${id}`),
+  create: (payload) => http.post("/api/routes", payload),
+  matrix: (payload) => http.post("/api/routes/matrix", payload),
+  update: (id, payload) => http.patch(`/api/routes/${id}`, payload),
+  remove: (id) => http.delete(`/api/routes/${id}`),
+  addTargets: (id, chatIds) => http.post(`/api/routes/${id}/targets`, { chat_ids: chatIds }),
+  setTargetEnabled: (id, chatId, enabled) =>
+    http.patch(`/api/routes/${id}/targets/${chatId}`, { enabled }),
+  removeTarget: (id, chatId) => http.delete(`/api/routes/${id}/targets/${chatId}`),
+  resetProgress: (id, chatId, confirm) =>
+    http.post(`/api/routes/${id}/targets/${chatId}/reset`, { confirm }),
+};
+
+export const adAssetsApi = {
+  list: (params) => http.get("/api/ad-assets", { params }),
+  detail: (id) => http.get(`/api/ad-assets/${id}`),
+  create: (payload) => http.post("/api/ad-assets", payload),
+  update: (id, payload) => http.patch(`/api/ad-assets/${id}`, payload),
+  remove: (id, force) => http.delete(`/api/ad-assets/${id}`, { params: { force } }),
+};

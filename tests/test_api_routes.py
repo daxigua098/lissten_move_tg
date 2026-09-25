@@ -1,0 +1,288 @@
+"""线路接口测试：矩阵建线、配置校验、目标与水位线。"""
+
+from __future__ import annotations
+
+from conftest import ADMIN_API_TOKEN, auth_header, make_entity
+
+
+def _headers() -> dict[str, str]:
+    return auth_header(ADMIN_API_TOKEN)
+
+
+async def _prepare(client, fake) -> dict[str, int]:
+    """同步群组池，并把 1 个源、2 个接收组建好。"""
+    source = make_entity(3001, "素材源频道", broadcast=True, username="src_ch")
+    main = make_entity(3002, "我的主频道", broadcast=True, username="main_ch")
+    lead = make_entity(3003, "线索收集群")
+    fake.dialogs = [source, main, lead]
+    fake.entities = {"src_ch": source, "main_ch": main, 3003: lead}
+    fake.permissions = {3001: True, 3002: True, 3003: True}
+
+    await client.post("/api/sources/sync", headers=_headers())
+
+    pool = (await client.get("/api/sources/available", headers=_headers())).json()["items"]
+    source_id = next(item["id"] for item in pool if item["title"] == "素材源频道")
+    await client.post("/api/sources", headers=_headers(), json={"chat_ids": [source_id]})
+
+    target_pool = (await client.get("/api/targets/available", headers=_headers())).json()["items"]
+    main_id = next(item["id"] for item in target_pool if item["title"] == "我的主频道")
+    lead_id = next(item["id"] for item in target_pool if item["title"] == "线索收集群")
+    await client.post(
+        "/api/targets",
+        headers=_headers(),
+        json={"chat_ids": [main_id], "role": "content"},
+    )
+    await client.post(
+        "/api/targets",
+        headers=_headers(),
+        json={"chat_ids": [lead_id], "role": "lead"},
+    )
+    return {"source": source_id, "main": main_id, "lead": lead_id}
+
+
+async def test_matrix_create_skips_existing(chat_client, fake_account_client) -> None:
+    ids = await _prepare(chat_client, fake_account_client)
+
+    first = await chat_client.post(
+        "/api/routes/matrix",
+        headers=_headers(),
+        json={
+            "source_chat_ids": [ids["source"]],
+            "target_chat_ids": [ids["main"], ids["lead"]],
+            "business_type": "A",
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    body = first.json()
+    assert first.status_code == 201
+    assert body["created"] == 2
+    assert body["skipped"] == []
+
+    again = await chat_client.post(
+        "/api/routes/matrix",
+        headers=_headers(),
+        json={
+            "source_chat_ids": [ids["source"]],
+            "target_chat_ids": [ids["main"], ids["lead"]],
+            "business_type": "A",
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    assert again.json()["created"] == 0
+    assert len(again.json()["skipped"]) == 2
+
+    listed = await chat_client.get("/api/routes", headers=_headers())
+    items = listed.json()["items"]
+    assert listed.json()["total"] == 2
+    assert {item["business_type"] for item in items} == {"A"}
+    names = {item["name"] for item in items}
+    assert "素材源频道 → 我的主频道" in names
+    assert all(item["source"]["title"] == "素材源频道" for item in items)
+    assert all(item["targets"][0]["last_delivered_message_id"] == 0 for item in items)
+
+
+async def test_route_requires_configured_source_and_target(
+    chat_client, fake_account_client
+) -> None:
+    ids = await _prepare(chat_client, fake_account_client)
+    pool = (await chat_client.get("/api/targets/available", headers=_headers())).json()["items"]
+    # 把源频道也当成目标（它是源不是目标）
+    not_target = ids["source"]
+
+    response = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "错误线路",
+            "source_chat_id": not_target,
+            "business_type": "A",
+            "target_chat_ids": [not_target],
+        },
+    )
+    assert response.status_code == 400
+    assert "接收组" in response.json()["detail"]
+    assert pool  # 使用变量，避免未使用告警
+
+
+async def test_a_line_ad_policy_requires_asset(chat_client, fake_account_client) -> None:
+    ids = await _prepare(chat_client, fake_account_client)
+
+    response = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "缺素材的线路",
+            "source_chat_id": ids["source"],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+            "a_config": {"ad_policy": "nth", "ad_nth": 3},
+        },
+    )
+
+    assert response.status_code == 400
+    assert "广告素材" in response.json()["detail"]
+
+    asset = await chat_client.post(
+        "/api/ad-assets",
+        headers=_headers(),
+        json={"name": "渠道A文案", "text": "每日更新"},
+    )
+    asset_id = asset.json()["id"]
+
+    ok = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "带素材的线路",
+            "source_chat_id": ids["source"],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+            "a_config": {"ad_policy": "nth", "ad_nth": 3, "ad_asset_id": asset_id},
+        },
+    )
+    assert ok.status_code == 201
+    assert ok.json()["a_config"]["ad_asset_id"] == asset_id
+
+
+async def test_b_line_keyword_mode_requires_group(chat_client, fake_account_client) -> None:
+    ids = await _prepare(chat_client, fake_account_client)
+
+    missing = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "关键词监听",
+            "source_chat_id": ids["source"],
+            "business_type": "B",
+            "target_chat_ids": [ids["lead"]],
+            "b_config": {"listen_mode": "keyword"},
+        },
+    )
+    assert missing.status_code == 400
+    assert "关键词组" in missing.json()["detail"]
+
+    ok = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "关键词监听",
+            "source_chat_id": ids["source"],
+            "business_type": "B",
+            "target_chat_ids": [ids["lead"]],
+            "b_config": {"listen_mode": "keyword", "keyword_group_ids": [1]},
+        },
+    )
+    assert ok.status_code == 201
+    assert ok.json()["b_config"]["listen_mode"] == "keyword"
+    assert ok.json()["targets"][0]["target_role"] == "lead"
+
+
+async def test_update_route_and_targets(chat_client, fake_account_client) -> None:
+    ids = await _prepare(chat_client, fake_account_client)
+    created = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "线路一",
+            "source_chat_id": ids["source"],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    route_id = created.json()["id"]
+
+    updated = await chat_client.patch(
+        f"/api/routes/{route_id}",
+        headers=_headers(),
+        json={
+            "name": "线路一（改名）",
+            "enabled": False,
+            "delay_seconds": 2.5,
+            "a_config": {"ad_policy": "every", "ad_asset_id": None, "content_types": ["video"]},
+        },
+    )
+    assert updated.status_code == 400  # every 模式必须有素材
+
+    toggled = await chat_client.patch(
+        f"/api/routes/{route_id}",
+        headers=_headers(),
+        json={"name": "线路一（改名）", "enabled": False, "delay_seconds": 2.5},
+    )
+    assert toggled.status_code == 200
+    assert toggled.json()["name"] == "线路一（改名）"
+    assert toggled.json()["enabled"] is False
+    assert toggled.json()["delay_seconds"] == 2.5
+
+    added = await chat_client.post(
+        f"/api/routes/{route_id}/targets",
+        headers=_headers(),
+        json={"chat_ids": [ids["lead"]]},
+    )
+    assert added.status_code == 201
+    assert added.json()["added"] == [ids["lead"]]
+    assert added.json()["skipped"] == []
+
+    duplicate = await chat_client.post(
+        f"/api/routes/{route_id}/targets",
+        headers=_headers(),
+        json={"chat_ids": [ids["lead"]]},
+    )
+    assert duplicate.json()["added"] == []
+    assert duplicate.json()["skipped"] == [ids["lead"]]
+
+    disabled = await chat_client.patch(
+        f"/api/routes/{route_id}/targets/{ids['lead']}",
+        headers=_headers(),
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+
+    removed = await chat_client.delete(
+        f"/api/routes/{route_id}/targets/{ids['lead']}",
+        headers=_headers(),
+    )
+    assert removed.status_code == 200
+    detail = await chat_client.get(f"/api/routes/{route_id}", headers=_headers())
+    assert len(detail.json()["targets"]) == 1
+
+
+async def test_reset_progress_requires_confirm(chat_client, fake_account_client) -> None:
+    ids = await _prepare(chat_client, fake_account_client)
+    created = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "线路",
+            "source_chat_id": ids["source"],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    route_id = created.json()["id"]
+
+    wrong = await chat_client.post(
+        f"/api/routes/{route_id}/targets/{ids['main']}/reset",
+        headers=_headers(),
+        json={"confirm": "yes"},
+    )
+    assert wrong.status_code == 400
+    assert "RESET" in wrong.json()["detail"]
+
+    ok = await chat_client.post(
+        f"/api/routes/{route_id}/targets/{ids['main']}/reset",
+        headers=_headers(),
+        json={"confirm": "reset"},
+    )
+    assert ok.status_code == 200
+    assert ok.json()["last_delivered_message_id"] == 0
+    assert ok.json()["reset"] is True
+
+    progress = await chat_client.get(f"/api/routes/{route_id}/progress", headers=_headers())
+    assert progress.json()["items"][0]["backfill_status"] == "idle"
+
+    deleted = await chat_client.delete(f"/api/routes/{route_id}", headers=_headers())
+    assert deleted.status_code == 200
+    assert (await chat_client.get("/api/routes", headers=_headers())).json()["total"] == 0

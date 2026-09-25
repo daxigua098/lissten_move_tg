@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -279,6 +281,16 @@ async def _send_ad_message(
     )
 
 
+@dataclass
+class BotPayload:
+    """机器人投递要发的内容（由上游取回并下载好）。"""
+
+    caption: str | None = None
+    content: bytes | None = None
+    filename: str | None = None
+    kind: str = MEDIA_DOCUMENT
+
+
 async def deliver_job_via_bot(
     session: AsyncSession,
     config: AppConfig,
@@ -294,6 +306,8 @@ async def deliver_job_via_bot(
     content: bytes | None = None,
     filename: str | None = None,
     kind: str = MEDIA_DOCUMENT,
+    payload_loader: Callable[[], Awaitable[BotPayload]] | None = None,
+    load_timeout: float = 300.0,
 ) -> DeliveryJob:
     """用机器人（Bot API）投递：文本直发，媒体由机器人上传。
 
@@ -304,6 +318,22 @@ async def deliver_job_via_bot(
     await session.commit()
     chat_id = bot_api_chat_id(target_chat.tg_id, target_chat.chat_type)
     try:
+        if payload_loader is not None:
+            # 取原消息 + 下载媒体都在「处理中」状态里做，并加超时，
+            # 避免一个卡住的下载把整个投递循环拖死、界面看到心跳停跳。
+            try:
+                payload = await asyncio.wait_for(payload_loader(), timeout=load_timeout)
+            except TimeoutError:
+                await session.rollback()
+                return await mark_failure(
+                    session,
+                    job,
+                    error=f"取源内容超时（超过 {int(load_timeout)} 秒）",
+                )
+            caption = payload.caption
+            content = payload.content
+            filename = payload.filename
+            kind = payload.kind
         if content is None:
             result = await bot_api.send_message(chat_id, caption or "")
         else:

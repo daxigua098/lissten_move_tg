@@ -452,5 +452,48 @@ async def test_deliver_job_via_bot_sends_text_or_media(db) -> None:
     assert job.target_message_id == 7002
 
 
+async def test_deliver_job_via_bot_times_out_on_slow_source(db) -> None:
+    """取源内容（含下载媒体）超时不能把投递循环拖死。"""
+    import asyncio as _asyncio
+
+    route_id, source_id, target_ids = await _prepare_route(
+        db,
+        a_config={"ad_policy": "none"},
+    )
+    bot_api = FakeBotApi()
+
+    async def slow_loader():  # noqa: ANN202
+        await _asyncio.sleep(5)
+        return delivery_service.BotPayload(caption="太慢了")
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        jobs = await delivery_service.enqueue_message(
+            session,
+            route=route,
+            target_chat_ids=target_ids,
+            source_chat_id=source_id,
+            source_message_id=903,
+        )
+        source_chat = await session.get(Chat, source_id)
+        target_chat = await session.get(Chat, target_ids[0])
+        job = await delivery_service.deliver_job_via_bot(
+            session,
+            db,
+            job=await session.get(DeliveryJob, jobs[0].id),
+            route=route,
+            bot_api=bot_api,
+            target_chat=target_chat,
+            a_config=ACarryConfig(ad_policy="none"),
+            source_chat=source_chat,
+            payload_loader=slow_loader,
+            load_timeout=0.05,
+        )
+
+    assert bot_api.sent == []
+    assert job.status in (JOB_RETRYING, JOB_FAILED)
+    assert "超时" in (job.last_error or "")
+
+
 def test_simple_namespace_available() -> None:
     assert SimpleNamespace(x=1).x == 1

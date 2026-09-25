@@ -123,7 +123,14 @@ class RuntimeService:
                 handlers["monitor"],
             )
             await self._publish(status="running", extra={"routes": handlers})
-            await self._loop(client)
+            # 心跳独立跑：投递循环里在下载大文件时，界面也不会显示成掉线
+            heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            try:
+                await self._loop(client)
+            finally:
+                heartbeat_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await heartbeat_task
         finally:
             if owns_client and client is not None:
                 with contextlib.suppress(Exception):
@@ -132,6 +139,13 @@ class RuntimeService:
             self._lock.release()
             await self._publish(status="stopped", extra={})
         return 0
+
+    async def _heartbeat_loop(self) -> None:
+        """只负责定期写心跳，与投递循环解耦。"""
+        while True:
+            await asyncio.sleep(max(2, self.heartbeat_seconds // 2))
+            with contextlib.suppress(Exception):
+                await self._publish(status="running", extra={})
 
     async def _open_client(self) -> Any:
         from app.core.demo_client import DemoAccountClient
@@ -656,22 +670,25 @@ class RuntimeService:
                         error=f"取发送机器人失败：{exc}",
                     )
                     return 1
-                source_message, cleaned = await self._load_clean_source(
-                    client,
-                    source_entity=source_entity,
-                    job=job,
-                    a_config=a_config,
-                )
-                if source_message is None:
-                    await delivery_service.mark_failure(
-                        session,
-                        job,
-                        error="取不到源消息，无法用机器人发送",
+
+                async def load_payload() -> delivery_service.BotPayload:
+                    message, cleaned = await self._load_clean_source(
+                        client,
+                        source_entity=source_entity,
+                        job=job,
+                        a_config=a_config,
                     )
-                    return 1
-                view = message_view_from_telethon(source_message)
-                caption = cleaned if a_config.text_mode == "clean" else view.text
-                content, filename = await self._prepare_bot_payload(client, source_message)
+                    if message is None:
+                        raise RuntimeError("取不到源消息，无法用机器人发送")
+                    view = message_view_from_telethon(message)
+                    data, name = await self._prepare_bot_payload(client, message)
+                    return delivery_service.BotPayload(
+                        caption=cleaned if a_config.text_mode == "clean" else view.text,
+                        content=data,
+                        filename=name,
+                        kind=_bot_media_kind(view.kind),
+                    )
+
                 await delivery_service.deliver_job_via_bot(
                     session,
                     self.config,
@@ -682,10 +699,7 @@ class RuntimeService:
                     a_config=a_config,
                     ad_asset=ad_asset,
                     source_chat=source_chat,
-                    caption=caption,
-                    content=content,
-                    filename=filename,
-                    kind=_bot_media_kind(view.kind),
+                    payload_loader=load_payload,
                 )
                 return 1
 

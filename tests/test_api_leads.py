@@ -101,3 +101,19 @@ async def test_leads_filter_by_keyword(admin_client, api_config) -> None:
 
     assert hit.json()["total"] == 1
     assert miss.json()["total"] == 0
+
+
+async def test_leads_survive_route_deletion(admin_client, api_config) -> None:
+    """线索是业务数据：删线路不能把它一起删掉（只解除引用）。"""
+    await _seed_lead(api_config)
+    routes = (await admin_client.get("/api/routes", headers=_headers())).json()["items"]
+    route_id = routes[0]["id"]
+
+    removed = await admin_client.delete(f"/api/routes/{route_id}", headers=_headers())
+    assert removed.status_code == 200
+
+    listing = await admin_client.get("/api/leads", headers=_headers())
+    body = listing.json()
+    assert body["total"] == 1
+    assert body["items"][0]["route_id"] is None
+    assert body["items"][0]["phone"] == "13800138000"

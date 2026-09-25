@@ -411,3 +411,60 @@ async def test_route_with_multiple_sources_keeps_one_route_per_source(
     removed = await chat_client.delete(f"/api/routes/{route_id}", headers=_headers())
     assert removed.status_code == 200
     assert (await chat_client.get("/api/routes", headers=_headers())).json()["total"] == 0
+
+
+async def test_add_second_source_to_single_route_joins_same_bundle(
+    chat_client,
+    fake_account_client,
+) -> None:
+    """单源线路再加一个源时，两行必须并入同一个 bundle。"""
+    source_a = make_entity(3001, "素材源频道", broadcast=True, username="src_ch")
+    source_b = make_entity(3003, "备用源群", participants_count=88)
+    main = make_entity(3002, "我的主频道", broadcast=True, username="main_ch")
+    fake_account_client.dialogs = [source_a, source_b, main]
+    fake_account_client.entities = {"src_ch": source_a, "main_ch": main, 3003: source_b}
+    await chat_client.post("/api/sources/sync", headers=_headers())
+    pool = (await chat_client.get("/api/sources/available", headers=_headers())).json()["items"]
+    by_title = {item["title"]: item["id"] for item in pool}
+    first, second = by_title["素材源频道"], by_title["备用源群"]
+    await chat_client.post(
+        "/api/sources",
+        headers=_headers(),
+        json={"chat_ids": [first]},
+    )
+    targets = (await chat_client.get("/api/targets/available", headers=_headers())).json()["items"]
+    target_id = next(item["id"] for item in targets if item["title"] == "我的主频道")
+    await chat_client.post(
+        "/api/targets",
+        headers=_headers(),
+        json={"chat_ids": [target_id], "role": "content"},
+    )
+    created = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "先单源",
+            "source_chat_id": first,
+            "business_type": "A",
+            "target_chat_ids": [target_id],
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    route_id = created.json()["id"]
+    assert created.json()["source_chat_ids"] == [first]
+
+    # 第二个群要先加入监听源（编辑器下拉里只列监听源）
+    await chat_client.post("/api/sources", headers=_headers(), json={"chat_ids": [second]})
+    patched = await chat_client.patch(
+        f"/api/routes/{route_id}",
+        headers=_headers(),
+        json={"source_chat_ids": [first, second]},
+    )
+
+    assert patched.status_code == 200
+    assert sorted(patched.json()["source_chat_ids"]) == sorted([first, second])
+    listing = (await chat_client.get("/api/routes", headers=_headers())).json()
+    assert listing["total"] == 2
+    # 两行必须共用同一个 bundle，界面上才算一条线路
+    bundles = {item["bundle_id"] for item in listing["items"]}
+    assert len(bundles) == 1 and None not in bundles

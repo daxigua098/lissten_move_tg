@@ -97,9 +97,15 @@ class Lead(TimestampMixin, Base):
     __tablename__ = "leads"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    route_id: Mapped[int] = mapped_column(ForeignKey("routes.id", ondelete="CASCADE"), index=True)
-    source_chat_id: Mapped[int] = mapped_column(
-        ForeignKey("chats.id", ondelete="CASCADE"),
+    # 线索是业务数据，不能因为删线路/删群就消失（只解除引用，保留快照字段）
+    route_id: Mapped[int | None] = mapped_column(
+        ForeignKey("routes.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_chat_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chats.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     message_id: Mapped[int] = mapped_column(BigInteger)

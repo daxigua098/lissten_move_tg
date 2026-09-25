@@ -370,6 +370,16 @@ async def sync_route_bundle_sources(
         raise ValidationFailedError("至少要保留一个监听源")
 
     siblings = await bundle_routes(session, route)
+    # 原来是单源线路、现在要多选：先把已有这些行纳入同一个 bundle，
+    # 否则新增的源会挂到另一个 bundle 上，界面上看起来"还是只有一个源"。
+    if len(wanted) > 1 and not route.bundle_id:
+        shared_bundle_id = _new_bundle_id()
+        for item in siblings:
+            item.bundle_id = shared_bundle_id
+        await session.flush()
+        siblings = await bundle_routes(session, route)
+        route = siblings[0]
+
     by_source = {item.source_chat_id: item for item in siblings}
     added = 0
     removed = 0
@@ -413,9 +423,10 @@ async def sync_route_bundle_sources(
     await session.commit()
 
     # 只剩一个源时不再需要 bundle
-    remaining = [item.source_chat_id for item in await bundle_routes(session, route)]
+    remaining_rows = await bundle_routes(session, route)
+    remaining = [item.source_chat_id for item in remaining_rows]
     if len(remaining) <= 1:
-        for item in await bundle_routes(session, route):
+        for item in remaining_rows:
             item.bundle_id = None
         await session.commit()
 

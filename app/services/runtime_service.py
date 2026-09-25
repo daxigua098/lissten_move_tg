@@ -825,6 +825,30 @@ def _runtime_is_alive(config: AppConfig) -> bool:
     return age is not None and age < RUNTIME_STALE_SECONDS
 
 
+def _pid_alive(pid: int | None) -> bool:
+    """进程是否还活着（用 psutil，避免把已退出的 PID 当成占用）。"""
+    if not pid:
+        return False
+    try:
+        import psutil
+
+        return bool(psutil.pid_exists(int(pid)))
+    except Exception:  # noqa: BLE001 - 判断不了就当它不在
+        return False
+
+
+def _lock_holder_pid(lock_path: Any) -> int | None:
+    """运行时锁里记的 PID（没有锁或进程已退出时返回 None）。"""
+    from app.core.paths import read_json
+
+    payload = read_json(lock_path) or {}
+    try:
+        value = int(payload.get("pid"))
+    except (TypeError, ValueError):
+        return None
+    return value if _pid_alive(value) else None
+
+
 async def pending_route_ids(session: Any, config: AppConfig) -> list[int] | None:
     """启用中、但没被正在运行的运行时接管的线路 ID。
 
@@ -859,6 +883,26 @@ async def start_runtime_process(
     if _runtime_is_alive(config):
         status = read_status(status_path) or {}
         return {"started": False, "reason": "already_running", "pid": status.get("pid")}
+
+    # 卡死的旧进程可能还占着运行时锁（心跳过期但进程还在），先请它退出再启动，
+    # 否则新进程会因抢不到锁而静默失败——界面看起来就是"点了启动但一直没起来"。
+    stale_pid = _lock_holder_pid(config.path(config.runtime.lock_file))
+    if stale_pid:
+        set_stop_requested(control_path, True)
+        for _ in range(16):
+            await asyncio.sleep(0.5)
+            if not _pid_alive(stale_pid):
+                break
+        else:
+            return {
+                "started": False,
+                "reason": "locked",
+                "pid": stale_pid,
+                "hint": (
+                    f"上一次的运行时进程（PID {stale_pid}）还在运行且没响应停止请求，"
+                    "请先结束它，或在任务管理器里结束对应 python 进程后重试"
+                ),
+            }
 
     set_stop_requested(control_path, False)
     set_paused(control_path, False)

@@ -14,6 +14,8 @@ from typing import Any
 import httpx
 
 DEFAULT_BASE_URL = "https://api.telegram.org"
+# 连接快、读写慢：机器人上传视频动辄几十兆，读/写超时给足
+DEFAULT_TIMEOUT = httpx.Timeout(connect=15.0, read=300.0, write=300.0, pool=30.0)
 
 # 与 chats.chat_type 对齐
 _CHANNEL_TYPES = ("channel", "supergroup")
@@ -54,7 +56,7 @@ class BotApiClient:
         token: str,
         *,
         base_url: str = DEFAULT_BASE_URL,
-        timeout: float = 60.0,
+        timeout: Any = DEFAULT_TIMEOUT,
         transport: Any = None,
     ) -> None:
         self.token = token

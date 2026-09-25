@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, reactive, ref, watch } from "vue";
 
 import { adAssetsApi, keywordsApi, routesApi } from "../api";
+import MatchHelp from "./MatchHelp.vue";
 import {
   collectRoleMismatches,
   targetRoleFullLabel,
@@ -667,6 +668,7 @@ async function resetProgress(row) {
             <el-radio value="standard">标准</el-radio>
             <el-radio value="strict">严格（宁可少报）</el-radio>
           </el-radio-group>
+          <MatchHelp label="命中逻辑说明" link />
         </el-form-item>
         <el-form-item label="匹配方式">
           <div class="switch-grid">

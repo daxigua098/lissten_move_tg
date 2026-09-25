@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, reactive, ref } from "vue";
 
 import { keywordsApi } from "../api";
+import MatchHelp from "../components/MatchHelp.vue";
 
 const loading = ref(false);
 const groups = ref([]);
@@ -199,6 +200,7 @@ onMounted(load);
         {{ kindLabel }} 共 {{ groups.length }} 组 · 关键词组判断"算不算线索"，排除词组负责"挡掉噪声"
       </span>
       <div class="spacer" />
+      <MatchHelp label="模糊匹配说明" />
       <el-button size="small" @click="seed">导入预置词库</el-button>
       <el-button size="small" type="primary" @click="createGroup">新建{{ kindLabel }}</el-button>
       <el-button size="small" @click="load">刷新</el-button>

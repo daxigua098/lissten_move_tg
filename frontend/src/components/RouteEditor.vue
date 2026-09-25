@@ -226,6 +226,10 @@ async function save() {
     );
     return;
   }
+  if (!detailTargets.value.length) {
+    ElMessage.warning("请先选择接收目标：在「接收目标」下面的下拉里选一个群，选中就会自动加进来");
+    return;
+  }
   saving.value = true;
   try {
     const payload = {
@@ -263,7 +267,9 @@ async function save() {
 
 function pushLocalTarget(targetId) {
   const target = props.targets.find((item) => item.id === targetId);
-  if (!target) return;
+  if (!target) return false;
+  // 已在列表里的不重复添加
+  if (detailTargets.value.some((item) => item.chat_id === target.id)) return false;
   detailTargets.value.push({
     chat_id: target.id,
     name: target.name,
@@ -276,6 +282,7 @@ function pushLocalTarget(targetId) {
     last_delivered_message_id: 0,
     backfill_status: "idle",
   });
+  return true;
 }
 
 async function addTargets() {
@@ -292,10 +299,22 @@ async function addTargets() {
     const { data } = await routesApi.addTargets(props.routeId, addingTargetIds.value);
     addingTargetIds.value = [];
     await loadDetail();
-    ElMessage.success(`已追加 ${data.added.length} 个目标（只为新目标补齐历史）`);
+    const skipped = data.skipped?.length || 0;
+    ElMessage.success(
+      skipped
+        ? `已在列表里的 ${skipped} 个被跳过，新增 ${data.added.length} 个目标`
+        : `已加入 ${data.added.length} 个目标（只为新目标补齐历史）`,
+    );
   } catch (error) {
     ElMessage.error(error.message);
   }
+}
+
+/** 下拉里选中即加入列表，不用再点「追加」——少这一步就不会漏。 */
+async function onPickTargets(ids) {
+  if (!ids?.length) return;
+  addingTargetIds.value = ids;
+  await addTargets();
 }
 
 async function removeTarget(row) {
@@ -417,7 +436,9 @@ async function resetProgress(row) {
           <el-button size="small" link type="warning" @click="resetProgress(item)">重置进度</el-button>
           <el-button size="small" link type="danger" @click="removeTarget(item)">移除</el-button>
         </div>
-        <div v-if="!detailTargets.length" class="card-hint">还没有接收目标</div>
+        <div v-if="!detailTargets.length" class="card-hint">
+          还没有接收目标：用下面的下拉选一个群，选中就会自动加进来。
+        </div>
       </div>
       <el-alert
         v-if="targetRoleWarnings.length"
@@ -434,8 +455,9 @@ async function resetProgress(row) {
           v-model="addingTargetIds"
           multiple
           collapse-tags
-          placeholder="从接收组里追加"
+          placeholder="从接收组里选，选中即添加"
           style="flex: 1"
+          @change="onPickTargets"
         >
           <el-option
             v-for="item in targets"
@@ -444,9 +466,11 @@ async function resetProgress(row) {
             :value="item.id"
           />
         </el-select>
-        <el-button size="small" @click="addTargets">追加</el-button>
       </div>
-      <p class="card-hint">新增目标只会为它补齐历史消息，已存在目标不会重复搬运。</p>
+      <p class="card-hint">
+        在上面下拉里<b>选中就会自动加入</b>，不用再点按钮；新增目标只会为它补齐历史消息，
+        已存在目标不会重复搬运。
+      </p>
 
       <el-form v-if="form.business_type === 'A'" label-position="top">
         <el-divider content-position="left">A 线：内容与净化</el-divider>

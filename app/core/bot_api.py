@@ -108,6 +108,28 @@ class BotApiClient:
             or {}
         )
 
+    async def copy_message(
+        self,
+        from_chat_id: str,
+        message_id: int,
+        to_chat_id: str,
+        *,
+        caption: str | None = None,
+    ) -> dict[str, Any]:
+        """把一条消息复制到目标（不显示「转发自」，也不下载文件）。
+
+        前提是机器人能读到源消息（即它也在源群里）；读不到时调用方要退回
+        「下载再上传」。
+        """
+        data: dict[str, Any] = {
+            "chat_id": to_chat_id,
+            "from_chat_id": from_chat_id,
+            "message_id": int(message_id),
+        }
+        if caption is not None:
+            data["caption"] = caption
+        return await self.call("copyMessage", data=data) or {}
+
     async def send_message(
         self,
         chat_id: str,

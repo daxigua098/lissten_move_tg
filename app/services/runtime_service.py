@@ -700,6 +700,11 @@ class RuntimeService:
                     ad_asset=ad_asset,
                     source_chat=source_chat,
                     payload_loader=load_payload,
+                    # 机器人若也在源群，直接用 copyMessage：不用下载、快得多
+                    copy_from=(
+                        bot_api_chat_id(source_chat.tg_id, source_chat.chat_type),
+                        int(job.source_message_id),
+                    ),
                 )
                 return 1
 

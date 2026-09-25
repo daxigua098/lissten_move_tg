@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -308,6 +309,7 @@ async def deliver_job_via_bot(
     kind: str = MEDIA_DOCUMENT,
     payload_loader: Callable[[], Awaitable[BotPayload]] | None = None,
     load_timeout: float = 300.0,
+    copy_from: tuple[str, int] | None = None,
 ) -> DeliveryJob:
     """用机器人（Bot API）投递：文本直发，媒体由机器人上传。
 
@@ -318,32 +320,42 @@ async def deliver_job_via_bot(
     await session.commit()
     chat_id = bot_api_chat_id(target_chat.tg_id, target_chat.chat_type)
     try:
-        if payload_loader is not None:
-            # 取原消息 + 下载媒体都在「处理中」状态里做，并加超时，
-            # 避免一个卡住的下载把整个投递循环拖死、界面看到心跳停跳。
+        result: dict[str, Any] | None = None
+        if copy_from is not None:
+            # 机器人也在源群时，直接 copyMessage：不用下载、不显示来源标记
             try:
-                payload = await asyncio.wait_for(payload_loader(), timeout=load_timeout)
-            except TimeoutError:
-                await session.rollback()
-                return await mark_failure(
-                    session,
-                    job,
-                    error=f"取源内容超时（超过 {int(load_timeout)} 秒）",
+                result = await bot_api.copy_message(copy_from[0], copy_from[1], chat_id)
+            except Exception as exc:  # noqa: BLE001 - 读不到源消息就退回下载再上传
+                logger.warning("机器人直接复制失败，改用下载再上传：{}", exc)
+                result = None
+
+        if result is None:
+            if payload_loader is not None:
+                # 取原消息 + 下载媒体都在「处理中」状态里做，并加超时，
+                # 避免一个卡住的下载把整个投递循环拖死、界面看到心跳停跳。
+                try:
+                    payload = await asyncio.wait_for(payload_loader(), timeout=load_timeout)
+                except TimeoutError:
+                    await session.rollback()
+                    return await mark_failure(
+                        session,
+                        job,
+                        error=f"取源内容超时（超过 {int(load_timeout)} 秒）",
+                    )
+                caption = payload.caption
+                content = payload.content
+                filename = payload.filename
+                kind = payload.kind
+            if content is None:
+                result = await bot_api.send_message(chat_id, caption or "")
+            else:
+                result = await bot_api.send_media(
+                    chat_id,
+                    content=content,
+                    filename=filename or "file",
+                    caption=caption,
+                    kind=kind,
                 )
-            caption = payload.caption
-            content = payload.content
-            filename = payload.filename
-            kind = payload.kind
-        if content is None:
-            result = await bot_api.send_message(chat_id, caption or "")
-        else:
-            result = await bot_api.send_media(
-                chat_id,
-                content=content,
-                filename=filename or "file",
-                caption=caption,
-                kind=kind,
-            )
         job.target_message_id = int((result or {}).get("message_id") or 0) or None
         job.status = JOB_SUCCESS
         job.sent_at = utc_now()

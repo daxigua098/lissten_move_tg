@@ -380,6 +380,10 @@ class FakeBotApi:
         self.sent.append(("media", chat_id, filename, caption, kind))
         return {"message_id": 7002}
 
+    async def copy_message(self, from_chat_id, message_id, to_chat_id, caption=None):  # noqa: ANN001
+        self.sent.append(("copy", from_chat_id, message_id, to_chat_id))
+        return {"message_id": 7003}
+
     async def close(self) -> None:
         self.closed = True
 
@@ -493,6 +497,50 @@ async def test_deliver_job_via_bot_times_out_on_slow_source(db) -> None:
     assert bot_api.sent == []
     assert job.status in (JOB_RETRYING, JOB_FAILED)
     assert "超时" in (job.last_error or "")
+
+
+async def test_deliver_job_via_bot_prefers_copy_message(db) -> None:
+    """机器人在源群时直接 copyMessage：不下载、也不需要 payload_loader 真的跑。"""
+    route_id, source_id, target_ids = await _prepare_route(
+        db,
+        a_config={"ad_policy": "none"},
+    )
+    bot_api = FakeBotApi()
+    loader_called = False
+
+    async def loader():  # noqa: ANN202
+        nonlocal loader_called
+        loader_called = True
+        return delivery_service.BotPayload(caption="不该走这里")
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        jobs = await delivery_service.enqueue_message(
+            session,
+            route=route,
+            target_chat_ids=target_ids,
+            source_chat_id=source_id,
+            source_message_id=904,
+        )
+        source_chat = await session.get(Chat, source_id)
+        target_chat = await session.get(Chat, target_ids[0])
+        job = await delivery_service.deliver_job_via_bot(
+            session,
+            db,
+            job=await session.get(DeliveryJob, jobs[0].id),
+            route=route,
+            bot_api=bot_api,
+            target_chat=target_chat,
+            a_config=ACarryConfig(ad_policy="none"),
+            source_chat=source_chat,
+            payload_loader=loader,
+            copy_from=("-1001234567890", 904),
+        )
+
+    assert loader_called is False
+    assert bot_api.sent[0][0] == "copy"
+    assert job.status == JOB_SUCCESS
+    assert job.target_message_id == 7003
 
 
 def test_simple_namespace_available() -> None:

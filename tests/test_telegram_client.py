@@ -9,6 +9,7 @@ from telethon.tl import types
 
 from app.core.errors import NotFoundError
 from app.core.telegram_client import (
+    check_can_post,
     fetch_dialog_entities,
     fetch_dialogs,
     is_group_or_channel,
@@ -120,3 +121,94 @@ async def test_resolve_entity_raises_when_absent() -> None:
 
     with pytest.raises(NotFoundError):
         await resolve_entity(client, 599)
+
+
+def permissions(**kwargs: object) -> SimpleNamespace:
+    """Telethon ParticipantPermissions 的替身（只保留我们会读的字段）。"""
+    base: dict[str, object] = {
+        "is_creator": False,
+        "is_admin": False,
+        "is_banned": False,
+        "has_left": False,
+        "post_messages": False,
+    }
+    base.update(kwargs)
+    return SimpleNamespace(**base)
+
+
+class PermissionClient:
+    """只实现 check_can_post 用到的部分。"""
+
+    def __init__(self, entity: object, mine: object) -> None:
+        self.entity = entity
+        self.mine = mine
+        self.user_args: list[object] = []
+
+    async def get_entity(self, identifier: object):
+        return self.entity
+
+    async def get_me(self, input_peer: bool = False):
+        return SimpleNamespace(user_id=9000001, _="InputPeerSelf")
+
+    async def get_permissions(self, entity: object, user: object = None):
+        self.user_args.append(user)
+        if user is None:
+            # Telethon 不带 user 时返回的是群默认限制：send_messages=False 表示“没限制”。
+            # 旧实现把这个 False 当成“不能发帖”，于是普通成员全被误判。
+            return SimpleNamespace(send_messages=False, post_messages=False)
+        if isinstance(self.mine, Exception):
+            raise self.mine
+        return self.mine
+
+
+def megagroup(tg_id: int, *, members_can_send: bool = True) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=tg_id,
+        broadcast=False,
+        megagroup=True,
+        default_banned_rights=SimpleNamespace(send_messages=not members_can_send),
+    )
+
+
+async def test_check_can_post_for_plain_member_of_group() -> None:
+    """普通群成员能发言——这正是原来被误判成「无发帖权限」的情形。"""
+    client = PermissionClient(megagroup(6001), permissions())
+
+    assert await check_can_post(client, 6001) is True
+    # 必须带上当前用户，否则拿到的只是群默认限制
+    assert client.user_args and client.user_args[0] is not None
+
+
+async def test_check_can_post_for_group_with_members_muted() -> None:
+    client = PermissionClient(megagroup(6002, members_can_send=False), permissions())
+
+    assert await check_can_post(client, 6002) is False
+
+
+async def test_check_can_post_for_channel_subscriber_and_admin() -> None:
+    channel = SimpleNamespace(id=6003, broadcast=True, megagroup=False)
+
+    subscriber = PermissionClient(channel, permissions())
+    assert await check_can_post(subscriber, 6003) is False
+
+    admin = PermissionClient(channel, permissions(is_admin=True, post_messages=True))
+    assert await check_can_post(admin, 6003) is True
+
+    admin_without_post = PermissionClient(channel, permissions(is_admin=True))
+    assert await check_can_post(admin_without_post, 6003) is False
+
+
+async def test_check_can_post_for_basic_group_creator_and_banned() -> None:
+    group = SimpleNamespace(id=6004, megagroup=False)
+
+    creator = PermissionClient(group, permissions(is_creator=True, is_admin=True))
+    assert await check_can_post(creator, 6004) is True
+
+    banned = PermissionClient(group, permissions(is_banned=True))
+    assert await check_can_post(banned, 6004) is False
+
+
+async def test_check_can_post_returns_none_when_unknown() -> None:
+    client = PermissionClient(megagroup(6005), RuntimeError("取权限失败"))
+
+    assert await check_can_post(client, 6005) is None

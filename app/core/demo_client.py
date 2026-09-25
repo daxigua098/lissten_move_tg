@@ -63,7 +63,9 @@ class DemoAccountClient:
     async def is_user_authorized(self) -> bool:
         return True
 
-    async def get_me(self) -> Any:
+    async def get_me(self, input_peer: bool = False) -> Any:
+        if input_peer:
+            return SimpleNamespace(user_id=9000001, _="InputPeerSelf")
         return SimpleNamespace(
             id=9000001,
             username="demo_account",
@@ -99,8 +101,17 @@ class DemoAccountClient:
             return self.entities[tg_id]
         return self._synthetic(f"chat{tg_id}", f"演示聊天 {tg_id}", tg_id=tg_id)
 
-    async def get_permissions(self, entity: Any) -> Any:
-        return SimpleNamespace(send_messages=True, post_messages=True)
+    async def get_permissions(self, entity: Any, user: Any = None) -> Any:
+        """对齐 Telethon 语义：不带 user 拿的是群默认限制，带 user 才是"我的权限"。"""
+        if user is None:
+            return SimpleNamespace(send_messages=False, post_messages=False)
+        return SimpleNamespace(
+            is_creator=True,
+            is_admin=True,
+            is_banned=False,
+            has_left=False,
+            post_messages=True,
+        )
 
     async def __call__(self, request: Any) -> Any:
         name = type(request).__name__

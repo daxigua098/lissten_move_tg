@@ -384,17 +384,37 @@ async def join_invite(client: Any, invite_hash: str) -> ChatProfile:
 
 
 async def check_can_post(client: Any, tg_id: int) -> bool | None:
-    """尽力检查是否具备发言权限；无法判断时返回 None。"""
+    """检查执行账号能否在该群/频道发帖；判断不出来时返回 None。
+
+    这里有个很容易踩的坑：Telethon 的 ``get_permissions(entity)``（不带 user）
+    返回的是这个群的**默认限制**（``ChatBannedRights``），其中 ``send_messages=False``
+    表示「没有限制」，把它当成「不能发帖」会得到完全相反的结论。要判断"我能不能发"，
+    必须带上当前用户：``get_permissions(entity, me)``。
+    """
     try:
         entity = await resolve_entity(client, tg_id)
-        permissions = await client.get_permissions(entity)
+        me = await client.get_me(input_peer=True)
+        permissions = await client.get_permissions(entity, me)
     except Exception:  # noqa: BLE001 - 权限预检失败不应阻断添加流程
         return None
-    for attribute in ("send_messages", "post_messages"):
-        value = getattr(permissions, attribute, None)
-        if value is not None:
-            return bool(value)
-    return None
+    if permissions is None:
+        return None
+    if getattr(permissions, "has_left", False) or getattr(permissions, "is_banned", False):
+        return False
+    if getattr(permissions, "is_creator", False):
+        return True
+    if getattr(entity, "broadcast", False):
+        # 广播频道：只有带发帖权限的管理员能发言，普通订阅者不行
+        return bool(
+            getattr(permissions, "is_admin", False) and getattr(permissions, "post_messages", False)
+        )
+    if getattr(permissions, "is_admin", False):
+        return True
+    # 普通成员：群 / 超级群默认能发言，除非群本身禁止了成员发言
+    default_rights = getattr(entity, "default_banned_rights", None)
+    if default_rights is not None and getattr(default_rights, "send_messages", False):
+        return False
+    return True
 
 
 async def fetch_chat_profile(client: Any, target: ResolvedTarget) -> ChatProfile:

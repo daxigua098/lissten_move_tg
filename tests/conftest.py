@@ -251,10 +251,37 @@ class FakeAccountClient:
             return self.entities[key]
         raise ValueError(f"找不到实体：{identifier}")
 
-    async def get_permissions(self, entity):
+    async def get_permissions(self, entity, user=None):
+        """替身：语义对齐 Telethon。
+
+        不带 user 时返回这个群的默认限制；带 user 时返回「我在这个群的权限」。
+        `self.permissions[tg_id]` 表示"执行账号能否在该群发言"：
+        True 建模成群主/管理员，False 建模成广播频道的普通订阅者。
+        """
+        if user is None:
+            return self.SimpleNamespace(send_messages=False, post_messages=False)
+        allowed = self.permissions.get(getattr(entity, "id", None))
+        if allowed is None:
+            return None
+        is_broadcast = bool(getattr(entity, "broadcast", False))
         return self.SimpleNamespace(
-            send_messages=self.permissions.get(getattr(entity, "id", None)),
-            post_messages=None,
+            is_creator=bool(allowed),
+            is_admin=bool(allowed),
+            is_banned=not allowed and not is_broadcast,
+            has_left=False,
+            post_messages=bool(allowed),
+        )
+
+    async def get_me(self, input_peer: bool = False):
+        if input_peer:
+            return self.SimpleNamespace(user_id=8000001, _="InputPeerSelf")
+        return self.SimpleNamespace(
+            id=8000001,
+            username="fake_account",
+            first_name="替身账号",
+            last_name=None,
+            phone=None,
+            bot=False,
         )
 
     async def is_user_authorized(self) -> bool:

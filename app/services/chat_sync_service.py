@@ -16,7 +16,9 @@ from app.core.telegram_client import (
     connect_user_client,
     fetch_chat_profile,
     fetch_dialogs,
+    fetch_migrations,
     join_invite,
+    profile_from_entity,
     session_file_path,
 )
 from app.db.models import Chat, TgAccount
@@ -77,6 +79,7 @@ async def sync_dialogs(
         client_factory=client_factory,
     )
     try:
+        migrations = await fetch_migrations(client, limit=limit)
         profiles = await fetch_dialogs(client, limit=limit)
     finally:
         with contextlib.suppress(Exception):
@@ -84,6 +87,16 @@ async def sync_dialogs(
 
     created = 0
     updated = 0
+    migrated = 0
+    # 群升级成超级群：先把本地记录迁到新 id，再走常规 upsert
+    for old_tg_id, entity in migrations:
+        moved = await chat_service.migrate_chat(
+            session,
+            old_tg_id=old_tg_id,
+            profile=profile_from_entity(entity),
+        )
+        if moved is not None:
+            migrated += 1
     for profile in profiles:
         if profile.tg_id <= 0:
             continue
@@ -100,6 +113,7 @@ async def sync_dialogs(
         "fetched": len(profiles),
         "created": created,
         "updated": updated,
+        "migrated": migrated,
     }
 
 

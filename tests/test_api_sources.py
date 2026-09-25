@@ -10,6 +10,52 @@ def _headers() -> dict[str, str]:
     return auth_header(ADMIN_API_TOKEN)
 
 
+async def test_sync_migrates_upgraded_group_to_new_id(chat_client, fake_account_client) -> None:
+    """基础群升级成超级群后，同步要把本地记录迁到新 id（引用与水位线保留）。"""
+    from app.db.models import Chat
+    from app.db.session import session_scope
+    from app.services import chat_service
+
+    old_group = types.Chat(
+        id=6001,
+        title="旧群",
+        photo=None,
+        participants_count=5,
+        date=None,
+        version=0,
+    )
+    fake_account_client.dialogs = [old_group]
+    await chat_client.post("/api/sources/sync", headers=_headers())
+
+    listing = (await chat_client.get("/api/sources/available", headers=_headers())).json()["items"]
+    chat_id = next(item["id"] for item in listing if item["tg_id"] == 6001)
+    async with session_scope() as session:
+        chat = await session.get(Chat, chat_id)
+        await chat_service.set_target(session, chat, role="lead")
+
+    # SimpleNamespace 不可哈希，用一个小对象当 migrated_to（替身按对象查表）
+    class _MigratedTo:
+        def __init__(self, channel_id: int) -> None:
+            self.channel_id = channel_id
+
+    migrated_to = _MigratedTo(7001)
+    old_group.migrated_to = migrated_to
+    upgraded = make_entity(7001, "升级后的群", broadcast=False, megagroup=True)
+    fake_account_client.dialogs = [old_group, upgraded]
+    fake_account_client.entities = {migrated_to: upgraded}
+
+    response = await chat_client.post("/api/sources/sync", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.json()["migrated"] == 1
+    async with session_scope() as session:
+        moved = await session.get(Chat, chat_id)
+    assert moved.tg_id == 7001
+    assert moved.chat_type == "supergroup"
+    assert moved.title == "升级后的群"
+    assert moved.is_target is True
+
+
 def _fill(client) -> None:
     """给替身客户端塞入两个群组与一个频道。"""
     material = make_entity(1001, "短剧素材频道", broadcast=True, username="duanju_material")
@@ -42,7 +88,7 @@ async def test_sync_dialogs_populates_pool(chat_client, fake_account_client) -> 
 
     body = response.json()
     assert response.status_code == 200
-    assert body == {"account": "主号", "fetched": 2, "created": 2, "updated": 0}
+    assert body == {"account": "主号", "fetched": 2, "created": 2, "updated": 0, "migrated": 0}
 
     available = await chat_client.get("/api/sources/available", headers=_headers())
     titles = [item["title"] for item in available.json()["items"]]

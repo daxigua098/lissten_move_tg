@@ -388,6 +388,26 @@ async def fetch_dialog_entities(client: Any, *, limit: int = 500) -> list[Any]:
     return entities
 
 
+async def fetch_migrations(client: Any, *, limit: int = 500) -> list[tuple[int, Any]]:
+    """找出「基础群被升级成超级群」的情况，返回 `[(旧 id, 新实体)]`。
+
+    群升级后旧 id 就成了空壳：Bot API 会直接报
+    「group chat was upgraded to a supergroup chat」。同步时顺手把本地记录迁过去。
+    """
+    pairs: list[tuple[int, Any]] = []
+    async for dialog in client.iter_dialogs(limit=limit):
+        entity = getattr(dialog, "entity", None)
+        migrated = getattr(entity, "migrated_to", None)
+        if entity is None or migrated is None:
+            continue
+        try:
+            upgraded = await client.get_entity(migrated)
+        except Exception:  # noqa: BLE001 - 拿不到新群就跳过，不影响其他同步
+            continue
+        pairs.append((int(entity.id), upgraded))
+    return pairs
+
+
 async def fetch_dialogs(client: Any, *, limit: int = 500) -> list[ChatProfile]:
     """拉取账号已加入的群组与频道资料（含基础群，忽略私聊与用户）。"""
     entities = await fetch_dialog_entities(client, limit=limit)

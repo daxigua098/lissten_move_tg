@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,6 +45,31 @@ async def get_chat(session: AsyncSession, chat_id: int) -> Chat | None:
 async def get_chat_by_tg_id(session: AsyncSession, tg_id: int) -> Chat | None:
     """按 Telegram ID 查询。"""
     return await session.scalar(select(Chat).where(Chat.tg_id == tg_id))
+
+
+async def migrate_chat(
+    session: AsyncSession,
+    *,
+    old_tg_id: int,
+    profile: Any,
+) -> Chat | None:
+    """群升级成超级群后，把本地记录迁到新 id。
+
+    只改 tg_id / 类型 / 标题，本地 chat.id 不变——线路引用、接收目标与水位线都保留。
+    """
+    old = await get_chat_by_tg_id(session, old_tg_id)
+    if old is None or int(profile.tg_id) == int(old_tg_id):
+        return None
+    clash = await get_chat_by_tg_id(session, int(profile.tg_id))
+    if clash is not None and clash.id != old.id:
+        return None
+    old.tg_id = int(profile.tg_id)
+    old.chat_type = profile.chat_type
+    old.title = profile.title or old.title
+    old.username = profile.username
+    await session.commit()
+    await session.refresh(old)
+    return old
 
 
 async def list_chats(

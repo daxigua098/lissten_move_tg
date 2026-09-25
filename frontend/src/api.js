@@ -122,3 +122,11 @@ export const adAssetsApi = {
   update: (id, payload) => http.patch(`/api/ad-assets/${id}`, payload),
   remove: (id, force) => http.delete(`/api/ad-assets/${id}`, { params: { force } }),
 };
+
+export const uploadsApi = {
+  image: (formData) =>
+    http.post("/api/uploads/image", formData, {
+      headers: { "Content-Type": "multipart/form-data" },
+    }),
+  remove: (filename) => http.delete(`/api/uploads/image/${filename}`),
+};

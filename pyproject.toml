@@ -23,6 +23,7 @@ dependencies = [
   "psutil>=6.1",
   "httpx>=0.28",
   "python-multipart>=0.0.20",
+  "Pillow>=11.0.0",
   "telethon>=1.39.0",
 ]
 

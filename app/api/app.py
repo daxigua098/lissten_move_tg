@@ -25,11 +25,14 @@ from app.api.routers import (
     sources,
     system,
     targets,
+    uploads,
     users,
 )
 from app.core.config import AppConfig, load_config
+from app.core.paths import ensure_dir
 from app.db.session import dispose_database, get_session_factory, init_database
 from app.services import user_service
+from app.services.upload_service import uploads_directory
 
 
 @asynccontextmanager
@@ -92,6 +95,12 @@ def create_app(
     app.include_router(targets.router)
     app.include_router(routes.router)
     app.include_router(ad_assets.router)
+    app.include_router(uploads.router)
+    app.mount(
+        "/uploads",
+        StaticFiles(directory=ensure_dir(uploads_directory(resolved))),
+        name="uploads",
+    )
 
     mount_frontend(app, resolved)
     return app

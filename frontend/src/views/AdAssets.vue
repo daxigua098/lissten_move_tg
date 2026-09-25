@@ -2,7 +2,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, reactive, ref } from "vue";
 
-import { adAssetsApi } from "../api";
+import { adAssetsApi, uploadsApi } from "../api";
 
 const loading = ref(false);
 const assets = ref([]);
@@ -10,6 +10,7 @@ const total = ref(0);
 const drawerVisible = ref(false);
 const editingId = ref(null);
 const references = ref([]);
+const uploading = ref(false);
 const form = reactive({
   name: "",
   text: "",
@@ -20,6 +21,35 @@ const form = reactive({
 });
 
 const previewText = computed(() => (form.text || "").replace(/\{源名\}/g, "短剧素材频道"));
+
+// 把库存路径（assets/uploads/xxx.png）转换成可访问 URL
+const imageUrl = computed(() => {
+  const path = (form.image_path || "").trim();
+  if (!path) return "";
+  if (path.startsWith("http://") || path.startsWith("https://") || path.startsWith("/")) {
+    return path;
+  }
+  return `/uploads/${path.split("/").pop()}`;
+});
+
+async function uploadImage(options) {
+  uploading.value = true;
+  try {
+    const formData = new FormData();
+    formData.append("file", options.file);
+    const { data } = await uploadsApi.image(formData);
+    form.image_path = data.path;
+    ElMessage.success(`图片已上传（${data.width}×${data.height}）`);
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    uploading.value = false;
+  }
+}
+
+function clearImage() {
+  form.image_path = "";
+}
 
 async function load() {
   loading.value = true;
@@ -209,8 +239,32 @@ onMounted(load);
           </div>
           <el-input v-model="form.text" type="textarea" :rows="4" placeholder="{源名} · 每日更新" />
         </el-form-item>
-        <el-form-item label="附加图片路径（可选，上传功能在后续任务交付）">
-          <el-input v-model="form.image_path" placeholder="assets/uploads/ad-a.jpg" />
+        <el-form-item label="附加图片（可选）">
+          <div class="upload-row">
+            <el-upload
+              :show-file-list="false"
+              :http-request="uploadImage"
+              accept="image/png,image/jpeg,image/gif,image/webp"
+            >
+              <el-button size="small" :loading="uploading">
+                {{ form.image_path ? "重新上传" : "选择本地图片上传" }}
+              </el-button>
+            </el-upload>
+            <span class="card-hint">支持 JPG / PNG / GIF / WEBP，最大 5 MB</span>
+          </div>
+          <div v-if="form.image_path" class="image-preview">
+            <img :src="imageUrl" alt="附加图片预览" />
+            <div class="image-meta">
+              <span class="path">{{ form.image_path }}</span>
+              <el-button size="small" link type="danger" @click="clearImage">移除</el-button>
+            </div>
+          </div>
+          <el-input
+            v-model="form.image_path"
+            size="small"
+            class="manual-path"
+            placeholder="也可以手动填写已有图片路径"
+          />
         </el-form-item>
         <el-form-item label="链接按钮文字（可选）">
           <el-input v-model="form.link_text" placeholder="立即查看" />
@@ -223,7 +277,13 @@ onMounted(load);
         </el-form-item>
         <el-divider content-position="left">发送效果预览</el-divider>
         <div class="preview-box">
-          <div class="preview-media">附加图片</div>
+          <div
+            class="preview-media"
+            :class="{ 'has-image': Boolean(imageUrl) }"
+            :style="imageUrl ? { backgroundImage: `url(${imageUrl})` } : {}"
+          >
+            <span v-if="!imageUrl">附加图片</span>
+          </div>
           <div class="preview-text">{{ previewText || "（无文案）" }}</div>
           <div v-if="form.link_text" class="preview-button">{{ form.link_text }}</div>
         </div>
@@ -281,6 +341,56 @@ onMounted(load);
   color: #94a3b8;
   font-size: 13px;
   margin-bottom: 8px;
+}
+
+.preview-media.has-image {
+  background-size: cover;
+  background-position: center;
+}
+
+.upload-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.image-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px;
+  border: 1px solid var(--tg-border);
+  border-radius: 8px;
+  background: #fbfcfe;
+  margin-bottom: 8px;
+}
+
+.image-preview img {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--tg-border);
+  background: #fff;
+}
+
+.image-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.image-meta .path {
+  font-size: 12px;
+  color: var(--tg-muted);
+  word-break: break-all;
+}
+
+.manual-path {
+  margin-top: 6px;
 }
 
 .preview-text {

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import secrets
 import sys
 from collections.abc import Sequence
 
@@ -63,6 +64,15 @@ def build_parser() -> argparse.ArgumentParser:
     admin = subparsers.add_parser("create-admin", help="创建内置管理员（幂等）")
     admin.add_argument("--username", default=None, help="覆盖 .env 中的 ADMIN_USERNAME")
     admin.add_argument("--password", default=None, help="覆盖 .env 中的 ADMIN_PASSWORD")
+
+    setpw = subparsers.add_parser("set-password", help="在服务器上设置指定账号的密码")
+    setpw.add_argument("--username", required=True, help="目标账号用户名")
+    setpw.add_argument("--password", default=None, help="新密码；不填则随机生成并打印")
+    setpw.add_argument(
+        "--force-change",
+        action="store_true",
+        help="要求该账号下次登录后修改密码",
+    )
 
     api = subparsers.add_parser("api", help="启动后台 Web 服务")
     api.add_argument("--host", default=None, help="监听地址，默认取配置")
@@ -236,6 +246,81 @@ async def _create_admin(config: AppConfig, *, username: str, password: str) -> i
         await dispose_database()
 
 
+def command_set_password(args: argparse.Namespace) -> int:
+    """在服务器上设置指定账号的密码（内置账号的唯一改密途径）。"""
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        setup_logging(config)
+    except OSError as exc:
+        print(f"警告：日志文件不可写（{exc}），继续执行。", file=sys.stderr)
+
+    supplied = getattr(args, "password", None)
+    password = supplied or secrets.token_urlsafe(12)
+    force_change = bool(getattr(args, "force_change", False))
+
+    code = asyncio.run(
+        _set_password(
+            config,
+            username=args.username,
+            password=password,
+            force_change=force_change,
+        )
+    )
+    if code == EXIT_OK:
+        if supplied:
+            print(f"已更新 {args.username} 的密码。")
+        else:
+            print(f"已生成并设置新密码：{password}")
+        if force_change:
+            print("该账号下次登录后需要修改密码。")
+    return code
+
+
+async def _set_password(
+    config: AppConfig,
+    *,
+    username: str,
+    password: str,
+    force_change: bool,
+) -> int:
+    from app.core.errors import AppError
+    from app.core.security import hash_password
+    from app.db.session import dispose_database, get_session_factory, init_database
+    from app.services import user_service
+
+    await init_database(config)
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            user = await user_service.get_user_by_username(session, username)
+            if user is None:
+                print(f"账号不存在：{username}", file=sys.stderr)
+                return EXIT_FAILURE
+            try:
+                user_service.validate_password(
+                    password,
+                    min_length=config.security.password_min_length,
+                )
+            except AppError as exc:
+                print(f"密码不符合要求：{exc.detail}", file=sys.stderr)
+                return EXIT_FAILURE
+            user.password_hash = hash_password(password)
+            user.must_change_password = force_change
+            await session.commit()
+            return EXIT_OK
+    except Exception as exc:  # noqa: BLE001 - 需要把原始错误展示给运维
+        print(f"设置失败：{exc}", file=sys.stderr)
+        print("提示：如果数据表不存在，请先执行 python main.py migrate", file=sys.stderr)
+        return EXIT_FAILURE
+    finally:
+        await dispose_database()
+
+
 def command_api(args: argparse.Namespace) -> int:
     """启动后台 Web 服务。"""
     try:
@@ -293,6 +378,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_init_db(args)
         if args.command == "create-admin":
             return command_create_admin(args)
+        if args.command == "set-password":
+            return command_set_password(args)
         if args.command == "api":
             return command_api(args)
         return command_pending(args)

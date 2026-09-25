@@ -119,6 +119,61 @@ def test_migrate_without_alembic_ini_fails(project_root, capsys) -> None:
     assert "alembic.ini" in captured.err
 
 
+def test_set_password_updates_stored_hash(project_root, write_env, valid_secret_key) -> None:
+    from sqlalchemy import create_engine, text
+
+    from app.core.security import verify_password
+
+    _copy_migration_assets(project_root)
+    write_env([f"SECRET_KEY={valid_secret_key}"])
+
+    assert main(_args(project_root, "migrate")) == EXIT_OK
+    assert main(_args(project_root, "create-admin")) == EXIT_OK
+
+    code = main(
+        _args(
+            project_root,
+            "set-password",
+            "--username",
+            "admin",
+            "--password",
+            "NewPass1234",
+        )
+    )
+
+    assert code == EXIT_OK
+    database_path = project_root / "data" / "app.db"
+    engine = create_engine(f"sqlite:///{database_path.as_posix()}")
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(
+                text(
+                    "select password_hash, must_change_password from users where username = 'admin'"
+                )
+            ).one()
+    finally:
+        engine.dispose()
+
+    assert verify_password("NewPass1234", row[0]) is True
+    assert verify_password("admin123", row[0]) is False
+    assert not row[1]
+
+
+def test_set_password_reports_unknown_user(
+    project_root, write_env, valid_secret_key, capsys
+) -> None:
+    _copy_migration_assets(project_root)
+    write_env([f"SECRET_KEY={valid_secret_key}"])
+    assert main(_args(project_root, "migrate")) == EXIT_OK
+
+    code = main(
+        _args(project_root, "set-password", "--username", "ghost", "--password", "NewPass1234")
+    )
+
+    assert code == EXIT_FAILURE
+    assert "账号不存在" in capsys.readouterr().err
+
+
 def test_missing_command_exits_with_usage_error(project_root) -> None:
     with pytest.raises(SystemExit) as excinfo:
         main(_args(project_root))

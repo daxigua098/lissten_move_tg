@@ -345,7 +345,12 @@ class RuntimeService:
                     text=text,
                     source_title=source_title,
                 )
-                await lead_service.upsert_member(session, sender, seen_at=view.date)
+                await lead_service.upsert_member(
+                    session,
+                    sender,
+                    seen_at=view.date,
+                    hit=hit is not None,
+                )
                 logger.info(
                     "监听到发言：{}（线路 {}，命中 {}）",
                     sender.display_name or sender.tg_user_id,

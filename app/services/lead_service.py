@@ -119,8 +119,12 @@ async def upsert_member(
     sender: SenderInfo,
     *,
     seen_at: datetime | None = None,
+    hit: bool = False,
 ) -> MemberProfile | None:
-    """按人汇总会员档案；没有用户 ID 的（频道匿名帖）跳过。"""
+    """按人汇总会员档案；没有用户 ID 的（频道匿名帖）跳过。
+
+    ``hit=True`` 表示这条发言命中了关键词：该档案会被 pin 住，永久保留。
+    """
     if not sender.tg_user_id:
         return None
     moment = seen_at or utc_now()
@@ -145,6 +149,9 @@ async def upsert_member(
         profile.phone = sender.phone or profile.phone
         profile.message_count += 1
         profile.last_seen_at = moment
+    if hit and not profile.pinned:
+        profile.pinned = True
+        profile.first_hit_at = moment
     await session.commit()
     return profile
 
@@ -157,6 +164,7 @@ def _filters(
     sender_tg_id: int | None,
     days: int | None,
     delivered: bool | None,
+    only_hits: bool | None = None,
 ) -> Select[Any]:
     if source_chat_id is not None:
         statement = statement.where(Lead.source_chat_id == source_chat_id)
@@ -168,6 +176,8 @@ def _filters(
         statement = statement.where(Lead.created_at >= _day_start(days))
     if delivered is not None:
         statement = statement.where(Lead.delivered.is_(delivered))
+    if only_hits:
+        statement = statement.where(Lead.keyword.is_not(None))
     return statement
 
 
@@ -179,6 +189,7 @@ async def list_leads(
     sender_tg_id: int | None = None,
     days: int | None = None,
     delivered: bool | None = None,
+    only_hits: bool | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[Lead], int]:
@@ -189,6 +200,7 @@ async def list_leads(
         sender_tg_id=sender_tg_id,
         days=days,
         delivered=delivered,
+        only_hits=only_hits,
     )
     count_statement = _filters(
         select(func.count()).select_from(Lead),
@@ -197,6 +209,7 @@ async def list_leads(
         sender_tg_id=sender_tg_id,
         days=days,
         delivered=delivered,
+        only_hits=only_hits,
     )
     total = int(await session.scalar(count_statement) or 0)
     rows = list(
@@ -220,11 +233,25 @@ async def lead_stats(session: AsyncSession) -> dict[str, Any]:
         or 0
     )
     members = int(await session.scalar(select(func.count()).select_from(MemberProfile)) or 0)
+    hits = int(
+        await session.scalar(
+            select(func.count()).select_from(Lead).where(Lead.keyword.is_not(None))
+        )
+        or 0
+    )
+    pinned_members = int(
+        await session.scalar(
+            select(func.count()).select_from(MemberProfile).where(MemberProfile.pinned.is_(True))
+        )
+        or 0
+    )
     return {
         "today": today,
         "total": total,
+        "hits": hits,
         "undelivered": undelivered,
         "members": members,
+        "pinned_members": pinned_members,
     }
 
 
@@ -290,9 +317,20 @@ async def purge_expired(
     profiles_days: int,
     archive_dir: Path,
 ) -> dict[str, int]:
-    """清理到期线索与档案；线索删除前先归档成 JSONL。"""
+    """清理到期数据，分两档：
+
+    - **命中关键词的线索与对应用户永久保留**，不参与清理；
+    - 未命中的线索（全量入库）与档案按天数清理，线索删除前先归档成 JSONL。
+    """
     lead_cutoff = utc_now() - timedelta(days=leads_days)
-    expired = list(await session.scalars(select(Lead).where(Lead.created_at < lead_cutoff)))
+    expired = list(
+        await session.scalars(
+            select(Lead).where(
+                Lead.created_at < lead_cutoff,
+                Lead.keyword.is_(None),
+            )
+        )
+    )
     archived = 0
     if expired:
         # 写文件是阻塞操作，丢到线程里，别卡住事件循环
@@ -303,7 +341,10 @@ async def purge_expired(
     profile_cutoff = utc_now() - timedelta(days=profiles_days)
     profiles = list(
         await session.scalars(
-            select(MemberProfile).where(MemberProfile.last_seen_at < profile_cutoff)
+            select(MemberProfile).where(
+                MemberProfile.last_seen_at < profile_cutoff,
+                MemberProfile.pinned.is_(False),
+            )
         )
     )
     for row in profiles:
@@ -355,4 +396,23 @@ def serialize_lead(row: Lead) -> dict[str, Any]:
         "delivered": row.delivered,
         "target_chat_id": row.target_chat_id,
         "target_message_id": row.target_message_id,
+    }
+
+
+def serialize_member(row: MemberProfile) -> dict[str, Any]:
+    first_seen = as_utc(row.first_seen_at)
+    last_seen = as_utc(row.last_seen_at)
+    first_hit = as_utc(row.first_hit_at)
+    return {
+        "id": row.id,
+        "tg_user_id": row.tg_user_id,
+        "username": row.username,
+        "display_name": row.display_name,
+        "phone": row.phone,
+        "is_bot": row.is_bot,
+        "message_count": row.message_count,
+        "pinned": row.pinned,
+        "first_hit_at": first_hit.isoformat() if first_hit else None,
+        "first_seen_at": first_seen.isoformat() if first_seen else None,
+        "last_seen_at": last_seen.isoformat() if last_seen else None,
     }

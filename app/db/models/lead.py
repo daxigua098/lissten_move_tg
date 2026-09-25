@@ -87,6 +87,12 @@ class MemberProfile(TimestampMixin, Base):
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     is_bot: Mapped[bool] = mapped_column(Boolean, default=False)
     message_count: Mapped[int] = mapped_column(Integer, default=0)
+    # 命中过关键词的用户：档案永久保留，不参与到期清理
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    first_hit_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -26,6 +26,7 @@ async def list_leads(
     sender_tg_id: int | None = Query(default=None),
     days: int | None = Query(default=None, ge=1, le=365),
     delivered: bool | None = Query(default=None),
+    only_hits: bool | None = Query(default=None, description="只看命中关键词的线索"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dependency),
@@ -38,6 +39,7 @@ async def list_leads(
         sender_tg_id=sender_tg_id,
         days=days,
         delivered=delivered,
+        only_hits=only_hits,
         limit=limit,
         offset=offset,
     )
@@ -60,6 +62,7 @@ async def export_leads(
     source_chat_id: int | None = Query(default=None),
     keyword: str | None = Query(default=None),
     days: int | None = Query(default=None, ge=1, le=365),
+    only_hits: bool | None = Query(default=None),
     session: AsyncSession = Depends(session_dependency),
 ) -> Response:
     """导出线索为 CSV（按来源群 / 关键词 / 天数筛选）。"""
@@ -68,6 +71,7 @@ async def export_leads(
         source_chat_id=source_chat_id,
         keyword=keyword,
         days=days,
+        only_hits=only_hits,
         limit=5000,
         offset=0,
     )

@@ -111,8 +111,8 @@ async function act(action) {
           <div class="card-hint">今日线索</div>
           <div class="stat-value">{{ status?.counts?.leads?.today ?? 0 }}</div>
           <div class="card-hint">
-            共 {{ status?.counts?.leads?.total ?? 0 }} 条 · 未推送
-            {{ status?.counts?.leads?.undelivered ?? 0 }} 条
+            命中 {{ status?.counts?.leads?.hits ?? 0 }} 条（永久保留）· 共
+            {{ status?.counts?.leads?.total ?? 0 }} 条
           </div>
         </el-card>
       </el-col>

@@ -9,7 +9,14 @@ const rows = ref([]);
 const total = ref(0);
 const stats = ref(null);
 const sources = ref([]);
-const filters = reactive({ source_chat_id: null, keyword: "", days: 3, limit: 100, offset: 0 });
+const filters = reactive({
+  source_chat_id: null,
+  keyword: "",
+  days: 3,
+  only_hits: false,
+  limit: 100,
+  offset: 0,
+});
 
 async function load() {
   loading.value = true;
@@ -18,6 +25,7 @@ async function load() {
       source_chat_id: filters.source_chat_id || undefined,
       keyword: filters.keyword || undefined,
       days: filters.days || undefined,
+      only_hits: filters.only_hits || undefined,
       limit: filters.limit,
       offset: filters.offset,
     };
@@ -57,6 +65,7 @@ async function exportCsv() {
       source_chat_id: filters.source_chat_id || undefined,
       keyword: filters.keyword || undefined,
       days: filters.days || undefined,
+      only_hits: filters.only_hits || undefined,
     });
     const response = await http.get(url, { responseType: "blob" });
     const objectUrl = URL.createObjectURL(response.data);
@@ -96,14 +105,16 @@ onMounted(async () => {
       </el-col>
       <el-col :xs="12" :sm="6">
         <el-card shadow="never">
-          <div class="card-hint">线索总数</div>
-          <div class="stat-value">{{ stats?.total ?? 0 }}</div>
+          <div class="card-hint">命中线索（永久保留）</div>
+          <div class="stat-value">{{ stats?.hits ?? 0 }}</div>
+          <div class="card-hint">永久保留用户 {{ stats?.pinned_members ?? 0 }} 人</div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
         <el-card shadow="never">
-          <div class="card-hint">未推送</div>
-          <div class="stat-value">{{ stats?.undelivered ?? 0 }}</div>
+          <div class="card-hint">线索总数</div>
+          <div class="stat-value">{{ stats?.total ?? 0 }}</div>
+          <div class="card-hint">未推送 {{ stats?.undelivered ?? 0 }} 条</div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="6">
@@ -144,6 +155,9 @@ onMounted(async () => {
           <el-option label="近 7 天" :value="7" />
           <el-option label="近 30 天" :value="30" />
         </el-select>
+        <el-checkbox v-model="filters.only_hits" size="small" @change="search">
+          只看命中（永久保留）
+        </el-checkbox>
         <el-button size="small" type="primary" @click="search">筛选</el-button>
       </div>
 
@@ -205,7 +219,7 @@ onMounted(async () => {
       :closable="false"
       show-icon
       title="全量监听只入库、不刷屏"
-      description="B 线默认把所有发言存进线索池，只有命中关键词的才会推卡片到接收群；线索按保留策略到期自动清理，删除前会先归档成 JSONL 放到 data/archive。"
+      description="B 线默认把所有发言存进线索池，只有命中关键词的才会推卡片到接收群。保留策略分两档：命中关键词的线索与对应用户永久保留；未命中的线索与档案按保留策略（默认 3 天）清理，线索删除前会先归档成 JSONL 放到 data/archive。"
     />
   </div>
 </template>

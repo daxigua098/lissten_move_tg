@@ -1,0 +1,44 @@
+app:
+  name: tg-lead-system
+  environment: development      # development / production
+  timezone: Asia/Shanghai
+  access_mode: local            # local 仅本机；public 需 HTTPS + IP 白名单
+
+server:
+  host: 127.0.0.1
+  port: 8000
+  allowed_ips: []               # public 模式白名单，空=拒绝所有非本机访问
+  cors_origins:
+    - http://localhost:5173
+    - http://127.0.0.1:5173
+
+database:
+  url: sqlite+aiosqlite:///./data/app.db
+  echo: false
+  wal: true
+
+logging:
+  level: INFO
+  file: logs/app.log
+  rotation_mb: 10
+  retention_days: 30
+
+security:
+  session_hours: 24
+  max_login_failures: 5
+  login_window_minutes: 15
+  password_min_length: 8
+
+runtime:
+  heartbeat_seconds: 10
+  lock_file: data/runtime.lock
+  status_file: data/runtime_status.json
+  control_file: data/runtime_control.json
+
+retention:
+  messages_raw_days: 3
+  member_profiles_days: 3
+  leads_days: 3
+  archive_days: 30
+  audit_days: 180
+  login_history_days: 90

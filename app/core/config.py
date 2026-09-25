@@ -1,0 +1,402 @@
+"""配置加载、校验与摘要输出。
+
+优先级：代码内默认值 < configs/config.yaml < .env 文件 < 进程环境变量。
+敏感项只放 .env，运行参数放 YAML。
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from dotenv import dotenv_values
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+from app.core.paths import ensure_dir, resolve_path
+from app.core.paths import project_root as resolve_root
+
+DEFAULT_CONFIG_RELATIVE = Path("configs") / "config.yaml"
+DEFAULT_ENV_RELATIVE = Path(".env")
+
+DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_PASSWORD = "admin123"
+
+# Fernet 密钥形态：43 位 urlsafe base64 字符 + 结尾等号
+FERNET_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_\-]{43}=$")
+
+LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL")
+
+# 环境变量 → 配置项映射（只有列出的键会覆盖 YAML）
+ENV_OVERRIDES: dict[str, tuple[str, str]] = {
+    "SECRET_KEY": ("secrets", "secret_key"),
+    "ADMIN_USERNAME": ("secrets", "admin_username"),
+    "ADMIN_PASSWORD": ("secrets", "admin_password"),
+    "ADMIN_API_TOKEN": ("secrets", "admin_api_token"),
+    "DATABASE_URL": ("database", "url"),
+    "LOG_LEVEL": ("logging", "level"),
+}
+
+
+class ConfigError(RuntimeError):
+    """配置缺失、无法解析或结构非法。"""
+
+
+class AppSection(BaseModel):
+    """应用级元信息。"""
+
+    name: str = "tg-lead-system"
+    environment: Literal["development", "production"] = "development"
+    timezone: str = "Asia/Shanghai"
+    access_mode: Literal["local", "public"] = "local"
+
+
+class ServerSection(BaseModel):
+    """HTTP 服务监听与访问控制。"""
+
+    host: str = "127.0.0.1"
+    port: int = Field(default=8000, ge=1, le=65535)
+    allowed_ips: list[str] = Field(default_factory=list)
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
+    )
+
+    @field_validator("allowed_ips", "cors_origins")
+    @classmethod
+    def _clean_list(cls, value: list[str]) -> list[str]:
+        return [str(item).strip() for item in value if str(item).strip()]
+
+
+class DatabaseSection(BaseModel):
+    """数据库连接参数。"""
+
+    url: str = "sqlite+aiosqlite:///./data/app.db"
+    echo: bool = False
+    wal: bool = True
+
+
+class LoggingSection(BaseModel):
+    """日志输出参数。"""
+
+    level: str = "INFO"
+    file: str = "logs/app.log"
+    rotation_mb: int = Field(default=10, ge=1)
+    retention_days: int = Field(default=30, ge=1)
+
+    @field_validator("level")
+    @classmethod
+    def _normalise_level(cls, value: str) -> str:
+        level = str(value).strip().upper()
+        if level not in LOG_LEVELS:
+            raise ValueError(f"日志级别必须是 {'/'.join(LOG_LEVELS)} 之一")
+        return level
+
+
+class SecuritySection(BaseModel):
+    """登录与会话安全参数。"""
+
+    session_hours: int = Field(default=24, ge=1, le=720)
+    max_login_failures: int = Field(default=5, ge=1, le=100)
+    login_window_minutes: int = Field(default=15, ge=1, le=1440)
+    password_min_length: int = Field(default=8, ge=6, le=128)
+
+
+class RuntimeSection(BaseModel):
+    """运行时锁、心跳与控制文件位置。"""
+
+    heartbeat_seconds: int = Field(default=10, ge=1, le=3600)
+    lock_file: str = "data/runtime.lock"
+    status_file: str = "data/runtime_status.json"
+    control_file: str = "data/runtime_control.json"
+
+
+class RetentionSection(BaseModel):
+    """数据保留策略（天）。"""
+
+    messages_raw_days: int = Field(default=3, ge=1, le=365)
+    member_profiles_days: int = Field(default=3, ge=1, le=365)
+    leads_days: int = Field(default=3, ge=1, le=365)
+    archive_days: int = Field(default=30, ge=1, le=3650)
+    audit_days: int = Field(default=180, ge=1, le=3650)
+    login_history_days: int = Field(default=90, ge=1, le=3650)
+
+
+class Secrets(BaseModel):
+    """来自 .env 的敏感配置。"""
+
+    secret_key: str = ""
+    admin_username: str = DEFAULT_ADMIN_USERNAME
+    admin_password: str = DEFAULT_ADMIN_PASSWORD
+    admin_api_token: str = ""
+
+    @property
+    def secret_key_configured(self) -> bool:
+        return bool(self.secret_key.strip())
+
+
+class AppConfig(BaseModel):
+    """完整生效配置。"""
+
+    app: AppSection = Field(default_factory=AppSection)
+    server: ServerSection = Field(default_factory=ServerSection)
+    database: DatabaseSection = Field(default_factory=DatabaseSection)
+    logging: LoggingSection = Field(default_factory=LoggingSection)
+    security: SecuritySection = Field(default_factory=SecuritySection)
+    runtime: RuntimeSection = Field(default_factory=RuntimeSection)
+    retention: RetentionSection = Field(default_factory=RetentionSection)
+    secrets: Secrets = Field(default_factory=Secrets)
+    project_root: Path
+    config_path: Path | None = None
+    env_path: Path | None = None
+
+    def path(self, value: str | Path) -> Path:
+        """把配置中的相对路径解析为绝对路径。"""
+        return resolve_path(value, self.project_root)
+
+
+@dataclass(frozen=True)
+class ConfigIssue:
+    """一条配置检查结论。"""
+
+    level: Literal["error", "warning"]
+    field: str
+    message: str
+    hint: str = ""
+
+    def render(self) -> str:
+        label = "错误" if self.level == "error" else "警告"
+        text = f"[{label}] {self.field}：{self.message}"
+        return f"{text}（{self.hint}）" if self.hint else text
+
+
+def load_config(
+    config_path: str | Path | None = None,
+    *,
+    env_file: str | Path | None = None,
+    project_root: str | Path | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> AppConfig:
+    """加载配置。
+
+    参数：
+        config_path: YAML 路径（相对项目根目录），缺省 `configs/config.yaml`。
+        env_file: 环境文件路径（相对项目根目录），缺省 `.env`。
+        project_root: 项目根目录，缺省取代码所在目录。
+        environ: 覆盖用的环境变量映射；缺省读取进程环境。测试可传空字典隔离。
+
+    异常：
+        ConfigError：YAML 无法解析，或合并后的配置不满足校验规则。
+    """
+    root = resolve_root(project_root)
+    config_file = resolve_path(config_path or DEFAULT_CONFIG_RELATIVE, root)
+    env_path = resolve_path(env_file or DEFAULT_ENV_RELATIVE, root)
+
+    raw: dict[str, Any] = {}
+    if config_file.is_file():
+        raw = _read_yaml(config_file)
+
+    env_values: dict[str, str] = {}
+    if env_path.is_file():
+        for key, value in (dotenv_values(env_path) or {}).items():
+            if value is not None and value.strip():
+                env_values[str(key).strip()] = value.strip()
+    process_env = os.environ if environ is None else environ
+    for key, value in process_env.items():
+        if value is None or not str(value).strip():
+            continue
+        env_values[str(key).strip()] = str(value).strip()
+
+    for env_key, (section, field) in ENV_OVERRIDES.items():
+        value = env_values.get(env_key)
+        if value is None:
+            continue
+        bucket = raw.get(section)
+        if not isinstance(bucket, dict):
+            bucket = {}
+            raw[section] = bucket
+        bucket[field] = value
+
+    payload = dict(raw)
+    payload["project_root"] = root
+    payload["config_path"] = config_file if config_file.is_file() else None
+    payload["env_path"] = env_path if env_path.is_file() else None
+
+    try:
+        return AppConfig.model_validate(payload)
+    except ValidationError as exc:
+        raise ConfigError(_format_validation_error(exc)) from exc
+
+
+def check_config(config: AppConfig) -> list[ConfigIssue]:
+    """执行配置检查，返回问题清单（error 会阻止启动，warning 只提示）。"""
+    issues: list[ConfigIssue] = []
+
+    secret_key = config.secrets.secret_key.strip()
+    if not secret_key:
+        issues.append(
+            ConfigIssue(
+                "error",
+                "SECRET_KEY",
+                "未配置字段加密密钥",
+                '生成命令：python -c "from cryptography.fernet import Fernet;'
+                'print(Fernet.generate_key().decode())"',
+            )
+        )
+    elif not FERNET_KEY_PATTERN.match(secret_key):
+        issues.append(
+            ConfigIssue(
+                "error",
+                "SECRET_KEY",
+                "格式不是有效的 Fernet 密钥",
+                "应为 44 位 urlsafe base64 字符串（以 = 结尾），请重新生成",
+            )
+        )
+
+    if config.secrets.admin_password == DEFAULT_ADMIN_PASSWORD:
+        issues.append(
+            ConfigIssue(
+                "warning",
+                "ADMIN_PASSWORD",
+                "仍在使用默认密码 admin123",
+                "首次登录后必须修改，或在 .env 中改为专用密码",
+            )
+        )
+
+    if config.app.access_mode == "public" and not config.server.allowed_ips:
+        issues.append(
+            ConfigIssue(
+                "error",
+                "server.allowed_ips",
+                "公网模式必须配置 IP 白名单",
+                "否则后台将对全网开放",
+            )
+        )
+
+    issues.extend(_check_writable(config, config.path("data"), "数据目录"))
+    issues.extend(_check_writable(config, config.path("logs"), "日志目录"))
+
+    database_parent = _sqlite_parent(config)
+    if database_parent is not None:
+        issues.extend(_check_writable(config, database_parent, "数据库目录"))
+
+    if config.app.environment == "production" and config.database.url.startswith("sqlite"):
+        issues.append(
+            ConfigIssue(
+                "warning",
+                "database.url",
+                "生产环境仍在使用 SQLite",
+                "单机小量可用；并发与数据量上升后建议切换 PostgreSQL",
+            )
+        )
+
+    return issues
+
+
+def format_issues(issues: list[ConfigIssue]) -> str:
+    """把问题清单拼成多行文本。"""
+    if not issues:
+        return "全部通过，没有发现问题。"
+    return "\n".join(issue.render() for issue in issues)
+
+
+def has_errors(issues: list[ConfigIssue]) -> bool:
+    """是否存在阻止启动的错误。"""
+    return any(issue.level == "error" for issue in issues)
+
+
+def config_summary(config: AppConfig) -> list[tuple[str, str]]:
+    """输出可打印的生效配置摘要（敏感值已掩码）。"""
+    access_mode = (
+        "local（仅本机 / SSH 隧道）"
+        if config.app.access_mode == "local"
+        else "public（HTTPS + IP 白名单）"
+    )
+    return [
+        ("项目名称", config.app.name),
+        ("运行环境", config.app.environment),
+        ("访问模式", access_mode),
+        ("服务监听", f"{config.server.host}:{config.server.port}"),
+        ("数据库", config.database.url),
+        ("数据目录", str(config.path("data"))),
+        ("日志文件", str(config.path(config.logging.file))),
+        ("日志级别", config.logging.level),
+        ("会话时长", f"{config.security.session_hours} 小时"),
+        (
+            "登录锁定",
+            f"{config.security.login_window_minutes} 分钟内失败 "
+            f"{config.security.max_login_failures} 次",
+        ),
+        (
+            "保留策略",
+            f"原文 {config.retention.messages_raw_days} 天 / "
+            f"线索 {config.retention.leads_days} 天 / "
+            f"归档 {config.retention.archive_days} 天",
+        ),
+        ("加密密钥", mask_secret(config.secrets.secret_key)),
+        ("内置管理员", f"{config.secrets.admin_username}（密码来自 .env）"),
+        ("配置文件", str(config.config_path) if config.config_path else "未找到，使用默认值"),
+        ("环境文件", str(config.env_path) if config.env_path else "未找到"),
+    ]
+
+
+def mask_secret(value: str, *, keep: int = 4) -> str:
+    """对密钥类文本做掩码，保留首尾便于比对。"""
+    text = (value or "").strip()
+    if not text:
+        return "未配置"
+    if len(text) <= keep * 2:
+        return "*" * len(text)
+    return f"{text[:keep]}...{text[-keep:]}"
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    try:
+        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"配置文件解析失败：{path}（{exc}）") from exc
+    except OSError as exc:
+        raise ConfigError(f"配置文件读取失败：{path}（{exc}）") from exc
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ConfigError(f"配置文件顶层必须是键值结构：{path}")
+    return loaded
+
+
+def _format_validation_error(exc: ValidationError) -> str:
+    lines = ["配置校验失败："]
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ())) or "<root>"
+        lines.append(f"  - {location}：{error.get('msg', '取值非法')}")
+    return "\n".join(lines)
+
+
+def _check_writable(config: AppConfig, directory: Path, label: str) -> list[ConfigIssue]:
+    try:
+        ensure_dir(directory)
+    except OSError as exc:
+        return [ConfigIssue("error", str(directory), f"{label}无法创建：{exc}")]
+    probe = directory / ".write-probe"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        return [ConfigIssue("error", str(directory), f"{label}不可写：{exc}")]
+    return []
+
+
+def _sqlite_parent(config: AppConfig) -> Path | None:
+    url = config.database.url
+    if not url.startswith("sqlite"):
+        return None
+    _, separator, tail = url.partition("///")
+    if not separator:
+        return None
+    raw = tail.split("?", 1)[0]
+    if raw in {"", ":memory:"}:
+        return None
+    return config.path(raw).parent

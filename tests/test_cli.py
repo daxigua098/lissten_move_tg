@@ -1,0 +1,73 @@
+"""命令行入口测试。"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from app.cli import EXIT_FAILURE, EXIT_NOT_IMPLEMENTED, EXIT_OK, main
+
+
+def _args(project_root, *rest: str) -> list[str]:
+    return ["--project-root", str(project_root), *rest]
+
+
+def test_check_config_fails_without_secret_key(project_root, capsys) -> None:
+    code = main(_args(project_root, "check-config"))
+
+    captured = capsys.readouterr()
+    assert code == EXIT_FAILURE
+    assert "SECRET_KEY" in captured.out
+    assert "检查结果" in captured.out
+
+
+def test_check_config_passes_with_env_file(
+    project_root, write_env, valid_secret_key, capsys
+) -> None:
+    write_env([f"SECRET_KEY={valid_secret_key}", "ADMIN_PASSWORD=custom-pass"])
+
+    code = main(_args(project_root, "check-config"))
+
+    captured = capsys.readouterr()
+    assert code == EXIT_OK
+    assert "全部通过" in captured.out
+    assert valid_secret_key not in captured.out
+
+
+def test_check_config_json_output(project_root, write_env, valid_secret_key, capsys) -> None:
+    write_env([f"SECRET_KEY={valid_secret_key}", "ADMIN_PASSWORD=custom-pass"])
+
+    code = main(_args(project_root, "check-config", "--json"))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == EXIT_OK
+    assert payload["ok"] is True
+    assert payload["issues"] == []
+    assert payload["config"]["加密密钥"] != valid_secret_key
+
+
+def test_check_config_reports_broken_yaml(project_root, write_config, capsys) -> None:
+    write_config("server: [unclosed\n")
+
+    code = main(_args(project_root, "check-config"))
+
+    captured = capsys.readouterr()
+    assert code == EXIT_FAILURE
+    assert "解析失败" in captured.err
+
+
+def test_pending_command_returns_not_implemented(project_root, capsys) -> None:
+    code = main(_args(project_root, "migrate"))
+
+    captured = capsys.readouterr()
+    assert code == EXIT_NOT_IMPLEMENTED
+    assert "尚未实现" in captured.err
+    assert "T1-02" in captured.err
+
+
+def test_missing_command_exits_with_usage_error(project_root) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(_args(project_root))
+
+    assert excinfo.value.code == 2

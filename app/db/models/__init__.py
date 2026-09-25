@@ -14,6 +14,7 @@ from app.db.models.job import (
 from app.db.models.lead import (
     GROUP_KIND_EXCLUDE,
     GROUP_KIND_KEYWORD,
+    GROUP_KIND_MERGE,
     GROUP_KINDS,
     MATCH_CONTAINS,
     MATCH_FUZZY,
@@ -114,6 +115,7 @@ __all__ = [
     "LISTEN_MODES",
     "GROUP_KIND_EXCLUDE",
     "GROUP_KIND_KEYWORD",
+    "GROUP_KIND_MERGE",
     "GROUP_KINDS",
     "MATCH_CONTAINS",
     "MATCH_FUZZY",

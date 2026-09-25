@@ -80,6 +80,75 @@ async def test_missing_group_returns_404(admin_client) -> None:
     assert response.status_code == 404
 
 
+async def test_merge_rule_group_and_hot_keyword_ranking(admin_client) -> None:
+    """归并规则：热门词按同类说法合并，并把变体一起写进词库别名。"""
+    from app.db.session import session_scope
+    from app.services import hot_keyword_service
+
+    group = await admin_client.post(
+        "/api/keyword-groups",
+        headers=_headers(),
+        json={"name": "同类词归并", "kind": "merge"},
+    )
+    assert group.status_code == 201
+    group_id = group.json()["id"]
+    await admin_client.post(
+        f"/api/keyword-groups/{group_id}/keywords",
+        headers=_headers(),
+        json={"group_id": group_id, "word": "微信", "aliases": "加我微信,微信同号"},
+    )
+
+    async with session_scope() as session:
+        # 同一条消息里重复出现只算一次（按消息计），跨消息才累加
+        await hot_keyword_service.collect_message(
+            session,
+            text="加我微信 加我微信 微信同号",
+            source_chat_id=1,
+            source_title="搜索群",
+        )
+        await hot_keyword_service.collect_message(
+            session,
+            text="加我微信 再说一次",
+            source_chat_id=1,
+            source_title="搜索群",
+        )
+
+    listing = (await admin_client.get("/api/hot-keywords", headers=_headers())).json()
+    top = listing["items"][0]
+    assert top["token"] == "微信"
+    assert top["merged"] is True
+    assert top["count"] == 3
+    assert {item["token"] for item in top["variants"]} == {"加我微信", "微信同号"}
+
+    # 加进关键词组：归类名当主词，变体写成别名
+    keyword_group = await admin_client.post(
+        "/api/keyword-groups",
+        headers=_headers(),
+        json={"name": "联系方式", "kind": "keyword"},
+    )
+    promoted = await admin_client.post(
+        "/api/hot-keywords/promote",
+        headers=_headers(),
+        json={
+            "token": top["token"],
+            "group_id": keyword_group.json()["id"],
+            "aliases": [item["token"] for item in top["variants"]],
+        },
+    )
+    assert promoted.status_code == 201
+    assert promoted.json()["added"] is True
+
+    detail = (
+        await admin_client.get(
+            "/api/keyword-groups?kind=keyword",
+            headers=_headers(),
+        )
+    ).json()["items"]
+    created = next(item for item in detail if item["name"] == "联系方式")
+    keyword = next(item for item in created["keywords"] if item["word"] == "微信")
+    assert set(keyword["alias_list"]) == {"加我微信", "微信同号"}
+
+
 async def test_exclude_groups_are_separate_kind(admin_client) -> None:
     """排除词组与关键词组分开放，互不混入匹配。"""
     await admin_client.post("/api/keyword-groups/seed", headers=_headers())

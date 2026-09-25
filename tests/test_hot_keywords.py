@@ -24,6 +24,8 @@ def test_extract_tokens_keeps_meaningful_words() -> None:
     assert "今晚" not in tokens
     assert "一起" not in tokens
     assert all(len(token) >= 2 for token in tokens)
+    # 同一条消息里重复出现的词只算一次
+    assert extract_tokens("加我微信 加我微信").count("加我微信") == 1
 
 
 def test_extract_tokens_drops_links_contacts_and_numbers() -> None:
@@ -59,6 +61,32 @@ def test_drop_overlapping_duplicates_merges_sliding_fragments() -> None:
 
     assert len([token for token in kept if token in {"喜欢交朋", "欢交朋友"}]) == 1
     assert "快手" in kept
+
+
+def test_merge_variants_groups_similar_words() -> None:
+    """同类说法归到一个名字下：微信 = 加我微信 + 微信同号。"""
+    from app.services.hot_keyword_service import merge_variants
+
+    merged = merge_variants(
+        {"加我微信": 8, "微信同号": 4, "快手": 3},
+        [("微信", ["加我微信", "微信同号", "vx"])],
+    )
+
+    assert merged["微信"]["count"] == 12
+    assert merged["微信"]["merged"] is True
+    assert merged["微信"]["variants"] == {"加我微信": 8, "微信同号": 4}
+    # 没被规则覆盖的词保持原样
+    assert merged["快手"]["count"] == 3
+    assert merged["快手"]["merged"] is False
+
+
+def test_merge_variants_keeps_rule_name_without_exact_match() -> None:
+    """只说"微信同号"、没人直接说"微信"时，也要归到"微信"这一条。"""
+    from app.services.hot_keyword_service import merge_variants
+
+    merged = merge_variants({"微信同号": 5}, [("微信", ["微信同号"])])
+
+    assert merged["微信"]["count"] == 5
 
 
 async def test_hot_keywords_are_counted_and_ranked(admin_client, api_config) -> None:

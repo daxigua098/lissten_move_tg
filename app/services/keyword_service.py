@@ -13,6 +13,7 @@ from app.core.keyword_matcher import KeywordEntry, parse_aliases
 from app.db.models import (
     GROUP_KIND_EXCLUDE,
     GROUP_KIND_KEYWORD,
+    GROUP_KIND_MERGE,
     GROUP_KINDS,
     Keyword,
     KeywordGroup,
@@ -92,6 +93,16 @@ SEED_GROUPS: list[tuple[str, str, str, list[tuple[str, str]]]] = [
             ("广告", "广告位,打广告,广告合作"),
             ("推广", "推广位,引流,互推"),
             ("招商", "招代理,招加盟"),
+        ],
+    ),
+    (
+        GROUP_KIND_MERGE,
+        "同类词归并（示例）",
+        "把同一种说法的不同写法归到一个名字下，热门词统计会合并计数",
+        [
+            ("微信", "加我微信,微信同号,威信,薇信,vx,v信,weixin,wechat"),
+            ("电话", "手机号,手机,电话号码,留个号,联系方式"),
+            ("电报", "tg,telegram,飞机号,紙飞机"),
         ],
     ),
 ]
@@ -288,6 +299,34 @@ async def load_exclude_words(
             if item and item not in words:
                 words.append(item)
     return words
+
+
+async def load_merge_rules(
+    session: AsyncSession,
+    group_ids: list[int] | None = None,
+) -> list[tuple[str, list[str]]]:
+    """加载归并规则：`[(归类名, [变体...])]`。
+
+    热门关键词排名会按这些规则把同类说法合并计数，
+    例如「加我微信」「微信同号」都归到「微信」。
+    """
+    statement = (
+        select(Keyword)
+        .join(KeywordGroup, KeywordGroup.id == Keyword.group_id)
+        .where(
+            Keyword.enabled.is_(True),
+            KeywordGroup.enabled.is_(True),
+            KeywordGroup.kind == GROUP_KIND_MERGE,
+        )
+        .order_by(Keyword.id)
+    )
+    if group_ids:
+        statement = statement.where(Keyword.group_id.in_(group_ids))
+    rules: list[tuple[str, list[str]]] = []
+    for row in await session.scalars(statement):
+        variants = [item for item in parse_aliases(row.aliases) if item]
+        rules.append((row.word, variants))
+    return rules
 
 
 async def ensure_seed_groups(session: AsyncSession) -> int:

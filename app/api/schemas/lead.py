@@ -11,7 +11,8 @@ class KeywordGroupCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
     description: str = Field(default="", max_length=255)
     # keyword=关键词组（判断命中）/ exclude=排除词组（命中即忽略）
-    kind: str = Field(default="keyword", pattern="^(keyword|exclude)$")
+    # merge=归并规则（同类词合并计数）
+    kind: str = Field(default="keyword", pattern="^(keyword|exclude|merge)$")
 
 
 class KeywordGroupUpdateRequest(BaseModel):
@@ -56,3 +57,5 @@ class HotKeywordPromoteRequest(BaseModel):
 
     token: str = Field(min_length=1, max_length=64)
     group_id: int = Field(gt=0)
+    # 归并后的变体：一起写进别名，例如 微信 → 加我微信 / 微信同号
+    aliases: list[str] = Field(default_factory=list)

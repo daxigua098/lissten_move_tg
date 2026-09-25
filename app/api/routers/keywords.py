@@ -28,7 +28,7 @@ router = APIRouter(
 
 @router.get("")
 async def list_groups(
-    kind: str | None = Query(default=None, pattern="^(keyword|exclude)$"),
+    kind: str | None = Query(default=None, pattern="^(keyword|exclude|merge)$"),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
     """词组列表（含组内词）；kind 区分关键词组与排除词组。"""

@@ -22,6 +22,43 @@ from app.db.base import as_utc, utc_now
 from app.db.models import HotKeyword
 
 
+def merge_variants(
+    counts: dict[str, int],
+    rules: list[tuple[str, list[str]]],
+) -> dict[str, dict[str, Any]]:
+    """按归并规则把同类说法合并成一条。
+
+    规则「微信 → 加我微信 / 微信同号」下，`加我微信(8)` 与 `微信同号(4)`
+    合成 `微信(12)`，并保留变体明细，方便看是哪些说法贡献的次数。
+    没被任何规则匹配到的词保持原样。
+    """
+    result: dict[str, dict[str, Any]] = {}
+    consumed: set[str] = set()
+    for name, variants in rules:
+        needles = [item for item in (name, *variants) if item]
+        matched: dict[str, int] = {}
+        for token, count in counts.items():
+            if token in consumed:
+                continue
+            if any(needle == token or needle in token or token in needle for needle in needles):
+                matched[token] = count
+        if not matched:
+            continue
+        consumed.update(matched)
+        total = sum(matched.values())
+        # 归类名本身没被采到过也照样显示（用户关心的是"微信"这个类）
+        result[name] = {
+            "count": total,
+            "merged": True,
+            "variants": dict(sorted(matched.items(), key=lambda kv: -kv[1])),
+        }
+    for token, count in counts.items():
+        if token in consumed or token in result:
+            continue
+        result[token] = {"count": count, "merged": False, "variants": {token: count}}
+    return result
+
+
 async def collect_message(
     session: AsyncSession,
     *,
@@ -77,6 +114,7 @@ async def rank_hot_keywords(
     min_count: int = 1,
     limit: int = 200,
     offset: int = 0,
+    merge_rules: list[tuple[str, list[str]]] | None = None,
 ) -> tuple[list[dict[str, Any]], int, int]:
     """按出现次数排名。
 
@@ -90,15 +128,34 @@ async def rank_hot_keywords(
     counts = {row.token: row.count for row in rows}
     keep = drop_substring_duplicates(counts)
     keep = drop_overlapping_duplicates(keep)
-    filtered = [row for row in rows if row.token in keep]
-    total = len(filtered)
+    row_by_token = {row.token: row for row in rows}
+    merged = merge_variants(keep, merge_rules or [])
+
+    ordered = sorted(merged.items(), key=lambda kv: (-kv[1]["count"], kv[0]))
+    total = len(ordered)
     message_total = int(
         await session.scalar(select(func.coalesce(func.sum(HotKeyword.message_count), 0))) or 0
     )
 
     items: list[dict[str, Any]] = []
-    for index, row in enumerate(filtered[offset : offset + limit], start=offset + 1):
-        items.append(serialize_hot_keyword(row, rank=index))
+    for index, (token, payload) in enumerate(ordered[offset : offset + limit], start=offset + 1):
+        variants = payload["variants"]
+        base = row_by_token.get(token) or row_by_token.get(next(iter(variants), token))
+        item = serialize_hot_keyword(base, rank=index) if base is not None else {}
+        item.update(
+            {
+                "rank": index,
+                "token": token,
+                "count": payload["count"],
+                "merged": payload["merged"],
+                "variants": [{"token": name, "count": value} for name, value in variants.items()],
+                "variant_text": "、".join(
+                    f"{name}({value})" for name, value in list(variants.items())[:3]
+                ),
+                "id": base.id if base is not None else None,
+            }
+        )
+        items.append(item)
     return items, total, message_total
 
 

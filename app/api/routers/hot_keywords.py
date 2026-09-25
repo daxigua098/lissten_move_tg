@@ -35,6 +35,7 @@ async def list_hot_keywords(
         min_count=min_count,
         limit=limit,
         offset=offset,
+        merge_rules=await keyword_service.load_merge_rules(session),
     )
     return {
         "items": items,
@@ -64,6 +65,7 @@ async def promote_to_library(
             session,
             group.id,
             word=token,
+            aliases=",".join(item for item in payload.aliases if item and item != token),
         )
     except ConflictError:
         # 词库里已经有这个词：对使用者来说就是"已经在里面了"，不算失败

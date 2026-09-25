@@ -30,10 +30,14 @@ MATCH_CONTAINS = "contains"
 MATCH_FUZZY = "fuzzy"
 MATCH_MODES = (MATCH_CONTAINS, MATCH_FUZZY)
 
-# 词组用途：关键词（用来判断是不是线索）/ 排除词（命中就整条忽略）
+# 词组用途：
+#   keyword 关键词（判断是不是线索）
+#   exclude 排除词（命中就整条忽略）
+#   merge   归并规则（把同类说法归到一个名字下，用于热门词统计与补词）
 GROUP_KIND_KEYWORD = "keyword"
 GROUP_KIND_EXCLUDE = "exclude"
-GROUP_KINDS = (GROUP_KIND_KEYWORD, GROUP_KIND_EXCLUDE)
+GROUP_KIND_MERGE = "merge"
+GROUP_KINDS = (GROUP_KIND_KEYWORD, GROUP_KIND_EXCLUDE, GROUP_KIND_MERGE)
 
 
 class KeywordGroup(TimestampMixin, Base):

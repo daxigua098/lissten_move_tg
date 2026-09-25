@@ -74,18 +74,17 @@ ruff check .
 ## 本地部署（当前可用）
 
 ```powershell
-# 1. 初始化数据库与管理员（首次执行）
-.\.venv\Scripts\python.exe main.py check-config
-.\.venv\Scripts\python.exe main.py init-db
-.\.venv\Scripts\python.exe main.py create-admin
+# 一键启动（首次会自动构建前端、迁移数据库、创建管理员）
+.\scripts\start-local.ps1
 
-# 2. 构建前端（已构建过可跳过）
-cd frontend; npm install; npm run build; cd ..
-
-# 3. 启动服务
-.\.venv\Scripts\python.exe main.py api
+# 后台运行 / 停止
+.\scripts\start-local.ps1 -Background
+.\scripts\stop-local.ps1
 ```
 
 浏览器打开 <http://127.0.0.1:8000>，用 `admin / admin123` 登录（默认密码在 `.env` 的 `ADMIN_PASSWORD` 中维护）。
+
+> 手动步骤等价于：`main.py check-config` → `main.py init-db` → `main.py create-admin` → `frontend` 目录 `npm run build` → `main.py api`。
+> 注意：服务必须在**你自己的终端**里启动。通过隔离环境启动的服务，桌面浏览器可能无法访问 127.0.0.1:8000。
 
 已可用的功能：登录与会话、三级角色权限、审计日志、登录历史、账户管理（新增/改角色/启停/重置密码/踢下线/删除）、运行总览（真实数据来自 `/api/system/status`）。

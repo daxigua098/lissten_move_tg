@@ -340,6 +340,8 @@ onMounted(load);
 .chat-name {
   font-weight: 500;
   margin-right: 6px;
+  word-break: break-word;
+  white-space: normal;
 }
 
 .grow .card-hint {

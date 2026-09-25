@@ -71,6 +71,13 @@ const keywordGroupIds = computed({
     form.b.keyword_ids_text = (value || []).join(",");
   },
 });
+/** 排除词：配置里存的是数组，界面用可增删的标签编辑（每条线路各自一套）。 */
+const excludeWords = computed({
+  get: () => splitLines(form.b.exclude_text),
+  set: (value) => {
+    form.b.exclude_text = (value || []).join(",");
+  },
+});
 /** 线路名留空时用「监听源 → 接收目标」自动命名，避免提交空名字被后端打回。 */
 const suggestedName = computed(() => {
   const picked = form.source_chat_ids
@@ -661,8 +668,23 @@ async function resetProgress(row) {
             <el-checkbox v-model="form.b.match_semantic">语义匹配（有成本）</el-checkbox>
           </div>
         </el-form-item>
-        <el-form-item label="排除词（逗号分隔）">
-          <el-input v-model="form.b.exclude_text" />
+        <el-form-item label="排除词（命中即整条忽略）">
+          <el-select
+            v-model="excludeWords"
+            multiple
+            filterable
+            allow-create
+            default-first-option
+            :reserve-keyword="false"
+            placeholder="输入一个词后按回车，可以加多个"
+            style="width: 100%"
+          >
+            <el-option v-for="word in excludeWords" :key="word" :label="word" :value="word" />
+          </el-select>
+          <p class="card-hint">
+            消息里出现任意一个排除词，整条直接忽略（不记线索、也不推卡片）。默认挡掉机器人、客服、管理；
+            每条线路的排除词各自保存，互不影响。
+          </p>
         </el-form-item>
         <div class="two-cols">
           <el-form-item label="最少字数">

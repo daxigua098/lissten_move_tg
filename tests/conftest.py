@@ -317,6 +317,8 @@ def fake_message(
         video=object() if video else None,
         document=None,
         poll=None,
+        # 真实 Telethon 消息一定有 media 字段（无媒体时为 None），替身要一致
+        media=object() if (photo or video) else None,
         action=None,
         pinned=pinned,
         grouped_id=grouped_id,

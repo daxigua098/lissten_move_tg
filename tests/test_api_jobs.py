@@ -149,6 +149,23 @@ async def test_runtime_control_flow(admin_client, api_config) -> None:
     assert "jobs" in status.json()
 
 
+async def test_runtime_start_skips_when_already_running(admin_client, api_config) -> None:
+    """心跳还活着时不重复拉起进程（避免一个账号被两个运行时抢）。"""
+    from app.core.heartbeat import write_status
+
+    write_status(
+        api_config.path(api_config.runtime.status_file),
+        {"status": "running", "pid": 4321},
+    )
+
+    response = await admin_client.post("/api/runtime/start", headers=_headers())
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["start"]["started"] is False
+    assert body["start"]["reason"] == "already_running"
+
+
 async def test_viewer_cannot_control_runtime(admin_client, api_config) -> None:
     from app.db.session import session_scope as scope
     from app.services import user_service

@@ -229,6 +229,9 @@ async def repost_message(
     caption: str | None,
 ) -> Any:
     """把源消息的媒体重新上传到目标，并替换为净化后的文案。"""
+    if getattr(message, "media", None) is None:
+        # 纯文本消息没有媒体可上传，直接发净化后的文案
+        return await client.send_message(target_entity, caption or "")
     return await client.send_file(
         target_entity,
         file=message,

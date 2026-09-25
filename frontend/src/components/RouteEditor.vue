@@ -87,6 +87,7 @@ function defaults() {
       strip_phone: false,
       promo_text: "",
       transfer_mode: "copy",
+      text_mode: "clean",
       album_aggregate: true,
       ad_policy: "nth",
       ad_nth: 3,
@@ -467,6 +468,16 @@ async function resetProgress(row) {
             <el-checkbox v-model="form.a.album_aggregate">相册合并投递</el-checkbox>
             <el-checkbox v-model="form.a.skip_pinned">跳过置顶消息</el-checkbox>
           </div>
+        </el-form-item>
+        <el-form-item label="文案处理（决定上面这些净化规则是否生效）">
+          <el-radio-group v-model="form.a.text_mode">
+            <el-radio value="clean">clean 净化后重新上传（去掉对方的链接与广告，慢一些）</el-radio>
+            <el-radio value="keep">keep 原文直接转发（快，对方的广告会一起搬过去）</el-radio>
+          </el-radio-group>
+          <p class="card-hint">
+            只有 clean 模式会执行「净化规则」与「推广词黑名单」；keep 模式原样转发，
+            源群带的链接、@提及、广告词都会一起进目标群。
+          </p>
         </el-form-item>
         <el-form-item label="推广词黑名单（一行一个，整行命中即删除）">
           <el-input v-model="form.a.promo_text" type="textarea" :rows="3" />

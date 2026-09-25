@@ -322,6 +322,28 @@ async def set_target_enabled(
     return row
 
 
+async def set_chat_target_enabled_everywhere(
+    session: AsyncSession,
+    chat_id: int,
+    enabled: bool,
+) -> int:
+    """接收组总开关：一次性启停这个群在所有线路上的投递。
+
+    界面上「接收组」页的开关是总开关；线路抽屉里的开关才是单条线路的开关。
+    这里把它们同步，避免出现「界面显示关闭、实际还在收」的错觉。
+    """
+    rows = list(
+        await session.scalars(select(RouteTarget).where(RouteTarget.target_chat_id == chat_id))
+    )
+    changed = 0
+    for row in rows:
+        if row.enabled != enabled:
+            row.enabled = enabled
+            changed += 1
+    await session.commit()
+    return changed
+
+
 async def ensure_progress(
     session: AsyncSession,
     route_id: int,

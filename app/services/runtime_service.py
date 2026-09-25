@@ -8,15 +8,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
 from app.core.config import AppConfig
 from app.core.content_cleaner import CleanRules, clean_text, filter_reason, resolve_caption
-from app.core.heartbeat import write_status
+from app.core.heartbeat import heartbeat_age_seconds, read_status, write_status
 from app.core.route_config import load_a_config
-from app.core.runtime_control import is_paused, is_stop_requested
+from app.core.runtime_control import is_paused, is_stop_requested, set_paused, set_stop_requested
 from app.core.runtime_lock import RuntimeLock, RuntimeLockError
 from app.core.telegram_client import message_view_from_telethon, resolve_entity
 from app.db.models import (
@@ -329,11 +333,126 @@ class RuntimeService:
 
 async def runtime_status(config: AppConfig) -> dict[str, Any]:
     """读取运行时状态（供 CLI status 使用）。"""
-    from app.core.heartbeat import heartbeat_age_seconds, read_status
-
     status = read_status(config.path(config.runtime.status_file))
     return {
         "status": (status or {}).get("status", "stopped"),
         "heartbeat_age_seconds": heartbeat_age_seconds(status),
         "raw": status,
     }
+
+
+# 心跳超过这个秒数就认为运行时已经死了
+RUNTIME_STALE_SECONDS = 30
+
+
+def _runtime_is_alive(config: AppConfig) -> bool:
+    """心跳还在跳，说明运行时进程活着。"""
+    status = read_status(config.path(config.runtime.status_file))
+    if not status or status.get("status") != "running":
+        return False
+    age = heartbeat_age_seconds(status)
+    return age is not None and age < RUNTIME_STALE_SECONDS
+
+
+async def start_runtime_process(
+    config: AppConfig,
+    *,
+    wait_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """在后台拉起搬运运行时（等价于 `python main.py run`）。
+
+    两个关键点：
+    1. 启动前必须清掉上一次的停止/暂停标记，否则新进程会立刻退出；
+    2. 启动后等心跳出现再返回，避免界面显示"已启动"但进程其实起不来。
+    """
+    status_path = config.path(config.runtime.status_file)
+    control_path = config.path(config.runtime.control_file)
+    if _runtime_is_alive(config):
+        status = read_status(status_path) or {}
+        return {"started": False, "reason": "already_running", "pid": status.get("pid")}
+
+    set_stop_requested(control_path, False)
+    set_paused(control_path, False)
+
+    err_path = Path(config.project_root) / "data" / "runtime.stderr.log"
+    # Popen 是阻塞调用，丢到线程里执行，别卡住事件循环
+    process = await asyncio.to_thread(_spawn_runtime, config)
+
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if _runtime_is_alive(config):
+            return {"started": True, "pid": process.pid}
+        if process.poll() is not None:
+            tail = _tail_text(err_path)
+            return {
+                "started": False,
+                "reason": "exited",
+                "pid": process.pid,
+                "hint": tail or "运行时启动后立刻退出，请查看 data/runtime.stderr.log",
+            }
+        await asyncio.sleep(0.5)
+
+    return {
+        "started": False,
+        "reason": "timeout",
+        "pid": process.pid,
+        "hint": "运行时进程已拉起，但还没写出心跳；稍等几秒刷新看看",
+    }
+
+
+async def restart_runtime_process(
+    config: AppConfig,
+    *,
+    wait_seconds: float = 15.0,
+) -> dict[str, Any]:
+    """重启运行时：改完线路/目标后用它让配置生效。"""
+    control_path = config.path(config.runtime.control_file)
+    if not _runtime_is_alive(config):
+        return await start_runtime_process(config, wait_seconds=wait_seconds)
+
+    set_stop_requested(control_path, True)
+    set_paused(control_path, True)
+    deadline = asyncio.get_running_loop().time() + wait_seconds
+    while asyncio.get_running_loop().time() < deadline:
+        if not _runtime_is_alive(config):
+            break
+        await asyncio.sleep(0.5)
+    return await start_runtime_process(config)
+
+
+def _tail_text(path: Path, limit: int = 400) -> str:
+    """读取文件末尾内容，用于把启动失败原因带回界面。"""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    text = text.strip()
+    return text[-limit:] if text else ""
+
+
+def _spawn_runtime(config: AppConfig) -> subprocess.Popen:
+    """同步拉起运行时进程（由 start_runtime_process 放进线程执行）。"""
+    root = Path(config.project_root)
+    data_dir = root / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    out_path = data_dir / "runtime.stdout.log"
+    err_path = data_dir / "runtime.stderr.log"
+
+    creationflags = 0
+    new_session = True
+    if os.name == "nt":  # pragma: no cover - Windows 分支
+        creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        new_session = False
+
+    with out_path.open("ab") as out, err_path.open("ab") as err:
+        process = subprocess.Popen(  # noqa: S603 - 命令固定，参数不来自外部输入
+            [sys.executable, "main.py", "run"],
+            cwd=str(root),
+            stdin=subprocess.DEVNULL,
+            stdout=out,
+            stderr=err,
+            creationflags=creationflags,
+            start_new_session=new_session,
+        )
+    (data_dir / "runtime.pid").write_text(str(process.pid), encoding="utf-8")
+    return process

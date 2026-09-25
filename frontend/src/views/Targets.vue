@@ -82,6 +82,15 @@ async function removeSelected() {
 async function updateTarget(row, payload) {
   try {
     await targetsApi.update(row.id, payload);
+    if (payload.enabled !== undefined) {
+      ElMessage.success(
+        payload.enabled
+          ? `已开启「${row.name}」的投递`
+          : `已停用「${row.name}」在所有线路上的投递`,
+      );
+    } else if (payload.role !== undefined) {
+      ElMessage.success("用途已更新");
+    }
   } catch (error) {
     ElMessage.error(error.message);
     load();
@@ -264,6 +273,10 @@ onMounted(load);
       <p class="card-hint role-note">
         用途只是分类标签，不会限制投递：真正决定"发到哪个群"的是线路里勾选的接收目标。
         同一个群今天当内容落点、明天又可以挂到 B 线，改这个下拉即可。
+      </p>
+      <p class="card-hint role-note">
+        列表里的开关是<b>总开关</b>：关掉会同时停用这个群在<b>所有线路</b>上的投递；
+        只想停某一条线路，去「线路管理」里关那条线路的目标开关。
       </p>
     </el-card>
   </div>

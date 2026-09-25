@@ -312,3 +312,36 @@ async def test_create_route_with_blank_name_returns_readable_error(
     assert body["detail"] == "参数校验失败：名称不能为空"
     # 原始定位仍保留在 issues 里，便于排查
     assert body["issues"][0]["location"] == "body.name"
+
+
+async def test_target_switch_disables_delivery_in_all_routes(
+    chat_client,
+    fake_account_client,
+) -> None:
+    """接收组页的开关是总开关：关掉后所有线路上的该目标都要停。"""
+    ids = await _prepare(chat_client, fake_account_client)
+    created = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "源 → 主频道",
+            "source_chat_id": ids["source"],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    route_id = created.json()["id"]
+    detail = (await chat_client.get(f"/api/routes/{route_id}", headers=_headers())).json()
+    assert detail["targets"][0]["enabled"] is True
+
+    patched = await chat_client.patch(
+        f"/api/targets/{ids['main']}",
+        headers=_headers(),
+        json={"enabled": False},
+    )
+
+    assert patched.status_code == 200
+    assert patched.json()["target_enabled"] is False
+    detail = (await chat_client.get(f"/api/routes/{route_id}", headers=_headers())).json()
+    assert detail["targets"][0]["enabled"] is False

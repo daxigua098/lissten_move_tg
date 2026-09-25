@@ -149,6 +149,8 @@ export const jobsApi = {
 
 export const runtimeApi = {
   status: () => http.get("/api/runtime/status"),
+  start: () => http.post("/api/runtime/start"),
+  restart: () => http.post("/api/runtime/restart"),
   pause: () => http.post("/api/runtime/pause"),
   resume: () => http.post("/api/runtime/resume"),
   stop: () => http.post("/api/runtime/stop"),

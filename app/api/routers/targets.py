@@ -13,7 +13,7 @@ from app.api.schemas.chat import TagBatchRequest, TargetAddRequest, TargetUpdate
 from app.core.config import AppConfig
 from app.core.errors import NotFoundError
 from app.db.models import ROLE_SUB_ADMIN
-from app.services import chat_service, chat_sync_service
+from app.services import chat_service, chat_sync_service, route_service
 
 router = APIRouter(
     prefix="/api/targets",
@@ -142,10 +142,21 @@ async def update_target(
         chat.display_name = payload.display_name.strip() or None
     if payload.enabled is not None:
         chat.target_enabled = payload.enabled
+        # 总开关：同步到所有线路上的该目标，不然界面显示关闭、实际还在投递
+        await route_service.set_chat_target_enabled_everywhere(
+            session,
+            chat.id,
+            payload.enabled,
+        )
     if payload.role is not None:
         chat = await chat_service.set_target(session, chat, role=payload.role, enabled=True)
         if payload.enabled is not None:
             chat.target_enabled = payload.enabled
+            await route_service.set_chat_target_enabled_everywhere(
+                session,
+                chat.id,
+                payload.enabled,
+            )
     if payload.tags is not None:
         chat.tags = chat_service.dump_tags(payload.tags)
     if payload.note is not None:

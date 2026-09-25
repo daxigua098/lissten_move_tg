@@ -15,6 +15,7 @@ from app.core.telegram_client import (
     fetch_dialog_entities,
     fetch_dialogs,
     is_group_or_channel,
+    repost_message,
     resolve_entity,
     warm_entity_cache,
 )
@@ -289,3 +290,37 @@ async def test_connect_does_not_retry_other_errors(monkeypatch, no_sleep) -> Non
         await telegram_client.connect_user_client(
             None, api_id=1, api_hash="x" * 32, session_path="data/sessions/demo"
         )
+
+
+class RepostClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, ...]] = []
+
+    async def send_message(self, target: object, text: str):
+        self.calls.append(("message", target, text))
+        return "sent"
+
+    async def send_file(self, target: object, *, file: object, caption: str | None):
+        self.calls.append(("file", target, caption))
+        return "sent"
+
+
+async def test_repost_message_handles_text_only_messages() -> None:
+    """clean 模式下纯文本没有媒体可传：直接发净化后的文案，而不是报错。"""
+    client = RepostClient()
+
+    await repost_message(
+        client,
+        target_entity="T",
+        message=SimpleNamespace(media=None),
+        caption="净化后的文案",
+    )
+    assert client.calls == [("message", "T", "净化后的文案")]
+
+    await repost_message(
+        client,
+        target_entity="T",
+        message=SimpleNamespace(media=object()),
+        caption="带图的文案",
+    )
+    assert client.calls[1] == ("file", "T", "带图的文案")

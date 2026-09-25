@@ -16,7 +16,7 @@ from app.core.runtime_control import (
     set_stop_requested,
 )
 from app.db.models import ROLE_SUB_ADMIN
-from app.services import delivery_service
+from app.services import delivery_service, runtime_service
 
 router = APIRouter(prefix="/api/runtime", tags=["runtime"])
 
@@ -59,6 +59,28 @@ async def pause(
     config: AppConfig = request.app.state.config
     set_paused(config.path(config.runtime.control_file), True)
     return await _snapshot(config, session)
+
+
+@router.post("/start", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+async def start(
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """启动搬运运行时（后台独立进程）。"""
+    config: AppConfig = request.app.state.config
+    result = await runtime_service.start_runtime_process(config)
+    return {**await _snapshot(config, session), "start": result}
+
+
+@router.post("/restart", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+async def restart(
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """重启搬运运行时：改完线路或接收目标后，用它让配置生效。"""
+    config: AppConfig = request.app.state.config
+    result = await runtime_service.restart_runtime_process(config)
+    return {**await _snapshot(config, session), "start": result}
 
 
 @router.post("/resume", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])

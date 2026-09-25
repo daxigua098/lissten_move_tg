@@ -2,10 +2,11 @@
 import { ElMessage } from "element-plus";
 import { computed, onMounted, ref } from "vue";
 
-import { logsApi } from "../api";
+import { logsApi, runtimeApi } from "../api";
 import { auth } from "../stores/auth";
 
 const loading = ref(false);
+const busy = ref(false);
 const status = ref(null);
 
 async function load() {
@@ -36,6 +37,34 @@ const heartbeatText = computed(() => {
   if (age === null || age === undefined) return "-";
   return `${Math.round(age)} 秒前`;
 });
+
+const isPaused = computed(() => Boolean(status.value?.runtime?.paused));
+
+async function act(action) {
+  busy.value = true;
+  try {
+    const { data } = await runtimeApi[action]();
+    if (action === "start" || action === "restart") {
+      const info = data.start || {};
+      if (info.started) {
+        ElMessage.success(`运行时已启动（PID ${info.pid}）`);
+      } else if (info.reason === "already_running") {
+        ElMessage.info("运行时已经在运行了");
+      } else {
+        ElMessage.error(info.hint || "运行时启动失败，详见 data/runtime.stderr.log");
+      }
+    } else {
+      ElMessage.success(
+        { pause: "已暂停投递", resume: "已恢复投递", stop: "已请求停止运行时" }[action] || "已执行",
+      );
+    }
+    await load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    busy.value = false;
+  }
+}
 </script>
 
 <template>
@@ -78,6 +107,24 @@ const heartbeatText = computed(() => {
         </el-card>
       </el-col>
     </el-row>
+
+    <el-card shadow="never" class="panel">
+      <template #header>
+        <span>运行时控制</span>
+      </template>
+      <div class="runtime-actions">
+        <el-button type="primary" :loading="busy" @click="act('start')">启动</el-button>
+        <el-button :loading="busy" @click="act('restart')">重启</el-button>
+        <el-button :loading="busy" @click="act(isPaused ? 'resume' : 'pause')">
+          {{ isPaused ? "恢复投递" : "暂停投递" }}
+        </el-button>
+        <el-button type="danger" plain :loading="busy" @click="act('stop')">停止</el-button>
+        <span class="card-hint">心跳 {{ heartbeatText }}</span>
+      </div>
+      <p class="card-hint runtime-note">
+        运行时不热加载配置：改完线路、接收目标或广告策略后，点「重启」才生效。
+      </p>
+    </el-card>
 
     <el-card shadow="never" class="panel">
       <template #header>
@@ -126,5 +173,16 @@ const heartbeatText = computed(() => {
 
 .panel {
   margin-top: 12px;
+}
+
+.runtime-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.runtime-note {
+  margin: 10px 0 0;
 }
 </style>

@@ -41,6 +41,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "LOG_LEVEL": ("logging", "level"),
     "TG_API_ID": ("telegram", "api_id"),
     "TG_API_HASH": ("telegram", "api_hash"),
+    "TG_ADMIN_IDS": ("telegram", "admin_ids"),
     "DEMO_MODE": ("app", "demo_mode"),
 }
 
@@ -116,6 +117,17 @@ class TelegramSection(BaseModel):
     api_id: int = Field(default=0, ge=0)
     api_hash: str = ""
     proxy: str | None = None
+    # 默认管理员 TG 用户 ID：绑定控制 Bot 时若未单独指定就用这里
+    admin_ids: list[int] = Field(default_factory=list)
+
+    @field_validator("admin_ids", mode="before")
+    @classmethod
+    def _parse_admin_ids(cls, value: object) -> object:
+        """支持 `123,456` 这种逗号分隔写法（.env 里只能写字符串）。"""
+        if isinstance(value, str):
+            parts = value.replace("，", ",").replace(" ", ",").split(",")
+            return [int(item) for item in parts if item.strip().isdigit()]
+        return value
 
     @property
     def configured(self) -> bool:
@@ -379,6 +391,10 @@ def config_summary(config: AppConfig) -> list[tuple[str, str]]:
         (
             "Telegram API",
             "已配置" if config.telegram.configured else "未配置（绑定账号与校验 Bot 需要）",
+        ),
+        (
+            "Bot 管理员",
+            ", ".join(str(item) for item in config.telegram.admin_ids) or "未配置",
         ),
         ("配置文件", str(config.config_path) if config.config_path else "未找到，使用默认值"),
         ("环境文件", str(config.env_path) if config.env_path else "未找到"),

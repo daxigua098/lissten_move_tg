@@ -194,7 +194,7 @@ onMounted(load);
         <el-form-item :label="editingId ? 'Bot Token（留空表示不修改）' : 'Bot Token'">
           <el-input v-model="form.token" show-password placeholder="123456:ABC-DEF..." />
         </el-form-item>
-        <el-form-item label="管理员 TG 用户 ID（逗号分隔）">
+        <el-form-item label="管理员 TG 用户 ID（逗号分隔；留空则用 .env 里的 TG_ADMIN_IDS）">
           <el-input v-model="form.admin_ids" placeholder="123456789, 987654321" />
         </el-form-item>
         <el-form-item label="备注（可选）">

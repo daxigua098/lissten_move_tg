@@ -106,3 +106,15 @@ async def test_duplicate_bot_name_is_rejected(bot_client) -> None:
 
     assert duplicate.status_code == 409
     assert duplicate.json()["code"] == "USER_EXISTS"
+
+
+async def test_bot_uses_default_admin_ids_from_config(bot_client, api_config) -> None:
+    """没单独填管理员时，自动带上 .env 里配置的默认管理员 ID。"""
+    api_config.telegram.admin_ids = [555000111, 555000222]
+
+    payload = _payload()
+    payload.pop("admin_ids")
+    response = await bot_client.post("/api/bots", headers=_headers(), json=payload)
+
+    assert response.status_code == 201
+    assert response.json()["admin_ids"] == [555000111, 555000222]

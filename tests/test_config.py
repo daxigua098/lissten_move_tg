@@ -264,3 +264,28 @@ def test_absolute_database_url_keeps_other_urls(project_root) -> None:
 
     assert absolute_database_url(memory) == "sqlite+aiosqlite:///:memory:"
     assert absolute_database_url(postgres).startswith("postgresql+asyncpg://")
+
+
+def test_telegram_credentials_from_env(project_root) -> None:
+    config = load_config(
+        project_root=project_root,
+        environ={
+            "TG_API_ID": "1234567",
+            "TG_API_HASH": "0123456789abcdef0123456789abcdef",
+            "TG_ADMIN_IDS": "123456789, 987654321",
+        },
+    )
+
+    assert config.telegram.api_id == 1234567
+    assert config.telegram.configured is True
+    assert config.telegram.admin_ids == [123456789, 987654321]
+
+
+def test_telegram_admin_ids_accept_chinese_comma(project_root) -> None:
+    config = load_config(
+        project_root=project_root,
+        environ={"TG_ADMIN_IDS": "111，222 333"},
+    )
+
+    assert config.telegram.admin_ids == [111, 222, 333]
+    assert config.telegram.configured is False

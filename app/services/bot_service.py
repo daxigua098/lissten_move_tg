@@ -128,13 +128,15 @@ async def create_bot(
 
     profile = await validate_bot_token(config, token, client_factory=client_factory)
     cipher = FieldCipher.from_config(config)
+    # 未显式指定管理员时，用配置里的默认管理员 ID
+    resolved_admin_ids = admin_ids if admin_ids else list(config.telegram.admin_ids)
 
     bot = ControlBot(
         name=alias,
         bot_username=profile.username,
         bot_telegram_id=profile.tg_user_id,
         token_enc=cipher.encrypt(token.strip()),
-        admin_ids=dump_admin_ids(admin_ids),
+        admin_ids=dump_admin_ids(resolved_admin_ids),
         is_default=False,
         enabled=True,
         note=(note or "").strip() or None,

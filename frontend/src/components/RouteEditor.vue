@@ -2,7 +2,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, reactive, ref, watch } from "vue";
 
-import { adAssetsApi, routesApi } from "../api";
+import { adAssetsApi, keywordsApi, routesApi } from "../api";
 import {
   collectRoleMismatches,
   targetRoleFullLabel,
@@ -21,6 +21,7 @@ const emit = defineEmits(["update:modelValue", "saved"]);
 const loading = ref(false);
 const saving = ref(false);
 const assets = ref([]);
+const keywordGroups = ref([]);
 const detailTargets = ref([]);
 const addingTargetIds = ref([]);
 const form = reactive({
@@ -53,6 +54,13 @@ const targetRoleWarnings = computed(() =>
 const adAssetMissing = computed(
   () => form.business_type === "A" && form.a.ad_policy !== "none" && !form.a.ad_asset_id,
 );
+/** 关键词组在配置里存成逗号分隔的 ID，界面上给人看的是组名多选。 */
+const keywordGroupIds = computed({
+  get: () => splitIds(form.b.keyword_ids_text),
+  set: (value) => {
+    form.b.keyword_ids_text = (value || []).join(",");
+  },
+});
 /** 线路名留空时用「监听源 → 接收目标」自动命名，避免提交空名字被后端打回。 */
 const suggestedName = computed(() => {
   const source = props.sources.find((item) => item.id === form.source_chat_id);
@@ -187,6 +195,15 @@ async function loadAssets() {
   }
 }
 
+async function loadKeywordGroups() {
+  try {
+    const { data } = await keywordsApi.list();
+    keywordGroups.value = data.items;
+  } catch {
+    keywordGroups.value = [];
+  }
+}
+
 async function loadDetail() {
   loading.value = true;
   try {
@@ -204,6 +221,7 @@ watch(
   async ([open, routeId]) => {
     if (!open) return;
     await loadAssets();
+    await loadKeywordGroups();
     if (routeId) {
       await loadDetail();
     } else {
@@ -571,12 +589,27 @@ async function resetProgress(row) {
             <el-radio value="keyword">仅关键词命中（推线索卡片）</el-radio>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="关键词组 ID（逗号分隔；词库页在二期交付）">
-          <el-input
-            v-model="form.b.keyword_ids_text"
-            placeholder="例如：1,2"
-            :disabled="form.b.listen_mode !== 'keyword'"
-          />
+        <el-form-item label="关键词组（在「关键词词库」页维护）">
+          <el-select
+            v-model="keywordGroupIds"
+            multiple
+            collapse-tags
+            placeholder="不选=所有启用的关键词都参与匹配"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in keywordGroups"
+              :key="item.id"
+              :label="`${item.name}（${item.keyword_count} 个词）`"
+              :value="item.id"
+            />
+          </el-select>
+          <p class="card-hint">
+            命中组里任意一个词（含别名）就算线索；全量监听时也会用这些词判断要不要推卡片。
+            <span v-if="!keywordGroups.length">
+              还没有词组，先去「关键词词库」页导入预置别名库。
+            </span>
+          </p>
         </el-form-item>
         <el-form-item label="敏感度">
           <el-radio-group v-model="form.b.sensitivity">

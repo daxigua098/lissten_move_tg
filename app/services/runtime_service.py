@@ -17,20 +17,36 @@ from typing import Any
 from loguru import logger
 
 from app.core.config import AppConfig
-from app.core.content_cleaner import CleanRules, clean_text, filter_reason, resolve_caption
+from app.core.content_cleaner import (
+    KIND_SERVICE,
+    CleanRules,
+    clean_text,
+    filter_reason,
+    resolve_caption,
+)
 from app.core.heartbeat import heartbeat_age_seconds, read_status, write_status
-from app.core.route_config import load_a_config
+from app.core.keyword_matcher import match_text
+from app.core.lead_extractor import extract_contacts, render_lead_card, sender_info
+from app.core.route_config import load_a_config, load_b_config
 from app.core.runtime_control import is_paused, is_stop_requested, set_paused, set_stop_requested
 from app.core.runtime_lock import RuntimeLock, RuntimeLockError
 from app.core.telegram_client import message_view_from_telethon, resolve_entity
 from app.db.models import (
     ACCOUNT_ACTIVE,
     BUSINESS_CARRY,
+    BUSINESS_MONITOR,
+    LISTEN_MODE_ALL,
     Chat,
     Route,
 )
 from app.db.session import session_scope
-from app.services import delivery_service, history_service, tg_account_service
+from app.services import (
+    delivery_service,
+    history_service,
+    keyword_service,
+    lead_service,
+    tg_account_service,
+)
 
 
 class RuntimeService:
@@ -50,6 +66,9 @@ class RuntimeService:
         self.heartbeat_seconds = heartbeat_seconds or config.runtime.heartbeat_seconds
         self._lock = RuntimeLock(config.path(config.runtime.lock_file))
         self._stop = False
+        # 管理员 ID 缓存：跳过管理员这条规则不该每条消息都去查一次群成员
+        self._admin_cache: dict[int, set[int]] = {}
+        self._last_purge_at = float("-inf")
 
     @property
     def control_path(self):
@@ -74,7 +93,12 @@ class RuntimeService:
             if client is None:
                 client = await self._open_client()
             handlers = await self._register_handlers(client)
-            logger.info("实时监听已启动，覆盖 {} 条 A 线", handlers)
+            logger.info(
+                "实时监听已启动：{} 个源（A 线 {} 条 / B 线 {} 条）",
+                handlers["sources"],
+                handlers["carry"],
+                handlers["monitor"],
+            )
             await self._publish(status="running", extra={"routes": handlers})
             await self._loop(client)
         finally:
@@ -127,31 +151,25 @@ class RuntimeService:
         )
 
     async def _register_handlers(self, client: Any) -> int:
-        """给每条启用的 A 线源注册新消息监听。"""
+        """给每条启用的线路源注册新消息监听（A 线搬运 + B 线监听共用一次注册）。"""
         from telethon import events
 
         async with session_scope() as session:
             from sqlalchemy import select
 
-            records = list(
-                await session.scalars(
-                    select(Route).where(
-                        Route.business_type == BUSINESS_CARRY,
-                        Route.enabled.is_(True),
-                    )
-                )
-            )
-            sources: dict[int, list[Route]] = {}
+            records = list(await session.scalars(select(Route).where(Route.enabled.is_(True))))
+            sources: dict[int, dict[str, list[Route]]] = {}
             for route in records:
-                sources.setdefault(route.source_chat_id, []).append(route)
-            source_entities = {}
+                bucket = sources.setdefault(route.source_chat_id, {"A": [], "B": []})
+                bucket.setdefault(route.business_type, []).append(route)
+            source_entities: dict[int, int] = {}
             for chat_id in sources:
                 chat = await session.get(Chat, chat_id)
                 if chat is not None and chat.tg_id:
                     source_entities[chat_id] = int(chat.tg_id)
 
-        count = 0
-        for chat_id, route_list in sources.items():
+        counts = {"sources": 0, "carry": 0, "monitor": 0}
+        for chat_id, buckets in sources.items():
             tg_id = source_entities.get(chat_id)
             if not tg_id:
                 continue
@@ -161,12 +179,27 @@ class RuntimeService:
                 logger.warning("监听源 {} 解析失败：{}", chat_id, exc)
                 continue
 
-            async def handler(event: Any, routes=route_list) -> None:  # noqa: ANN001
-                await self._on_new_message(event, routes)
+            carry_routes = buckets.get(BUSINESS_CARRY) or []
+            monitor_routes = buckets.get(BUSINESS_MONITOR) or []
 
-            client.add_event_handler(handler, events.NewMessage(chats=entity))
-            count += 1
-        return count
+            if carry_routes:
+
+                async def carry_handler(event: Any, routes=carry_routes) -> None:  # noqa: ANN001
+                    await self._on_new_message(event, routes)
+
+                client.add_event_handler(carry_handler, events.NewMessage(chats=entity))
+                counts["carry"] += len(carry_routes)
+
+            if monitor_routes:
+
+                async def monitor_handler(event: Any, routes=monitor_routes) -> None:  # noqa: ANN001
+                    await self._on_monitor_message(client, event, routes)
+
+                client.add_event_handler(monitor_handler, events.NewMessage(chats=entity))
+                counts["monitor"] += len(monitor_routes)
+
+            counts["sources"] += 1
+        return counts
 
     async def _on_new_message(self, event: Any, routes: list[Route]) -> None:
         """实时消息入队。"""
@@ -207,6 +240,227 @@ class RuntimeService:
                     )
                 logger.info("源消息 {} 已入队（线路 {}）", view.message_id, fresh.name)
 
+    async def _on_monitor_message(
+        self,
+        client: Any,
+        event: Any,
+        routes: list[Route],
+    ) -> None:
+        """B 线：监听会员发言 → 命中关键词就落线索（按配置决定是否推卡片）。"""
+        message = event.message
+        view = message_view_from_telethon(message)
+        if view.kind == KIND_SERVICE:
+            return
+        text = (view.text or "").strip()
+        if not text:
+            return
+        sender = sender_info(getattr(message, "sender", None))
+
+        async with session_scope() as session:
+            for route in routes:
+                fresh = await session.get(Route, route.id)
+                if fresh is None or not fresh.enabled:
+                    continue
+                config = load_b_config(fresh.b_config)
+                if config.skip_bots and sender.is_bot:
+                    continue
+                if sender.tg_user_id and config.sender_blacklist:
+                    if sender.tg_user_id in config.sender_blacklist:
+                        continue
+                if config.sender_whitelist and sender.tg_user_id not in config.sender_whitelist:
+                    continue
+                if len(text) < config.min_text_length:
+                    continue
+
+                source_chat = await session.get(Chat, fresh.source_chat_id)
+                if source_chat is None or not source_chat.tg_id:
+                    continue
+                if config.skip_admins and await self._is_admin(
+                    client,
+                    chat_id=fresh.source_chat_id,
+                    tg_id=int(source_chat.tg_id),
+                    user_id=sender.tg_user_id,
+                ):
+                    continue
+
+                entries = await keyword_service.load_entries(
+                    session,
+                    config.keyword_group_ids or None,
+                )
+                hits = match_text(
+                    text,
+                    entries,
+                    sensitivity=config.sensitivity,
+                    match_contains=config.match_contains,
+                    match_fuzzy=config.match_fuzzy,
+                    exclude=tuple(config.exclude_keywords),
+                )
+                hit = hits[0] if hits else None
+                if hit is None and config.listen_mode != LISTEN_MODE_ALL:
+                    continue
+                if hit is not None and await lead_service.recent_lead_exists(
+                    session,
+                    route_id=fresh.id,
+                    sender_tg_id=sender.tg_user_id,
+                    keyword=hit.keyword,
+                    minutes=config.hit_cooldown_minutes,
+                ):
+                    continue
+
+                source_title = (
+                    source_chat.display_name or source_chat.title or source_chat.username or ""
+                )
+                contacts = extract_contacts(
+                    text,
+                    capture_phone=config.capture_phone,
+                    capture_contact=config.capture_contact,
+                )
+                lead = await lead_service.record_lead(
+                    session,
+                    route_id=fresh.id,
+                    source_chat_id=fresh.source_chat_id,
+                    message_id=view.message_id,
+                    message_at=view.date,
+                    sender=sender,
+                    contacts=contacts,
+                    keyword=hit.keyword if hit else None,
+                    keyword_group_id=hit.group_id if hit else None,
+                    matched_mode=hit.mode if hit else "",
+                    score=hit.score if hit else 0.0,
+                    text=text,
+                    source_title=source_title,
+                )
+                await lead_service.upsert_member(session, sender, seen_at=view.date)
+                logger.info(
+                    "监听到发言：{}（线路 {}，命中 {}）",
+                    sender.display_name or sender.tg_user_id,
+                    fresh.name,
+                    hit.keyword if hit else "无（全量入库）",
+                )
+
+                # 全量监听默认只入库不刷屏；命中关键词或显式打开时才推卡片
+                if hit is None and not config.push_card_on_all:
+                    continue
+                await self._push_lead_card(
+                    client,
+                    session,
+                    route=fresh,
+                    config=config,
+                    lead=lead,
+                    sender=sender,
+                    contacts=contacts,
+                    keyword=hit.keyword if hit else "",
+                    source_title=source_title,
+                    message_at=view.date,
+                    text=text,
+                )
+
+    async def _is_admin(
+        self,
+        client: Any,
+        *,
+        chat_id: int,
+        tg_id: int,
+        user_id: int | None,
+    ) -> bool:
+        """发送者是不是这个群的管理员（按源缓存成员列表，避免每条消息都查）。"""
+        if not user_id:
+            return False
+        cached = self._admin_cache.get(chat_id)
+        if cached is None:
+            cached = await self._load_admin_ids(client, chat_id=chat_id, tg_id=tg_id)
+        return user_id in cached
+
+    async def _load_admin_ids(self, client: Any, *, chat_id: int, tg_id: int) -> set[int]:
+        ids: set[int] = set()
+        try:
+            from telethon.tl.types import ChannelParticipantsAdmins
+
+            entity = await resolve_entity(client, tg_id)
+            async for participant in client.iter_participants(
+                entity,
+                filter=ChannelParticipantsAdmins,
+            ):
+                participant_id = getattr(participant, "id", None)
+                if participant_id:
+                    ids.add(int(participant_id))
+        except Exception as exc:  # noqa: BLE001 - 拿不到就当没有管理员规则
+            logger.debug("读取管理员列表失败（本次不跳过管理员）：{}", exc)
+        self._admin_cache[chat_id] = ids
+        return ids
+
+    async def _push_lead_card(
+        self,
+        client: Any,
+        session: Any,
+        *,
+        route: Route,
+        config: Any,
+        lead: Any,
+        sender: Any,
+        contacts: Any,
+        keyword: str,
+        source_title: str,
+        message_at: Any,
+        text: str,
+    ) -> None:
+        """把线索卡片推到这条线路的接收目标。"""
+        target_ids = await history_service.route_target_chat_ids(session, route.id)
+        if not target_ids:
+            logger.warning("线索 #{} 没有接收目标，先在线路里加一个", lead.id)
+            return
+        card = render_lead_card(
+            config.lead_template,
+            sender=sender,
+            contacts=contacts,
+            keyword=keyword,
+            text=text,
+            source_title=source_title,
+            message_at=message_at,
+            capture_phone=config.capture_phone,
+            capture_contact=config.capture_contact,
+        )
+        pushed = 0
+        for chat_id in target_ids:
+            target_chat = await session.get(Chat, chat_id)
+            if target_chat is None or not target_chat.tg_id:
+                continue
+            try:
+                target_entity = await resolve_entity(client, int(target_chat.tg_id))
+                result = await client.send_message(target_entity, card)
+            except Exception as exc:  # noqa: BLE001 - 单个目标失败不影响其他目标
+                logger.warning("线索卡片推送失败（目标 {}）：{}", chat_id, exc)
+                continue
+            await lead_service.mark_delivered(
+                session,
+                lead,
+                target_chat_id=chat_id,
+                target_message_id=getattr(result, "id", None),
+            )
+            pushed += 1
+        if pushed:
+            logger.info("线索 #{} 已推送到 {} 个目标", lead.id, pushed)
+
+    async def _purge(self) -> None:
+        """按保留策略清理到期线索与会员档案（线索删除前先归档）。"""
+        try:
+            async with session_scope() as session:
+                result = await lead_service.purge_expired(
+                    session,
+                    leads_days=self.config.retention.leads_days,
+                    profiles_days=self.config.retention.member_profiles_days,
+                    archive_dir=self.config.path("data/archive"),
+                )
+            if result["leads"] or result["profiles"]:
+                logger.info(
+                    "保留策略清理：线索 {} 条（归档 {} 条）、会员档案 {} 条",
+                    result["leads"],
+                    result["archived"],
+                    result["profiles"],
+                )
+        except Exception as exc:  # noqa: BLE001 - 清理失败不影响监听
+            logger.warning("保留策略清理失败：{}", exc)
+
     async def _loop(self, client: Any) -> None:
         """心跳 + 串行投递循环，直到收到停止请求。"""
         last_heartbeat = 0.0
@@ -217,6 +471,12 @@ class RuntimeService:
             if is_paused(self.control_path):
                 await asyncio.sleep(self.poll_interval)
                 continue
+
+            now = asyncio.get_running_loop().time()
+            if now - self._last_purge_at >= 3600:
+                self._last_purge_at = now
+                await self._purge()
+
             try:
                 delivered = await self._deliver_once(client)
             except Exception as exc:  # noqa: BLE001 - 单次循环异常不应终止进程

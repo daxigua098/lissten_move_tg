@@ -155,3 +155,26 @@ export const runtimeApi = {
   resume: () => http.post("/api/runtime/resume"),
   stop: () => http.post("/api/runtime/stop"),
 };
+
+export const keywordsApi = {
+  list: () => http.get("/api/keyword-groups"),
+  seed: () => http.post("/api/keyword-groups/seed"),
+  create: (payload) => http.post("/api/keyword-groups", payload),
+  update: (id, payload) => http.patch(`/api/keyword-groups/${id}`, payload),
+  remove: (id) => http.delete(`/api/keyword-groups/${id}`),
+  addKeyword: (groupId, payload) => http.post(`/api/keyword-groups/${groupId}/keywords`, payload),
+  updateKeyword: (id, payload) => http.patch(`/api/keywords/${id}`, payload),
+  removeKeyword: (id) => http.delete(`/api/keywords/${id}`),
+  match: (payload) => http.post("/api/keyword-groups/match", payload),
+};
+
+export const leadsApi = {
+  list: (params) => http.get("/api/leads", { params }),
+  stats: () => http.get("/api/leads/stats"),
+  exportUrl: (params) => {
+    const query = new URLSearchParams(
+      Object.entries(params || {}).filter(([, value]) => value !== undefined && value !== null && value !== ""),
+    );
+    return `/api/leads/export.csv?${query.toString()}`;
+  },
+};

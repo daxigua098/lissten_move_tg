@@ -11,6 +11,15 @@ from app.db.models.job import (
     JOB_SUCCESS,
     DeliveryJob,
 )
+from app.db.models.lead import (
+    MATCH_CONTAINS,
+    MATCH_FUZZY,
+    MATCH_MODES,
+    Keyword,
+    KeywordGroup,
+    Lead,
+    MemberProfile,
+)
 from app.db.models.route import (
     AD_POLICIES,
     AD_POLICY_EVERY,
@@ -99,6 +108,9 @@ __all__ = [
     "LISTEN_MODE_ALL",
     "LISTEN_MODE_KEYWORD",
     "LISTEN_MODES",
+    "MATCH_CONTAINS",
+    "MATCH_FUZZY",
+    "MATCH_MODES",
     "ROLE_RANK",
     "ROLE_SUB_ADMIN",
     "ROLE_SUPER_ADMIN",
@@ -121,6 +133,10 @@ __all__ = [
     "Chat",
     "ControlBot",
     "LoginHistory",
+    "Keyword",
+    "KeywordGroup",
+    "Lead",
+    "MemberProfile",
     "Route",
     "RouteTarget",
     "RouteTargetProgress",

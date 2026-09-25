@@ -8,6 +8,8 @@ import Bots from "../views/Bots.vue";
 import ChangePassword from "../views/ChangePassword.vue";
 import Dashboard from "../views/Dashboard.vue";
 import Jobs from "../views/Jobs.vue";
+import Keywords from "../views/Keywords.vue";
+import Leads from "../views/Leads.vue";
 import Login from "../views/Login.vue";
 import LoginHistory from "../views/LoginHistory.vue";
 import Routes from "../views/Routes.vue";
@@ -28,6 +30,8 @@ const routes = [
   { path: "/targets", name: "targets", component: Targets, meta: { role: "sub_admin" } },
   { path: "/routes", name: "routes", component: Routes, meta: { role: "sub_admin" } },
   { path: "/ad-assets", name: "ad-assets", component: AdAssets, meta: { role: "sub_admin" } },
+  { path: "/keywords", name: "keywords", component: Keywords, meta: { role: "sub_admin" } },
+  { path: "/leads", name: "leads", component: Leads, meta: { role: "sub_admin" } },
   { path: "/jobs", name: "jobs", component: Jobs },
   { path: "/audit", name: "audit", component: Audit },
   { path: "/login-history", name: "login-history", component: LoginHistory, meta: { role: "super_admin" } },

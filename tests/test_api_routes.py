@@ -286,3 +286,29 @@ async def test_reset_progress_requires_confirm(chat_client, fake_account_client)
     deleted = await chat_client.delete(f"/api/routes/{route_id}", headers=_headers())
     assert deleted.status_code == 200
     assert (await chat_client.get("/api/routes", headers=_headers())).json()["total"] == 0
+
+
+async def test_create_route_with_blank_name_returns_readable_error(
+    chat_client,
+    fake_account_client,
+) -> None:
+    """线路名留空时报错要能看懂，不能直接甩 FastAPI 的英文原文。"""
+    ids = await _prepare(chat_client, fake_account_client)
+
+    response = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "",
+            "source_chat_id": ids["source"],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+        },
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert body["detail"] == "参数校验失败：名称不能为空"
+    # 原始定位仍保留在 issues 里，便于排查
+    assert body["issues"][0]["location"] == "body.name"

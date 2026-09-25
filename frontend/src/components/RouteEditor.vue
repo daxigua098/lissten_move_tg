@@ -49,6 +49,20 @@ const targetRoleWarnings = computed(() =>
     detailTargets.value.filter((item) => item.enabled !== false),
   ),
 );
+/** 选了挂广告但没选素材：后端会拦下，这里提前提示，别等点保存才报错。 */
+const adAssetMissing = computed(
+  () => form.business_type === "A" && form.a.ad_policy !== "none" && !form.a.ad_asset_id,
+);
+/** 线路名留空时用「监听源 → 接收目标」自动命名，避免提交空名字被后端打回。 */
+const suggestedName = computed(() => {
+  const source = props.sources.find((item) => item.id === form.source_chat_id);
+  const sourceName = source ? source.name || source.title || source.username : "";
+  if (!sourceName) return "";
+  const targetNames = detailTargets.value
+    .map((item) => item.name || item.title || item.username)
+    .filter(Boolean);
+  return targetNames.length ? `${sourceName} → ${targetNames.join("、")}` : sourceName;
+});
 
 function splitLines(text) {
   return String(text || "")
@@ -198,10 +212,23 @@ watch(
 );
 
 async function save() {
+  const name = (form.name || "").trim() || suggestedName.value;
+  if (!name) {
+    ElMessage.warning("请填写线路名，或先选择监听源与接收目标（会自动命名）");
+    return;
+  }
+  if (adAssetMissing.value) {
+    ElMessage.warning(
+      assets.value.length
+        ? "挂广告需要先选择广告素材，或把「挂广告频率」改成「不挂」"
+        : "还没有广告素材：先去「广告素材库」新建一条，或把「挂广告频率」改成「不挂」",
+    );
+    return;
+  }
   saving.value = true;
   try {
     const payload = {
-      name: form.name,
+      name,
       source_chat_id: form.source_chat_id,
       business_type: form.business_type,
       exec_account_id: form.exec_account_id,
@@ -329,7 +356,12 @@ async function resetProgress(row) {
       <el-divider content-position="left">基础信息</el-divider>
       <el-form label-position="top">
         <el-form-item label="线路名">
-          <el-input v-model="form.name" placeholder="例如：素材频道 → 主频道" />
+          <el-input
+            v-model="form.name"
+            :placeholder="
+              suggestedName ? `留空自动用：${suggestedName}` : '例如：素材频道 → 主频道'
+            "
+          />
         </el-form-item>
         <el-form-item label="业务类型">
           <el-radio-group v-model="form.business_type">
@@ -472,7 +504,13 @@ async function resetProgress(row) {
             />
           </el-select>
         </el-form-item>
-        <p class="card-hint">选择「每条 / 每 N 条」时必须选素材，否则保存会被拦下。</p>
+        <p class="card-hint" :class="{ 'warn-text': adAssetMissing }">
+          {{
+            adAssetMissing
+              ? "还没选素材，保存会被拦下：先去「广告素材库」新建一条，或把上面改成「不挂」。"
+              : "选择「每条 / 每 N 条」时必须选素材，否则保存会被拦下。"
+          }}
+        </p>
 
         <el-divider content-position="left">A 线：历史补齐</el-divider>
         <el-form-item>
@@ -598,6 +636,10 @@ async function resetProgress(row) {
 .role-warn p {
   margin: 2px 0;
   line-height: 1.6;
+}
+
+.warn-text {
+  color: #e6a23c;
 }
 
 .switch-grid {

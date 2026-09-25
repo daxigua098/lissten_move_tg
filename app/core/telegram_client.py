@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,7 @@ from app.core.content_cleaner import (
     KIND_VIDEO,
     MessageView,
 )
-from app.core.errors import NotFoundError, ValidationFailedError
+from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from app.core.source_resolver import ResolvedTarget
 
 DEFAULT_SESSION_DIR = "data/sessions"
@@ -271,31 +272,67 @@ def render_ad_text(template: str, *, source_title: str, route_name: str) -> str:
     )
 
 
+SESSION_LOCK_HINT = (
+    "执行账号的会话文件正被搬运运行时占用，请稍后重试；"
+    "如果一直失败，先在「运行总览」暂停运行时再操作。"
+)
+
+
+def _is_session_locked(exc: BaseException) -> bool:
+    """会话文件被另一个进程（搬运运行时）写锁占用。"""
+    for item in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if isinstance(item, sqlite3.OperationalError) and "locked" in str(item).lower():
+            return True
+    return False
+
+
 async def connect_user_client(
     config: AppConfig,
     *,
     api_id: int,
     api_hash: str,
     session_path: Path | str,
+    attempts: int = 3,
 ) -> Any:
-    """连接执行账号客户端，并确认已登录。"""
-    client = build_user_client(
-        config,
-        api_id=api_id,
-        api_hash=api_hash,
-        session_path=session_path,
-    )
-    await client.connect()
-    if not await client.is_user_authorized():
-        with contextlib.suppress(Exception):
-            await client.disconnect()
-        raise ValidationFailedError(
-            "该执行账号尚未登录，请先运行：python main.py account-login --name 别名"
+    """连接执行账号客户端，并确认已登录。
+
+    后台服务与搬运运行时是两个进程，却共用同一个 Telethon 会话文件。SQLite 写锁
+    冲突时（"database is locked"）这里退避重试；仍然失败就给出可读的提示，
+    而不是把 500 内部错误抛给界面。
+    """
+    last_exc: BaseException | None = None
+    for index in range(1, attempts + 1):
+        client = build_user_client(
+            config,
+            api_id=api_id,
+            api_hash=api_hash,
+            session_path=session_path,
         )
-    with contextlib.suppress(Exception):
-        # 预热实体缓存：失败不影响连接本身，解析时还有 resolve_entity 兜底
-        await warm_entity_cache(client)
-    return client
+        try:
+            await client.connect()
+        except Exception as exc:  # noqa: BLE001 - 需要区分“会话被占用”与其他失败
+            last_exc = exc
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+            if not _is_session_locked(exc) or index == attempts:
+                break
+            await asyncio.sleep(1.5 * index)
+            continue
+
+        if not await client.is_user_authorized():
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+            raise ValidationFailedError(
+                "该执行账号尚未登录，请先运行：python main.py account-login --name 别名"
+            )
+        with contextlib.suppress(Exception):
+            # 预热实体缓存：失败不影响连接本身，解析时还有 resolve_entity 兜底
+            await warm_entity_cache(client)
+        return client
+
+    if last_exc is not None and _is_session_locked(last_exc):
+        raise ConflictError(SESSION_LOCK_HINT) from last_exc
+    raise last_exc if last_exc is not None else RuntimeError("无法连接执行账号")
 
 
 def _is_basic_group(entity: Any) -> bool:

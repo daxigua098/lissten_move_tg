@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
 from telethon.tl import types
 
+from app.core import telegram_client
 from app.core.errors import NotFoundError
 from app.core.telegram_client import (
     check_can_post,
@@ -212,3 +214,78 @@ async def test_check_can_post_returns_none_when_unknown() -> None:
     client = PermissionClient(megagroup(6005), RuntimeError("取权限失败"))
 
     assert await check_can_post(client, 6005) is None
+
+
+class FlakyClient:
+    """前 N 次连接抛「database is locked」，之后成功。"""
+
+    def __init__(self, failures: int, error: Exception | None = None) -> None:
+        self.failures = failures
+        self.error = error or sqlite3.OperationalError("database is locked")
+        self.disconnected = False
+
+    async def connect(self) -> None:
+        if self.failures > 0:
+            self.failures -= 1
+            raise self.error
+
+    async def is_user_authorized(self) -> bool:
+        return True
+
+    async def iter_dialogs(self, limit: int | None = None):
+        for _ in ():
+            yield _
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+
+@pytest.fixture
+def no_sleep(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(telegram_client.asyncio, "sleep", _sleep)
+
+
+async def test_connect_retries_when_session_file_is_locked(monkeypatch, no_sleep) -> None:
+    """运行时占着会话文件时，后台服务退避重试而不是直接 500。"""
+    client = FlakyClient(failures=2)
+    monkeypatch.setattr(telegram_client, "build_user_client", lambda *a, **k: client)
+
+    result = await telegram_client.connect_user_client(
+        None, api_id=1, api_hash="x" * 32, session_path="data/sessions/demo"
+    )
+
+    assert result is client
+    assert client.failures == 0
+
+
+async def test_connect_reports_busy_session_in_readable_words(monkeypatch, no_sleep) -> None:
+    from app.core.errors import ConflictError
+
+    monkeypatch.setattr(
+        telegram_client,
+        "build_user_client",
+        lambda *a, **k: FlakyClient(failures=99),
+    )
+
+    with pytest.raises(ConflictError) as excinfo:
+        await telegram_client.connect_user_client(
+            None, api_id=1, api_hash="x" * 32, session_path="data/sessions/demo"
+        )
+
+    assert "会话文件" in str(excinfo.value)
+
+
+async def test_connect_does_not_retry_other_errors(monkeypatch, no_sleep) -> None:
+    monkeypatch.setattr(
+        telegram_client,
+        "build_user_client",
+        lambda *a, **k: FlakyClient(failures=99, error=RuntimeError("网络不通")),
+    )
+
+    with pytest.raises(RuntimeError, match="网络不通"):
+        await telegram_client.connect_user_client(
+            None, api_id=1, api_hash="x" * 32, session_path="data/sessions/demo"
+        )

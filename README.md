@@ -43,3 +43,27 @@
 
 1. 按 `三期开发任务清单.md` 第 6 节准备开发前置资源（测试账号、测试群、API 凭据、服务器）。
 2. 一期任务从 E1 基础工程开始，每个任务完成后提交 commit 并配套测试。
+
+## 开发进度
+
+| 任务 | 状态 | 提交 |
+|---|---|---|
+| T1-01 项目骨架与配置 | ✅ 已完成 | `a49652f` |
+| T1-02 数据库与模型（含 Alembic 迁移） | ⏳ 未开始 | — |
+| T1-03 运行时锁与心跳 | ⏳ 未开始 | — |
+| T1-04 测试脚手架 | 🟡 部分完成（pytest 配置与公共夹具已就绪，接口层夹具随 T1-02 补齐） | `a49652f` |
+| T2-01 ~ T2-05 登录与权限 | ⏳ 未开始 | — |
+
+## 本地运行
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt -r requirements-dev.txt
+Copy-Item .env.example .env      # 按文件内注释生成并填入 SECRET_KEY
+python main.py check-config
+pytest -q
+ruff check .
+```
+
+> 说明：本项目尚未单独创建 `.venv`。当前 T1-01 的测试与 lint 是复用同级旧项目 `telegram搬运监听\.venv` 的解释器执行的（该环境已具备 pydantic / loguru / pytest / ruff 等依赖）。T1-02 需要 Alembic，届时建议为本项目创建独立虚拟环境并安装 `requirements.txt`。

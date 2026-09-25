@@ -18,7 +18,12 @@ const activeGroup = computed(
   () => groups.value.find((item) => item.id === activeGroupId.value) || null,
 );
 
-const kindLabel = computed(() => (kind.value === "exclude" ? "排除词组" : "关键词组"));
+const KIND_LABELS = {
+  keyword: "关键词组",
+  exclude: "排除词组",
+  merge: "归并规则",
+};
+const kindLabel = computed(() => KIND_LABELS[kind.value] || "词组");
 
 async function load() {
   loading.value = true;
@@ -39,8 +44,8 @@ async function load() {
   }
 }
 
-async function switchKind(value) {
-  kind.value = value;
+async function switchKind() {
+  // kind 由 v-model 负责更新，这里只负责重新加载对应类型的词组
   activeGroupId.value = null;
   matchResult.value = null;
   await load();
@@ -206,9 +211,10 @@ onMounted(load);
       <el-button size="small" @click="load">刷新</el-button>
     </div>
 
-    <el-radio-group :model-value="kind" class="kind-switch" @change="switchKind">
+    <el-radio-group v-model="kind" class="kind-switch" @change="switchKind">
       <el-radio-button value="keyword">关键词组（判断命中）</el-radio-button>
       <el-radio-button value="exclude">排除词组（命中即忽略）</el-radio-button>
+      <el-radio-button value="merge">归并规则（同类词合并）</el-radio-button>
     </el-radio-group>
 
     <div class="columns">
@@ -235,6 +241,10 @@ onMounted(load);
             <template v-if="kind === 'exclude'">
               还没有排除词组。点右上角「导入预置词库」会写入「通用噪声」「广告推广号」两组，
               再按需改；线路里可以多选叠加多组。
+            </template>
+            <template v-else-if="kind === 'merge'">
+              还没有归并规则。规则里「主词」是归类名、「别名」是它的各种说法；
+              热门关键词排名会把同类说法合并成一条，例如 微信(12) = 加我微信 8 + 微信同号 4。
             </template>
             <template v-else>
               还没有词组。点右上角「导入预置词库」可以先来一套常用的（联系方式、资源求助、

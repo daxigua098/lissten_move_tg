@@ -1,5 +1,5 @@
 <script setup>
-import { ElMessage, ElMessageBox } from "element-plus";
+import { ElMessage } from "element-plus";
 import { onMounted, reactive, ref } from "vue";
 
 import { hotKeywordsApi, keywordsApi } from "../api";
@@ -10,6 +10,12 @@ const total = ref(0);
 const stats = ref(null);
 const keywordGroups = ref([]);
 const filters = reactive({ days: null, min_count: 1, limit: 200, offset: 0 });
+// 「加入词库」弹窗：可以选已有的组，也可以直接输入新组名
+const promoteVisible = ref(false);
+const promoteSaving = ref(false);
+const promoteRow = ref(null);
+const targetGroupId = ref(null);
+const newGroupName = ref("");
 
 async function load() {
   loading.value = true;
@@ -47,33 +53,50 @@ function search() {
   load();
 }
 
-async function promote(row) {
-  if (!keywordGroups.value.length) {
-    ElMessage.warning("还没有关键词组，先去「词库管理」建一个");
+function promote(row) {
+  promoteRow.value = row;
+  targetGroupId.value = null;
+  newGroupName.value = "";
+  promoteVisible.value = true;
+}
+
+async function confirmPromote() {
+  const row = promoteRow.value;
+  if (!row) return;
+  const typedName = (newGroupName.value || "").trim();
+  if (!typedName && !targetGroupId.value) {
+    ElMessage.warning("请选择已有的组，或输入一个新组名");
     return;
   }
+  promoteSaving.value = true;
   try {
-    const { value } = await ElMessageBox.prompt(
-      `把「${row.token}」加进哪个关键词组？（填组名，例如 资源求助）`,
-      "加入词库",
-      {
-        inputPlaceholder: keywordGroups.value.map((item) => item.name).join(" / "),
-        inputValidator: (input) =>
-          keywordGroups.value.some((item) => item.name === String(input).trim()) ||
-          "组名不存在，请从提示里选一个",
-        confirmButtonText: "加入",
-        cancelButtonText: "取消",
-      },
-    );
-    const group = keywordGroups.value.find((item) => item.name === String(value).trim());
-    const { data } = await hotKeywordsApi.promote({ token: row.token, group_id: group.id });
-    ElMessage.success(
-      data.added ? `已加入「${group.name}」` : `「${group.name}」里已经有这个词了`,
-    );
-  } catch (error) {
-    if (error?.message && !error.message.includes("cancel")) {
-      ElMessage.error(error.message);
+    let group = typedName
+      ? keywordGroups.value.find((item) => item.name === typedName)
+      : keywordGroups.value.find((item) => item.id === targetGroupId.value);
+    if (!group) {
+      // 输入的是新组名：先建组，再把词加进去
+      const created = await keywordsApi.create({ name: typedName, kind: "keyword" });
+      group = { id: created.data.id, name: created.data.name };
+      ElMessage.success(`已新建关键词组「${typedName}」`);
+      await loadGroups();
     }
+    const { data } = await hotKeywordsApi.promote({
+      token: row.token,
+      group_id: group.id,
+      aliases: (row.variants || [])
+        .map((item) => item.token)
+        .filter((item) => item && item !== row.token),
+    });
+    ElMessage.success(
+      data.added
+        ? `已加入「${group.name}」${row.variants?.length > 1 ? "（变体一起写进别名了）" : ""}`
+        : `「${group.name}」里已经有这个词了`,
+    );
+    promoteVisible.value = false;
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    promoteSaving.value = false;
   }
 }
 
@@ -133,9 +156,16 @@ onMounted(async () => {
         <el-table-column label="关键词" min-width="160">
           <template #default="{ row }">
             <span class="chat-name">{{ row.token }}</span>
+            <el-tag v-if="row.merged" size="small" type="success" class="merged-tag">已归并</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="count" label="出现次数" width="100" sortable />
+        <el-table-column prop="count" label="出现次数" width="110" sortable />
+        <el-table-column label="同类说法" min-width="200">
+          <template #default="{ row }">
+            <span v-if="row.variant_text" class="card-hint">{{ row.variant_text }}</span>
+            <span v-else class="card-hint">-</span>
+          </template>
+        </el-table-column>
         <el-table-column label="来源群" min-width="200">
           <template #default="{ row }">
             <span class="card-hint">{{ row.source_text || "-" }}</span>
@@ -175,8 +205,38 @@ onMounted(async () => {
       :closable="false"
       show-icon
       title="这些词是自动采到的，永久保留"
-      description="采集规则：只统计通过过滤（非机器人、非排除词、字数达标）的会员发言；先剥掉链接、@用户名、手机号，再把中文按 2~4 字滑窗、英文按整词统计；同频次下短的会被长的合并（抖音/抖音号 只留抖音号）。发现高频词直接点「加入词库」就能补进关键词组。"
+      description="采集规则：只统计通过过滤（非机器人、非排除词、字数达标）的会员发言；先剥掉链接、@用户名、手机号，再把中文按 2~4 字滑窗、英文按整词统计。出现次数按消息计——同一条消息里重复刷同一个词只算一次。同频次下短词会被长词合并（抖音/抖音号 只留抖音号）。标了「已归并」的行，是按「词库管理 → 归并规则」把同类说法合并后的结果（例：微信 = 加我微信 + 微信同号）；点「加入词库」会把归类名作为主词、各个变体写成别名。"
     />
+
+    <el-dialog v-model="promoteVisible" title="加入词库" width="480px">
+      <div v-if="promoteRow" class="promote-body">
+        <p>
+          把 <b>{{ promoteRow.token }}</b>（出现 {{ promoteRow.count }} 次）加入哪个关键词组？
+        </p>
+        <el-select v-model="targetGroupId" clearable placeholder="选择已有的关键词组" style="width: 100%">
+          <el-option
+            v-for="item in keywordGroups"
+            :key="item.id"
+            :label="`${item.name}（${item.keyword_count} 个词）`"
+            :value="item.id"
+          />
+        </el-select>
+        <el-input
+          v-model="newGroupName"
+          placeholder="或者输入新组名（填了就新建这一组）"
+          class="new-group-input"
+        />
+        <p class="card-hint">
+          两个都填时以「新组名」为准。<span v-if="promoteRow.variants?.length > 1">
+            这条是归并结果，会把 {{ promoteRow.variants.map((item) => item.token).join("、") }}
+            一起写进别名。</span>
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="promoteVisible = false">取消</el-button>
+        <el-button type="primary" :loading="promoteSaving" @click="confirmPromote">加入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -200,5 +260,18 @@ onMounted(async () => {
 
 .panel-gap {
   margin-top: 12px;
+}
+
+.merged-tag {
+  margin-left: 6px;
+}
+
+.promote-body p {
+  margin: 0 0 8px;
+  line-height: 1.7;
+}
+
+.new-group-input {
+  margin-top: 8px;
 }
 </style>

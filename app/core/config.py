@@ -353,6 +353,39 @@ def mask_secret(value: str, *, keep: int = 4) -> str:
     return f"{text[:keep]}...{text[-keep:]}"
 
 
+def sqlite_database_path(config: AppConfig) -> Path | None:
+    """返回 SQLite 数据库文件路径；非 SQLite 或内存库返回 None。"""
+    url = config.database.url
+    if not url.startswith("sqlite"):
+        return None
+    _, separator, tail = url.partition("///")
+    if not separator:
+        return None
+    raw = tail.split("?", 1)[0]
+    if raw in {"", ":memory:"}:
+        return None
+    return config.path(raw)
+
+
+def absolute_database_url(config: AppConfig) -> str:
+    """把 SQLite 的相对地址解析成基于项目根目录的绝对地址；其他情况原样返回。
+
+    必要性：SQLAlchemy 按进程当前工作目录解析 `./data/app.db` 这类相对路径，
+    而服务可能从任意目录启动并指定 `--project-root`，不解析会出现"数据库跑到
+    意料之外的位置"这种隐蔽问题。
+    """
+    url = config.database.url
+    if not url.startswith("sqlite") or ":///" not in url:
+        return url
+    prefix, _, tail = url.partition(":///")
+    raw, _, query = tail.partition("?")
+    if raw in {"", ":memory:"}:
+        return url
+    resolved = config.path(raw).as_posix()
+    suffix = f"?{query}" if query else ""
+    return f"{prefix}:///{resolved}{suffix}"
+
+
 def _read_yaml(path: Path) -> dict[str, Any]:
     try:
         loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -390,13 +423,5 @@ def _check_writable(config: AppConfig, directory: Path, label: str) -> list[Conf
 
 
 def _sqlite_parent(config: AppConfig) -> Path | None:
-    url = config.database.url
-    if not url.startswith("sqlite"):
-        return None
-    _, separator, tail = url.partition("///")
-    if not separator:
-        return None
-    raw = tail.split("?", 1)[0]
-    if raw in {"", ":memory:"}:
-        return None
-    return config.path(raw).parent
+    database_path = sqlite_database_path(config)
+    return database_path.parent if database_path is not None else None

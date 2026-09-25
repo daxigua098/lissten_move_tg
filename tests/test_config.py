@@ -8,12 +8,14 @@ from app.core.config import (
     DEFAULT_ADMIN_PASSWORD,
     AppConfig,
     ConfigError,
+    absolute_database_url,
     check_config,
     config_summary,
     format_issues,
     has_errors,
     load_config,
     mask_secret,
+    sqlite_database_path,
 )
 
 
@@ -217,3 +219,43 @@ def test_mask_secret_variants() -> None:
     assert mask_secret("") == "未配置"
     assert mask_secret("short") == "*****"
     assert mask_secret("abcdefghijkl") == "abcd...ijkl"
+
+
+def test_sqlite_database_path_resolution(project_root) -> None:
+    config = _load(project_root)
+    assert sqlite_database_path(config) == project_root / "data" / "app.db"
+
+    memory = load_config(
+        project_root=project_root,
+        environ={"DATABASE_URL": "sqlite+aiosqlite:///:memory:"},
+    )
+    assert sqlite_database_path(memory) is None
+
+    postgres = load_config(
+        project_root=project_root,
+        environ={"DATABASE_URL": "postgresql+asyncpg://user:pass@localhost:5432/app"},
+    )
+    assert sqlite_database_path(postgres) is None
+
+
+def test_absolute_database_url_resolves_relative_path(project_root) -> None:
+    config = _load(project_root)
+
+    resolved = absolute_database_url(config)
+
+    assert resolved == f"sqlite+aiosqlite:///{(project_root / 'data' / 'app.db').as_posix()}"
+    assert resolved.endswith("data/app.db")
+
+
+def test_absolute_database_url_keeps_other_urls(project_root) -> None:
+    memory = load_config(
+        project_root=project_root,
+        environ={"DATABASE_URL": "sqlite+aiosqlite:///:memory:"},
+    )
+    postgres = load_config(
+        project_root=project_root,
+        environ={"DATABASE_URL": "postgresql+asyncpg://user:pass@localhost:5432/app"},
+    )
+
+    assert absolute_database_url(memory) == "sqlite+aiosqlite:///:memory:"
+    assert absolute_database_url(postgres).startswith("postgresql+asyncpg://")

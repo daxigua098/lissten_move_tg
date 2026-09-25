@@ -8,6 +8,12 @@ const loading = ref(false);
 const rows = ref([]);
 const total = ref(0);
 const dialogVisible = ref(false);
+const loginDialog = ref(false);
+const loginAccount = ref(null);
+const loginStage = ref("idle");
+const loginBusy = ref(false);
+const loginResult = ref(null);
+const loginForm = reactive({ code: "", password: "", force_sms: false });
 const form = reactive({
   name: "",
   phone: "",
@@ -109,6 +115,81 @@ function fmt(value) {
   return value ? new Date(value).toLocaleString("zh-CN") : "-";
 }
 
+function openLogin(row) {
+  loginAccount.value = row;
+  loginStage.value = "idle";
+  loginResult.value = null;
+  Object.assign(loginForm, { code: "", password: "", force_sms: false });
+  loginDialog.value = true;
+}
+
+async function sendLoginCode() {
+  loginBusy.value = true;
+  try {
+    const { data } = await accountsApi.loginStart(loginAccount.value.id, loginForm.force_sms);
+    loginStage.value = "code_sent";
+    ElMessage.success(`验证码已发送到 ${data.phone_masked} 对应的 Telegram`);
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    loginBusy.value = false;
+  }
+}
+
+async function submitLoginCode() {
+  if (!loginForm.code.trim()) {
+    ElMessage.warning("请输入验证码");
+    return;
+  }
+  loginBusy.value = true;
+  try {
+    const { data } = await accountsApi.loginVerify(loginAccount.value.id, loginForm.code.trim());
+    if (data.status === "password_required") {
+      loginStage.value = "password_required";
+      ElMessage.info("该账号开启了两步验证，请继续输入密码");
+    } else {
+      loginStage.value = "active";
+      loginResult.value = data;
+      ElMessage.success("登录成功");
+      load();
+    }
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    loginBusy.value = false;
+  }
+}
+
+async function submitLoginPassword() {
+  if (!loginForm.password) {
+    ElMessage.warning("请输入两步验证密码");
+    return;
+  }
+  loginBusy.value = true;
+  try {
+    const { data } = await accountsApi.loginPassword(loginAccount.value.id, loginForm.password);
+    loginStage.value = "active";
+    loginResult.value = data;
+    ElMessage.success("登录成功");
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    loginBusy.value = false;
+  }
+}
+
+async function closeLoginDialog() {
+  if (loginStage.value === "code_sent" || loginStage.value === "password_required") {
+    try {
+      await accountsApi.loginCancel(loginAccount.value.id);
+    } catch {
+      // 取消失败不阻塞关闭
+    }
+  }
+  loginDialog.value = false;
+}
+
 onMounted(load);
 </script>
 
@@ -161,6 +242,9 @@ onMounted(load);
       </el-table-column>
       <el-table-column label="操作" width="270" fixed="right">
         <template #default="{ row }">
+          <el-button size="small" link type="success" @click="openLogin(row)">
+            {{ row.status === "active" ? "重新登录" : "登录" }}
+          </el-button>
           <el-button size="small" link type="primary" :disabled="row.is_default" @click="setDefault(row)">
             设为默认
           </el-button>
@@ -177,8 +261,8 @@ onMounted(load);
       type="warning"
       :closable="false"
       show-icon
-      title="登记后还需要在服务器上完成一次 Telegram 登录，才会生成 session 文件并进入「正常」状态"
-      description="命令：.\.venv\Scripts\python.exe main.py account-login --name 别名"
+      title="登记后还要完成一次 Telegram 登录，状态才会变成「正常」"
+      description="点列表里的「登录」按钮即可：发送验证码 → 输入验证码 →（若开了两步验证）输入密码。也可以在服务器终端执行 main.py account-login --account-id 账号ID。"
     />
 
     <el-alert
@@ -216,6 +300,83 @@ onMounted(load);
         <el-button type="primary" @click="create">登记</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      :model-value="loginDialog"
+      title="登录执行账号"
+      width="460px"
+      :close-on-click-modal="false"
+      @close="closeLoginDialog"
+      @update:model-value="(value) => { if (!value) closeLoginDialog(); }"
+    >
+      <div v-if="loginAccount" class="login-body">
+        <el-alert
+          type="info"
+          :closable="false"
+          show-icon
+          :title="`账号：${loginAccount.name}（${loginAccount.phone_masked}）`"
+          description="验证码会发到该手机号对应的 Telegram App 里，不是短信。"
+        />
+
+        <div v-if="loginStage === 'idle'" class="login-step">
+          <p class="card-hint">点击下方按钮让 Telegram 发送登录验证码。</p>
+          <el-checkbox v-model="loginForm.force_sms">改用短信接收验证码（收不到 App 消息时勾选）</el-checkbox>
+          <el-button type="primary" :loading="loginBusy" @click="sendLoginCode">
+            发送验证码
+          </el-button>
+        </div>
+
+        <div v-else-if="loginStage === 'code_sent'" class="login-step">
+          <el-input
+            v-model="loginForm.code"
+            size="large"
+            placeholder="输入 Telegram 收到的验证码"
+            @keyup.enter="submitLoginCode"
+          />
+          <div class="login-actions">
+            <el-button link type="primary" :loading="loginBusy" @click="sendLoginCode">
+              没收到？重新发送
+            </el-button>
+            <div class="spacer" />
+            <el-button @click="closeLoginDialog">取消</el-button>
+            <el-button type="primary" :loading="loginBusy" @click="submitLoginCode">提交</el-button>
+          </div>
+        </div>
+
+        <div v-else-if="loginStage === 'password_required'" class="login-step">
+          <el-alert
+            type="warning"
+            :closable="false"
+            show-icon
+            title="该账号开启了两步验证"
+            description="请输入你在 Telegram 设置的两步验证密码（不是登录验证码）。"
+          />
+          <el-input
+            v-model="loginForm.password"
+            type="password"
+            show-password
+            size="large"
+            placeholder="两步验证密码"
+            @keyup.enter="submitLoginPassword"
+          />
+          <div class="login-actions">
+            <div class="spacer" />
+            <el-button @click="closeLoginDialog">取消</el-button>
+            <el-button type="primary" :loading="loginBusy" @click="submitLoginPassword">提交</el-button>
+          </div>
+        </div>
+
+        <div v-else class="login-step">
+          <el-result icon="success" title="登录成功">
+            <template #sub-title>
+              <span v-if="loginResult?.username">@{{ loginResult.username }} · ID {{ loginResult.tg_user_id }}</span>
+              <span v-else>session 已生成</span>
+            </template>
+          </el-result>
+          <el-button type="primary" @click="closeLoginDialog">完成</el-button>
+        </div>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -226,5 +387,23 @@ onMounted(load);
 
 .panel {
   margin-top: 12px;
+}
+
+.login-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.login-step {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.login-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>

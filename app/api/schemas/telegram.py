@@ -53,3 +53,21 @@ class BotUpdateRequest(BaseModel):
     is_default: bool | None = None
     enabled: bool | None = None
     note: str | None = Field(default=None, max_length=255)
+
+
+class LoginStartRequest(BaseModel):
+    """开始登录（是否强制走短信）。"""
+
+    force_sms: bool = False
+
+
+class LoginCodeRequest(BaseModel):
+    """提交登录验证码。"""
+
+    code: str = Field(min_length=1, max_length=16)
+
+
+class LoginPasswordRequest(BaseModel):
+    """提交两步验证密码。"""
+
+    password: str = Field(min_length=1, max_length=256)

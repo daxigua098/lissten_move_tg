@@ -71,6 +71,13 @@ export const accountsApi = {
   create: (payload) => http.post("/api/accounts", payload),
   update: (id, payload) => http.patch(`/api/accounts/${id}`, payload),
   remove: (id) => http.delete(`/api/accounts/${id}`),
+  loginStart: (id, forceSms = false) =>
+    http.post(`/api/accounts/${id}/login/start`, { force_sms: forceSms }),
+  loginVerify: (id, code) => http.post(`/api/accounts/${id}/login/verify`, { code }),
+  loginPassword: (id, password) =>
+    http.post(`/api/accounts/${id}/login/password`, { password }),
+  loginCancel: (id) => http.post(`/api/accounts/${id}/login/cancel`),
+  loginStatus: (id) => http.get(`/api/accounts/${id}/login/status`),
 };
 
 export const botsApi = {

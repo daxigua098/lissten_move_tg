@@ -10,6 +10,7 @@ import json
 import secrets
 import sys
 from collections.abc import Sequence
+from typing import Any
 
 from app.core.config import (
     DEFAULT_CONFIG_RELATIVE,
@@ -381,10 +382,12 @@ async def _account_login(
                 else await tg_account_service.get_account_by_name(session, name or "")
             )
             if account is None:
+                available = await _describe_accounts(session)
                 print(
                     "未找到执行账号：请先在后台「执行账号池」登记，或确认 --account-id/--name。",
                     file=sys.stderr,
                 )
+                print(available, file=sys.stderr)
                 return EXIT_FAILURE
             if account.status == ACCOUNT_DISABLED:
                 print("该账号已停用，请先在后台启用后再登录。", file=sys.stderr)
@@ -424,6 +427,24 @@ async def _account_login(
             return EXIT_OK
     finally:
         await dispose_database()
+
+
+async def _describe_accounts(session: Any) -> str:
+    """列出已有账号，方便直接复制正确的 --account-id。"""
+    from sqlalchemy import select
+
+    from app.db.models import TgAccount
+
+    rows = list(await session.scalars(select(TgAccount).order_by(TgAccount.id)))
+    if not rows:
+        return "提示：目前还没有任何执行账号。"
+    lines = ["当前已有的执行账号："]
+    for row in rows:
+        lines.append(
+            f"  --account-id {row.id}  别名「{row.name}」  {row.phone_masked}  状态 {row.status}"
+        )
+    lines.append("用法示例：python main.py account-login --account-id " + str(rows[0].id))
+    return "\n".join(lines)
 
 
 def command_sync_history(args: argparse.Namespace) -> int:

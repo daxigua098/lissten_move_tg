@@ -23,6 +23,11 @@ CHAT_GROUP = "group"
 SOURCE_KIND_LOCAL = "local"
 SOURCE_KIND_REMOTE = "remote"
 
+# 接收组用途
+TARGET_ROLE_CONTENT = "content"
+TARGET_ROLE_LEAD = "lead"
+TARGET_ROLES = (TARGET_ROLE_CONTENT, TARGET_ROLE_LEAD)
+
 
 class TgAccount(TimestampMixin, Base):
     """执行账号：真正执行采集与投递的 Telegram 用户账号。"""
@@ -86,6 +91,12 @@ class Chat(TimestampMixin, Base):
     member_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     tags: Mapped[str] = mapped_column(Text, default="[]")
     source_kind: Mapped[str] = mapped_column(String(16), default=SOURCE_KIND_LOCAL, index=True)
+    # 角色与启停：同一个群既可以是监听源，也可以是接收组
+    is_source: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    source_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_target: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    target_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    target_role: Mapped[str] = mapped_column(String(16), default=TARGET_ROLE_CONTENT)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用

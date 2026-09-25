@@ -195,6 +195,114 @@ class FakeBotClient:
         self.disconnected = True
 
 
+def make_entity(
+    tg_id: int,
+    title: str,
+    *,
+    broadcast: bool = False,
+    megagroup: bool = True,
+    username: str | None = None,
+    participants_count: int | None = None,
+):
+    """构造 Telethon 实体替身。"""
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=tg_id,
+        title=title,
+        broadcast=broadcast,
+        megagroup=megagroup,
+        username=username,
+        participants_count=participants_count,
+    )
+
+
+class FakeAccountClient:
+    """Telethon 账号客户端替身：提供 dialogs / get_entity / get_permissions。"""
+
+    def __init__(self) -> None:
+        from types import SimpleNamespace
+
+        self.dialogs: list = []
+        self.entities: dict = {}
+        self.permissions: dict = {}
+        self.imported = None
+        self.disconnected = False
+        self.SimpleNamespace = SimpleNamespace
+
+    async def iter_dialogs(self, limit: int | None = None):
+        for entity in self.dialogs[: limit or len(self.dialogs)]:
+            yield self.SimpleNamespace(entity=entity)
+
+    async def get_entity(self, identifier):
+        key = identifier.lstrip("@") if isinstance(identifier, str) else identifier
+        if key in self.entities:
+            return self.entities[key]
+        raise ValueError(f"找不到实体：{identifier}")
+
+    async def get_permissions(self, entity):
+        return self.SimpleNamespace(
+            send_messages=self.permissions.get(getattr(entity, "id", None)),
+            post_messages=None,
+        )
+
+    async def is_user_authorized(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+    async def __call__(self, request):
+        name = type(request).__name__
+        if name == "ImportChatInviteRequest":
+            return self.SimpleNamespace(chats=[self.imported] if self.imported else [])
+        raise AssertionError(f"未预期的请求：{name}")
+
+
+@pytest.fixture
+def fake_account_client() -> FakeAccountClient:
+    """账号客户端替身，测试可先配置 dialogs/entities/permissions。"""
+    return FakeAccountClient()
+
+
+@pytest.fixture
+async def chat_client(api_config, fake_account_client) -> AsyncIterator[AsyncClient]:
+    """带假账号客户端的客户端，并预置一个已登记的执行账号。"""
+    from app.api.app import create_app
+    from app.db.session import (
+        create_schema,
+        dispose_database,
+        init_database,
+        session_scope,
+    )
+    from app.services import tg_account_service
+
+    await init_database(api_config)
+    await create_schema()
+    await _create_admin(api_config, must_change_password=False, is_builtin=True)
+    async with session_scope() as session:
+        await tg_account_service.create_account(
+            session,
+            api_config,
+            name="主号",
+            phone="+8613800001111",
+            api_id=123456,
+            api_hash="abcdef0123456789abcdef0123456789",
+            is_default=True,
+        )
+
+    async def factory(_config, **_kwargs):
+        return fake_account_client
+
+    app = create_app(api_config, account_client_factory=factory)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+            yield http_client
+    finally:
+        await dispose_database()
+
+
 @pytest.fixture
 async def bot_client(api_config) -> AsyncIterator[AsyncClient]:
     """带假 Telethon 工厂的客户端，用于控制 Bot 接口测试。"""

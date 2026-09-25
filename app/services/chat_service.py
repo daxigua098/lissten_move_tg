@@ -7,9 +7,14 @@ import json
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.telegram_client import ChatProfile
-from app.db.models import SOURCE_KIND_LOCAL, Chat
+from app.db.models import (
+    SOURCE_KIND_LOCAL,
+    TARGET_ROLE_CONTENT,
+    TARGET_ROLES,
+    Chat,
+)
 
 
 def load_tags(chat: Chat) -> list[str]:
@@ -191,3 +196,188 @@ async def list_tags(session: AsyncSession) -> list[str]:
                 if text not in tags:
                     tags.append(text)
     return sorted(tags)
+
+
+async def list_sources(
+    session: AsyncSession,
+    *,
+    enabled: bool | None = None,
+    tag: str | None = None,
+    keyword: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[Chat], int]:
+    """监听源列表。"""
+    return await _list_by_role(
+        session,
+        role_column=Chat.is_source,
+        enabled_column=Chat.source_enabled,
+        enabled=enabled,
+        tag=tag,
+        keyword=keyword,
+        limit=limit,
+        offset=offset,
+    )
+
+
+async def list_targets(
+    session: AsyncSession,
+    *,
+    role: str | None = None,
+    enabled: bool | None = None,
+    tag: str | None = None,
+    keyword: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[Chat], int]:
+    """接收组列表。"""
+    return await _list_by_role(
+        session,
+        role_column=Chat.is_target,
+        enabled_column=Chat.target_enabled,
+        enabled=enabled,
+        tag=tag,
+        keyword=keyword,
+        target_role=role,
+        limit=limit,
+        offset=offset,
+    )
+
+
+async def _list_by_role(
+    session: AsyncSession,
+    *,
+    role_column,
+    enabled_column,
+    enabled: bool | None,
+    tag: str | None,
+    keyword: str | None,
+    target_role: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[Chat], int]:
+    conditions = [role_column.is_(True)]
+    if enabled is not None:
+        conditions.append(enabled_column.is_(enabled))
+    if tag:
+        conditions.append(Chat.tags.like(f'%"{tag}"%'))
+    if keyword:
+        pattern = f"%{keyword}%"
+        conditions.append(Chat.title.like(pattern) | Chat.username.like(pattern))
+    if target_role:
+        conditions.append(Chat.target_role == target_role)
+
+    statement = select(Chat).order_by(Chat.id)
+    count_statement = select(func.count()).select_from(Chat)
+    for condition in conditions:
+        statement = statement.where(condition)
+        count_statement = count_statement.where(condition)
+    rows = list(await session.scalars(statement.limit(limit).offset(offset)))
+    total = int(await session.scalar(count_statement) or 0)
+    return rows, total
+
+
+async def list_pool(
+    session: AsyncSession,
+    *,
+    exclude_sources: bool = False,
+    exclude_targets: bool = False,
+    keyword: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> tuple[list[Chat], int]:
+    """可选群组池：已经同步到本地、但还没被选为源/接收组的聊天对象。"""
+    conditions = []
+    if exclude_sources:
+        conditions.append(Chat.is_source.is_(False))
+    if exclude_targets:
+        conditions.append(Chat.is_target.is_(False))
+    if keyword:
+        pattern = f"%{keyword}%"
+        conditions.append(Chat.title.like(pattern) | Chat.username.like(pattern))
+
+    statement = select(Chat).order_by(Chat.title, Chat.id)
+    count_statement = select(func.count()).select_from(Chat)
+    for condition in conditions:
+        statement = statement.where(condition)
+        count_statement = count_statement.where(condition)
+    rows = list(await session.scalars(statement.limit(limit).offset(offset)))
+    total = int(await session.scalar(count_statement) or 0)
+    return rows, total
+
+
+async def get_chats_by_ids(session: AsyncSession, chat_ids: list[int]) -> list[Chat]:
+    """按本地 ID 批量取聊天对象。"""
+    if not chat_ids:
+        return []
+    rows = await session.scalars(select(Chat).where(Chat.id.in_(chat_ids)))
+    return list(rows)
+
+
+async def set_source(session: AsyncSession, chat: Chat, *, enabled: bool = True) -> Chat:
+    """把聊天对象标记为监听源。"""
+    chat.is_source = True
+    chat.source_enabled = enabled
+    await session.commit()
+    await session.refresh(chat)
+    return chat
+
+
+async def unset_source(session: AsyncSession, chat: Chat) -> Chat:
+    """把聊天对象移出监听源（仍保留在群组池里）。"""
+    chat.is_source = False
+    chat.source_enabled = True
+    await session.commit()
+    await session.refresh(chat)
+    return chat
+
+
+async def set_target(
+    session: AsyncSession,
+    chat: Chat,
+    *,
+    role: str = TARGET_ROLE_CONTENT,
+    enabled: bool = True,
+) -> Chat:
+    """把聊天对象标记为接收组。"""
+    if role not in TARGET_ROLES:
+        raise ValidationFailedError(f"用途必须是 {'/'.join(TARGET_ROLES)} 之一")
+    chat.is_target = True
+    chat.target_enabled = enabled
+    chat.target_role = role
+    await session.commit()
+    await session.refresh(chat)
+    return chat
+
+
+async def unset_target(session: AsyncSession, chat: Chat) -> Chat:
+    """把聊天对象移出接收组。"""
+    chat.is_target = False
+    chat.target_enabled = True
+    await session.commit()
+    await session.refresh(chat)
+    return chat
+
+
+async def batch_update_tags(
+    session: AsyncSession,
+    chat_ids: list[int],
+    *,
+    tags: list[str],
+    mode: str = "add",
+) -> int:
+    """批量打标签：add 追加 / replace 覆盖 / remove 移除。"""
+    if mode not in {"add", "replace", "remove"}:
+        raise ValidationFailedError("标签操作必须是 add / replace / remove 之一")
+    chats = await get_chats_by_ids(session, chat_ids)
+    for chat in chats:
+        current = load_tags(chat)
+        if mode == "replace":
+            updated = list(tags)
+        elif mode == "remove":
+            updated = [item for item in current if item not in tags]
+        else:
+            updated = current + [item for item in tags if item not in current]
+        chat.tags = dump_tags(updated)
+    await session.commit()
+    return len(chats)

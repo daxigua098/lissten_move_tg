@@ -79,3 +79,23 @@ export const botsApi = {
   update: (id, payload) => http.patch(`/api/bots/${id}`, payload),
   remove: (id) => http.delete(`/api/bots/${id}`),
 };
+
+export const sourcesApi = {
+  list: (params) => http.get("/api/sources", { params }),
+  available: (params) => http.get("/api/sources/available", { params }),
+  tags: () => http.get("/api/sources/tags"),
+  sync: () => http.post("/api/sources/sync"),
+  add: (payload) => http.post("/api/sources", payload),
+  update: (id, payload) => http.patch(`/api/sources/${id}`, payload),
+  remove: (id) => http.delete(`/api/sources/${id}`),
+  batchTags: (payload) => http.post("/api/sources/tags/batch", payload),
+};
+
+export const targetsApi = {
+  list: (params) => http.get("/api/targets", { params }),
+  available: (params) => http.get("/api/targets/available", { params }),
+  add: (payload) => http.post("/api/targets", payload),
+  update: (id, payload) => http.patch(`/api/targets/${id}`, payload),
+  remove: (id) => http.delete(`/api/targets/${id}`),
+  batchTags: (payload) => http.post("/api/targets/tags/batch", payload),
+};

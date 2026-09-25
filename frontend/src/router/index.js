@@ -8,6 +8,8 @@ import ChangePassword from "../views/ChangePassword.vue";
 import Dashboard from "../views/Dashboard.vue";
 import Login from "../views/Login.vue";
 import LoginHistory from "../views/LoginHistory.vue";
+import Sources from "../views/Sources.vue";
+import Targets from "../views/Targets.vue";
 import Users from "../views/Users.vue";
 
 const ROLE_RANK = { viewer: 1, sub_admin: 2, super_admin: 3 };
@@ -19,6 +21,8 @@ const routes = [
   { path: "/users", name: "users", component: Users, meta: { role: "super_admin" } },
   { path: "/accounts", name: "accounts", component: Accounts, meta: { role: "super_admin" } },
   { path: "/bots", name: "bots", component: Bots, meta: { role: "super_admin" } },
+  { path: "/sources", name: "sources", component: Sources, meta: { role: "sub_admin" } },
+  { path: "/targets", name: "targets", component: Targets, meta: { role: "sub_admin" } },
   { path: "/audit", name: "audit", component: Audit },
   { path: "/login-history", name: "login-history", component: LoginHistory, meta: { role: "super_admin" } },
   { path: "/:pathMatch(.*)*", redirect: "/" },

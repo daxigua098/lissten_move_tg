@@ -7,6 +7,7 @@ import Audit from "../views/Audit.vue";
 import Bots from "../views/Bots.vue";
 import ChangePassword from "../views/ChangePassword.vue";
 import Dashboard from "../views/Dashboard.vue";
+import Jobs from "../views/Jobs.vue";
 import Login from "../views/Login.vue";
 import LoginHistory from "../views/LoginHistory.vue";
 import Routes from "../views/Routes.vue";
@@ -27,6 +28,7 @@ const routes = [
   { path: "/targets", name: "targets", component: Targets, meta: { role: "sub_admin" } },
   { path: "/routes", name: "routes", component: Routes, meta: { role: "sub_admin" } },
   { path: "/ad-assets", name: "ad-assets", component: AdAssets, meta: { role: "sub_admin" } },
+  { path: "/jobs", name: "jobs", component: Jobs },
   { path: "/audit", name: "audit", component: Audit },
   { path: "/login-history", name: "login-history", component: LoginHistory, meta: { role: "super_admin" } },
   { path: "/:pathMatch(.*)*", redirect: "/" },

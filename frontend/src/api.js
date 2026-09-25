@@ -130,3 +130,18 @@ export const uploadsApi = {
     }),
   remove: (filename) => http.delete(`/api/uploads/image/${filename}`),
 };
+
+export const jobsApi = {
+  list: (params) => http.get("/api/jobs", { params }),
+  stats: () => http.get("/api/jobs/stats"),
+  retryFailed: () => http.post("/api/jobs/retry-failed"),
+  retryOne: (id) => http.post(`/api/jobs/${id}/retry`),
+  skipOne: (id) => http.post(`/api/jobs/${id}/skip`),
+};
+
+export const runtimeApi = {
+  status: () => http.get("/api/runtime/status"),
+  pause: () => http.post("/api/runtime/pause"),
+  resume: () => http.post("/api/runtime/resume"),
+  stop: () => http.post("/api/runtime/stop"),
+};

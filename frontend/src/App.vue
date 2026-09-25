@@ -59,6 +59,7 @@ function logoutAll() {
         <el-menu-item v-if="canOperate" index="/targets">接收组</el-menu-item>
         <el-menu-item v-if="canOperate" index="/routes">线路管理</el-menu-item>
         <el-menu-item v-if="canOperate" index="/ad-assets">广告素材库</el-menu-item>
+        <el-menu-item index="/jobs">投递任务</el-menu-item>
         <el-menu-item v-if="auth.isSuperAdmin" index="/accounts">执行账号池</el-menu-item>
         <el-menu-item v-if="auth.isSuperAdmin" index="/bots">控制 Bot</el-menu-item>
         <el-menu-item index="/audit">审计日志</el-menu-item>

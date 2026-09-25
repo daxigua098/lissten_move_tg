@@ -20,8 +20,10 @@ from app.api.routers import (
     auth,
     bots,
     health,
+    jobs,
     logs,
     routes,
+    runtime,
     sources,
     system,
     targets,
@@ -96,6 +98,8 @@ def create_app(
     app.include_router(routes.router)
     app.include_router(ad_assets.router)
     app.include_router(uploads.router)
+    app.include_router(runtime.router)
+    app.include_router(jobs.router)
     app.mount(
         "/uploads",
         StaticFiles(directory=ensure_dir(uploads_directory(resolved))),

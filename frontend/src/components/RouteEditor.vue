@@ -22,6 +22,16 @@ const loading = ref(false);
 const saving = ref(false);
 const assets = ref([]);
 const keywordGroups = ref([]);
+// 打开时的原始值：用来判断这次保存要不要重启运行时才生效
+const original = reactive({ sourceIds: [], businessType: null });
+const RESTART_HINT = "改了监听源或业务类型，去「运行总览」点重启才生效";
+
+/** 监听源、业务类型是启动时注册的，动了这两样必须重启运行时。 */
+function needsRestart() {
+  const before = [...original.sourceIds].sort().join(",");
+  const after = [...form.source_chat_ids].sort().join(",");
+  return before !== after || original.businessType !== form.business_type;
+}
 const detailTargets = ref([]);
 const addingTargetIds = ref([]);
 const form = reactive({
@@ -131,6 +141,8 @@ function defaults() {
 
 function resetForm() {
   const blank = defaults();
+  original.sourceIds = [];
+  original.businessType = null;
   Object.assign(form, {
     name: "",
     source_chat_ids: props.sources[0] ? [props.sources[0].id] : [],
@@ -150,6 +162,12 @@ function resetForm() {
 
 function applyDetail(data) {
   const blank = defaults();
+  original.sourceIds = data.source_chat_ids?.length
+    ? [...data.source_chat_ids]
+    : data.source?.chat_id
+      ? [data.source.chat_id]
+      : [];
+  original.businessType = data.business_type;
   Object.assign(form, {
     name: data.name,
     source_chat_ids: data.source_chat_ids?.length
@@ -274,13 +292,13 @@ async function save() {
     };
     if (isEdit.value) {
       await routesApi.update(props.routeId, payload);
-      ElMessage.success("线路已保存");
+      ElMessage.success(needsRestart() ? RESTART_HINT : "线路已保存（配置、目标、启停立即生效）");
     } else {
       await routesApi.create({
         ...payload,
         target_chat_ids: detailTargets.value.map((item) => item.chat_id),
       });
-      ElMessage.success("线路已创建");
+      ElMessage.success(`线路已创建；${RESTART_HINT}`);
     }
     emit("saved");
     visible.value = false;

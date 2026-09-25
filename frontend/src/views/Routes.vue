@@ -249,8 +249,8 @@ onMounted(load);
       type="info"
       :closable="false"
       show-icon
-      title="同一个监听源可以同时存在多条线路"
-      description="例如：一条 A 线把帖子搬到主频道，另一条 B 线把会员线索推到线索群，两者互不干扰。"
+      title="改完什么时候生效：哪些要重启，哪些不用"
+      description="新建/删除线路、换监听源、改业务类型（A↔B）→ 到「运行总览」点「重启」才生效；改配置（关键词组、净化、广告）、增删接收目标、启停线路 → 立即生效，不用重启。"
     />
 
     <RouteEditor

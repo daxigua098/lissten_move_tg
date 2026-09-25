@@ -148,3 +148,27 @@ async def test_accounts_require_super_admin(admin_client, api_config) -> None:
     response = await admin_client.get("/api/accounts", headers=auth_header(token))
 
     assert response.status_code == 403
+
+
+async def test_account_can_inherit_api_credentials_from_env(admin_client, api_config) -> None:
+    """账号里不填 API ID/Hash 时，自动用 .env 的默认凭据。"""
+    payload = _payload()
+    payload.pop("api_id")
+    payload.pop("api_hash")
+
+    response = await admin_client.post("/api/accounts", headers=_headers(), json=payload)
+
+    assert response.status_code == 201
+    assert response.json()["name"] == "主号"
+
+    from app.db.session import session_scope
+    from app.services import tg_account_service
+
+    async with session_scope() as session:
+        account = await tg_account_service.get_account_by_name(session, "主号")
+        assert account is not None
+        phone, api_id, api_hash = tg_account_service.decrypt_credentials(api_config, account)
+
+    assert phone == "+8613800001111"
+    assert api_id == api_config.telegram.api_id
+    assert api_hash == api_config.telegram.api_hash

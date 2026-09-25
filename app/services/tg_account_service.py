@@ -81,8 +81,8 @@ async def create_account(
     *,
     name: str,
     phone: str,
-    api_id: int,
-    api_hash: str,
+    api_id: int | None = None,
+    api_hash: str | None = None,
     session_name: str | None = None,
     is_default: bool = False,
     note: str | None = None,
@@ -97,18 +97,21 @@ async def create_account(
     phone_text = (phone or "").strip()
     if not PHONE_PATTERN.match(phone_text):
         raise ValidationFailedError("手机号格式不正确（示例 +8613800001111）")
-    if api_id <= 0:
-        raise ValidationFailedError("API ID 必须是正整数")
-    if not (api_hash or "").strip():
-        raise ValidationFailedError("请填写 API Hash")
+    # 单个账号可以自带一套 API 凭据；留空则回退到 .env 的默认凭据
+    resolved_api_id = int(api_id) if api_id else int(config.telegram.api_id or 0)
+    resolved_api_hash = (api_hash or "").strip() or config.telegram.api_hash.strip()
+    if resolved_api_id <= 0 or not resolved_api_hash:
+        raise ValidationFailedError(
+            "缺少 API ID / API Hash：请在账号里填写，或在 .env 配置 TG_API_ID / TG_API_HASH"
+        )
 
     cipher = FieldCipher.from_config(config)
     account = TgAccount(
         name=alias,
         phone_masked=mask_phone(phone_text),
         phone_enc=cipher.encrypt(phone_text),
-        api_id_enc=cipher.encrypt(str(api_id)),
-        api_hash_enc=cipher.encrypt(api_hash.strip()),
+        api_id_enc=cipher.encrypt(str(resolved_api_id)),
+        api_hash_enc=cipher.encrypt(resolved_api_hash),
         session_name=(session_name or alias).strip(),
         is_default=False,
         status=ACCOUNT_PENDING,

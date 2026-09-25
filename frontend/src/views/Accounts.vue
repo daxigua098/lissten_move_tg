@@ -54,8 +54,8 @@ async function create() {
     await accountsApi.create({
       name: form.name,
       phone: form.phone,
-      api_id: Number(form.api_id),
-      api_hash: form.api_hash,
+      api_id: form.api_id ? Number(form.api_id) : null,
+      api_hash: form.api_hash || null,
       is_default: form.is_default,
       note: form.note || null,
     });
@@ -198,11 +198,11 @@ onMounted(load);
         <el-form-item label="手机号（含区号）">
           <el-input v-model="form.phone" placeholder="+8613800001111" />
         </el-form-item>
-        <el-form-item label="API ID">
-          <el-input v-model="form.api_id" placeholder="到 my.telegram.org 申请" />
+        <el-form-item label="API ID（留空则用 .env 里的 TG_API_ID）">
+          <el-input v-model="form.api_id" placeholder="留空使用 .env 里的默认凭据" />
         </el-form-item>
-        <el-form-item label="API Hash">
-          <el-input v-model="form.api_hash" show-password placeholder="32 位字符串" />
+        <el-form-item label="API Hash（留空则用 .env 里的 TG_API_HASH）">
+          <el-input v-model="form.api_hash" show-password placeholder="留空使用 .env 里的默认凭据" />
         </el-form-item>
         <el-form-item label="备注（可选）">
           <el-input v-model="form.note" />

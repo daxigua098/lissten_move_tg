@@ -14,8 +14,9 @@ class AccountCreateRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=64)
     phone: str = Field(min_length=6, max_length=32)
-    api_id: int = Field(gt=0)
-    api_hash: str = Field(min_length=8, max_length=128)
+    # 留空则使用 .env 里的 TG_API_ID / TG_API_HASH
+    api_id: int | None = Field(default=None, gt=0)
+    api_hash: str | None = Field(default=None, max_length=128)
     session_name: str | None = Field(default=None, max_length=128)
     is_default: bool = False
     note: str | None = Field(default=None, max_length=255)

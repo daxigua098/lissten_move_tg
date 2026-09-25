@@ -75,6 +75,8 @@ def api_config(project_root: Path, valid_secret_key: str):
             "ADMIN_PASSWORD": "custom-pass1",
             "ADMIN_API_TOKEN": ADMIN_API_TOKEN,
             "DATABASE_URL": database_url(project_root),
+            "TG_API_ID": "1234567",
+            "TG_API_HASH": "0123456789abcdef0123456789abcdef",
         },
     )
 

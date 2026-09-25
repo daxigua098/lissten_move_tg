@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from collections.abc import Sequence
@@ -27,8 +28,6 @@ EXIT_NOT_IMPLEMENTED = 2
 
 # 尚未交付的子命令 → 所属任务
 PENDING_COMMANDS: dict[str, str] = {
-    "create-admin": "T2-02 默认管理员与强制改密",
-    "api": "E2 登录与权限",
     "status": "T1-03 运行时锁与心跳",
     "backup": "T7-02 备份与恢复",
     "restore": "T7-02 备份与恢复",
@@ -60,6 +59,15 @@ def build_parser() -> argparse.ArgumentParser:
     migrate = subparsers.add_parser("migrate", help="数据库迁移到指定版本")
     migrate.add_argument("--revision", default="head", help="目标版本，默认 head")
     subparsers.add_parser("init-db", help="初始化数据库（等价于迁移到最新版本）")
+
+    admin = subparsers.add_parser("create-admin", help="创建内置管理员（幂等）")
+    admin.add_argument("--username", default=None, help="覆盖 .env 中的 ADMIN_USERNAME")
+    admin.add_argument("--password", default=None, help="覆盖 .env 中的 ADMIN_PASSWORD")
+
+    api = subparsers.add_parser("api", help="启动后台 Web 服务")
+    api.add_argument("--host", default=None, help="监听地址，默认取配置")
+    api.add_argument("--port", type=int, default=None, help="监听端口，默认取配置")
+    api.add_argument("--reload", action="store_true", help="开发模式热重载")
 
     for name, owner in PENDING_COMMANDS.items():
         subparsers.add_parser(name, help=f"将在 {owner} 中实现")
@@ -171,6 +179,94 @@ def command_init_db(args: argparse.Namespace) -> int:
     return result
 
 
+def command_create_admin(args: argparse.Namespace) -> int:
+    """创建内置管理员：已存在则不做修改。"""
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        setup_logging(config)
+    except OSError as exc:
+        print(f"警告：日志文件不可写（{exc}），继续执行。", file=sys.stderr)
+
+    username = (getattr(args, "username", None) or config.secrets.admin_username).strip()
+    password = getattr(args, "password", None) or config.secrets.admin_password
+    return asyncio.run(_create_admin(config, username=username, password=password))
+
+
+async def _create_admin(config: AppConfig, *, username: str, password: str) -> int:
+    from app.core.errors import AppError
+    from app.db.models import ROLE_SUPER_ADMIN
+    from app.db.session import dispose_database, get_session_factory, init_database
+    from app.services import user_service
+
+    await init_database(config)
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            existing = await user_service.get_user_by_username(session, username)
+            if existing is not None:
+                print(f"账号 {existing.username} 已存在，未做修改。")
+                return EXIT_OK
+            try:
+                user = await user_service.create_user(
+                    session,
+                    config,
+                    username=username,
+                    password=password,
+                    role=ROLE_SUPER_ADMIN,
+                    display_name="超级管理员",
+                    is_builtin=True,
+                    # 内置管理员密码在 .env 维护，因此不设"首次登录改密"门槛
+                    must_change_password=False,
+                )
+            except AppError as exc:
+                print(f"创建失败：{exc.detail}", file=sys.stderr)
+                return EXIT_FAILURE
+            print(f"已创建内置管理员：{user.username}（密码在服务器 .env 中维护）")
+            return EXIT_OK
+    except Exception as exc:  # noqa: BLE001 - 需要把原始错误展示给运维
+        print(f"创建失败：{exc}", file=sys.stderr)
+        print("提示：如果数据表不存在，请先执行 python main.py migrate", file=sys.stderr)
+        return EXIT_FAILURE
+    finally:
+        await dispose_database()
+
+
+def command_api(args: argparse.Namespace) -> int:
+    """启动后台 Web 服务。"""
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        setup_logging(config)
+    except OSError as exc:
+        print(f"警告：日志文件不可写（{exc}），继续启动。", file=sys.stderr)
+
+    import uvicorn
+
+    from app.api.app import create_app
+
+    host = getattr(args, "host", None) or config.server.host
+    port = getattr(args, "port", None) or config.server.port
+    print(f"后台服务启动中：http://{host}:{port}（访问模式 {config.app.access_mode}）")
+
+    uvicorn.run(
+        create_app(config),
+        host=host,
+        port=port,
+        reload=bool(getattr(args, "reload", False)),
+        log_config=None,
+    )
+    return EXIT_OK
+
+
 def _alembic_config(config: AppConfig):
     """构造 Alembic 配置；延迟导入，避免 check-config 也强依赖 Alembic。"""
     from alembic.config import Config as AlembicConfig
@@ -195,6 +291,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_migrate(args)
         if args.command == "init-db":
             return command_init_db(args)
+        if args.command == "create-admin":
+            return command_create_admin(args)
+        if args.command == "api":
+            return command_api(args)
         return command_pending(args)
     except KeyboardInterrupt:
         print("已中断。", file=sys.stderr)

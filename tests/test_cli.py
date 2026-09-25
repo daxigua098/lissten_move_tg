@@ -73,12 +73,12 @@ def test_check_config_reports_broken_yaml(project_root, write_config, capsys) ->
 
 
 def test_pending_command_returns_not_implemented(project_root, capsys) -> None:
-    code = main(_args(project_root, "create-admin"))
+    code = main(_args(project_root, "backup"))
 
     captured = capsys.readouterr()
     assert code == EXIT_NOT_IMPLEMENTED
     assert "尚未实现" in captured.err
-    assert "T2-02" in captured.err
+    assert "T7-02" in captured.err
 
 
 def test_migrate_creates_database_inside_project_root(project_root, capsys) -> None:

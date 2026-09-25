@@ -49,10 +49,11 @@
 | 任务 | 状态 | 提交 |
 |---|---|---|
 | T1-01 项目骨架与配置 | ✅ 已完成 | `a49652f` |
-| T1-02 数据库与模型（含 Alembic 迁移） | ✅ 已完成 | 本次提交 |
+| T1-02 数据库与模型（含 Alembic 迁移） | ✅ 已完成 | `82a44dc` |
 | T1-03 运行时锁与心跳 | ⏳ 未开始 | — |
-| T1-04 测试脚手架 | 🟡 部分完成（pytest 配置、公共夹具、数据库夹具已就绪，接口层夹具随 E2 补齐） | `a49652f` |
-| T2-01 ~ T2-05 登录与权限 | ⏳ 未开始 | — |
+| T1-04 测试脚手架 | 🟡 部分完成（105 个用例覆盖配置、数据库、迁移、鉴权与审计） | 本次提交 |
+| E2 登录与权限（含 Web 前端） | ✅ 已完成 | 本次提交 |
+| E3 及之后（账号池、源、接收组、线路） | ⏳ 未开始 | — |
 
 ## 本地运行
 
@@ -69,3 +70,22 @@ ruff check .
 > 说明：本项目尚未单独创建 `.venv`。当前 T1-01 的测试与 lint 是复用同级旧项目 `telegram搬运监听\.venv` 的解释器执行的（该环境已具备 pydantic / loguru / pytest / ruff 等依赖）。T1-02 需要 Alembic，届时建议为本项目创建独立虚拟环境并安装 `requirements.txt`。
 
 > 更新：项目已自建 `.venv`（Python 3.13），依赖按 `requirements.txt` 安装完毕；后续命令请用 `.\.venv\Scripts\python.exe` 或先激活虚拟环境。
+
+## 本地部署（当前可用）
+
+```powershell
+# 1. 初始化数据库与管理员（首次执行）
+.\.venv\Scripts\python.exe main.py check-config
+.\.venv\Scripts\python.exe main.py init-db
+.\.venv\Scripts\python.exe main.py create-admin
+
+# 2. 构建前端（已构建过可跳过）
+cd frontend; npm install; npm run build; cd ..
+
+# 3. 启动服务
+.\.venv\Scripts\python.exe main.py api
+```
+
+浏览器打开 <http://127.0.0.1:8000>，用 `admin / admin123` 登录（默认密码在 `.env` 的 `ADMIN_PASSWORD` 中维护）。
+
+已可用的功能：登录与会话、三级角色权限、审计日志、登录历史、账户管理（新增/改角色/启停/重置密码/踢下线/删除）、运行总览（真实数据来自 `/api/system/status`）。

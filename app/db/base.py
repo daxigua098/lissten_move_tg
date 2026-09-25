@@ -22,6 +22,19 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+def as_utc(value: datetime | None) -> datetime | None:
+    """把从数据库读出的时间统一标注为 UTC。
+
+    约定：所有写入数据库的时间都必须是 UTC（用 `utc_now()`）。SQLite 不保存时区，
+    读回来是 naive，这里补上 UTC 标记，避免混用 aware/naive 时间。
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 class Base(DeclarativeBase):
     """所有 ORM 模型的声明式基类。"""
 

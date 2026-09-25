@@ -1,0 +1,47 @@
+:root {
+  --tg-accent: #2f6fed;
+  --tg-bg: #f4f6fa;
+  --tg-border: #e3e8ef;
+  --tg-muted: #64748b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  background: var(--tg-bg);
+  color: #0f172a;
+}
+
+.page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.card-hint {
+  color: var(--tg-muted);
+  font-size: 13px;
+  margin: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.toolbar .spacer {
+  margin-left: auto;
+}

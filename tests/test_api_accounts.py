@@ -172,3 +172,56 @@ async def test_account_can_inherit_api_credentials_from_env(admin_client, api_co
     assert phone == "+8613800001111"
     assert api_id == api_config.telegram.api_id
     assert api_hash == api_config.telegram.api_hash
+
+
+async def test_account_rejects_out_of_range_api_id(admin_client) -> None:
+    """把用户 ID 填到 API ID 的位置时应给出明确提示，而不是 500。"""
+    response = await admin_client.post(
+        "/api/accounts",
+        headers=_headers(),
+        json=_payload(api_id=7506007396, api_hash="a" * 32),
+    )
+
+    assert response.status_code == 400
+    assert "超出范围" in response.json()["detail"]
+
+
+async def test_account_rejects_bad_api_hash(admin_client) -> None:
+    response = await admin_client.post(
+        "/api/accounts",
+        headers=_headers(),
+        json=_payload(api_id=1234567, api_hash="not-a-valid-api-hash-just-some-text"),
+    )
+
+    assert response.status_code == 400
+    assert "API Hash 形态不对" in response.json()["detail"]
+
+
+async def test_refresh_credentials_from_env(admin_client, api_config) -> None:
+    """把账号里存的旧凭据换成 .env 里的默认凭据。"""
+    created = await admin_client.post(
+        "/api/accounts",
+        headers=_headers(),
+        json=_payload(api_id=1234567, api_hash="a" * 32),
+    )
+    account_id = created.json()["id"]
+
+    response = await admin_client.post(
+        f"/api/accounts/{account_id}/credentials/refresh",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+
+    from app.db.session import session_scope
+    from app.services import tg_account_service
+
+    async with session_scope() as session:
+        account = await tg_account_service.get_account(session, account_id)
+        _phone, api_id, api_hash = tg_account_service.decrypt_credentials(
+            api_config,
+            account,
+        )
+
+    assert api_id == api_config.telegram.api_id
+    assert api_hash == api_config.telegram.api_hash

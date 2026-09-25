@@ -83,6 +83,16 @@ async function setDefault(row) {
   }
 }
 
+async function refreshCredentials(row) {
+  try {
+    await accountsApi.refreshCredentials(row.id);
+    ElMessage.success("已用 .env 里的凭据覆盖该账号");
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
 async function toggleStatus(row) {
   const next = row.status === "disabled" ? "pending_login" : "disabled";
   try {
@@ -248,6 +258,7 @@ onMounted(load);
           <el-button size="small" link type="primary" :disabled="row.is_default" @click="setDefault(row)">
             设为默认
           </el-button>
+          <el-button size="small" link @click="refreshCredentials(row)">用 .env 凭据</el-button>
           <el-button size="small" link @click="toggleStatus(row)">
             {{ row.status === "disabled" ? "启用" : "停用" }}
           </el-button>

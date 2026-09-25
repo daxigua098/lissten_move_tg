@@ -268,8 +268,13 @@ def _friendly_error(exc: BaseException) -> str:
         "SessionPasswordNeededError": "该账号开启了两步验证，请输入密码",
         "AuthKeyUnregisteredError": "登录态已失效，请重新登录",
         "ApiIdInvalidError": "API ID / API Hash 无效，请检查 .env 配置",
+        "PhoneNumberUnoccupiedError": "该手机号还没有注册 Telegram 账号",
+        "SendCodeUnavailableError": "该账号暂时无法发送验证码，请稍后再试",
         "FloodWaitError": "请求过于频繁，请稍后再试",
     }
+    if name == "error":
+        # struct.error：api_id 超出 32 位范围
+        return "API ID 无效：必须是小于 2147483647 的数字（通常 7~8 位），请检查 .env"
     if name in mapping:
         wait = getattr(exc, "seconds", None)
         if name == "FloodWaitError" and wait:

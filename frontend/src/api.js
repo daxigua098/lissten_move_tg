@@ -78,6 +78,7 @@ export const accountsApi = {
     http.post(`/api/accounts/${id}/login/password`, { password }),
   loginCancel: (id) => http.post(`/api/accounts/${id}/login/cancel`),
   loginStatus: (id) => http.get(`/api/accounts/${id}/login/status`),
+  refreshCredentials: (id) => http.post(`/api/accounts/${id}/credentials/refresh`),
 };
 
 export const botsApi = {

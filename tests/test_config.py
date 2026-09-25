@@ -289,3 +289,40 @@ def test_telegram_admin_ids_accept_chinese_comma(project_root) -> None:
 
     assert config.telegram.admin_ids == [111, 222, 333]
     assert config.telegram.configured is False
+
+
+def test_check_config_rejects_out_of_range_api_id(project_root, valid_secret_key) -> None:
+    """api_id 是 10 位（超过 32 位整数）时应报错，而不是等到登录才崩。"""
+    config = load_config(
+        project_root=project_root,
+        environ={
+            "SECRET_KEY": valid_secret_key,
+            "ADMIN_PASSWORD": "custom-pass",
+            "TG_API_ID": "7506007396",
+            "TG_API_HASH": "a" * 32,
+        },
+    )
+
+    issues = check_config(config)
+
+    assert has_errors(issues)
+    bad = next(item for item in issues if item.field == "telegram.api_id")
+    assert "超出范围" in bad.message
+    assert "用户 ID" in bad.hint
+
+
+def test_check_config_rejects_bad_api_hash_shape(project_root, valid_secret_key) -> None:
+    config = load_config(
+        project_root=project_root,
+        environ={
+            "SECRET_KEY": valid_secret_key,
+            "ADMIN_PASSWORD": "custom-pass",
+            "TG_API_ID": "1234567",
+            "TG_API_HASH": "x" * 46,
+        },
+    )
+
+    issues = check_config(config)
+
+    assert has_errors(issues)
+    assert any(item.field == "telegram.api_hash" for item in issues)

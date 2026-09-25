@@ -5,7 +5,11 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import AppConfig
+from app.core.config import (
+    TELEGRAM_API_HASH_PATTERN,
+    TELEGRAM_API_ID_MAX,
+    AppConfig,
+)
 from app.core.errors import NotFoundError, UserExistsError, ValidationFailedError
 from app.core.security import FieldCipher, mask_phone
 from app.core.source_resolver import PHONE_PATTERN
@@ -104,6 +108,18 @@ async def create_account(
         raise ValidationFailedError(
             "缺少 API ID / API Hash：请在账号里填写，或在 .env 配置 TG_API_ID / TG_API_HASH"
         )
+    if resolved_api_id > TELEGRAM_API_ID_MAX:
+        too_big_hint = (
+            f"API ID 超出范围（{resolved_api_id}）：必须是小于 {TELEGRAM_API_ID_MAX} 的数字"
+            "（通常 7~8 位）。如果这是你的 Telegram 用户 ID，"
+            "那是另一个东西（用户 ID 填在「控制 Bot 的管理员」里）"
+        )
+        raise ValidationFailedError(too_big_hint)
+    if not TELEGRAM_API_HASH_PATTERN.match(resolved_api_hash):
+        raise ValidationFailedError(
+            f"API Hash 形态不对（当前 {len(resolved_api_hash)} 位）："
+            "官方 api_hash 是 32 位十六进制字符，请到 my.telegram.org 复制"
+        )
 
     cipher = FieldCipher.from_config(config)
     account = TgAccount(
@@ -194,6 +210,34 @@ async def delete_account(session: AsyncSession, account_id: int) -> TgAccount:
         raise NotFoundError("执行账号不存在")
     await session.delete(account)
     await session.commit()
+    return account
+
+
+async def refresh_credentials_from_config(
+    session: AsyncSession,
+    config: AppConfig,
+    account: TgAccount,
+) -> TgAccount:
+    """用 .env 里的默认 API 凭据覆盖该账号已保存的凭据。"""
+    api_id = int(config.telegram.api_id or 0)
+    api_hash = config.telegram.api_hash.strip()
+    if api_id <= 0 or not api_hash:
+        raise ValidationFailedError("`.env` 里没有配置 TG_API_ID / TG_API_HASH")
+    if api_id > TELEGRAM_API_ID_MAX:
+        raise ValidationFailedError(
+            f"`.env` 里的 TG_API_ID 超出范围（{api_id}），"
+            f"必须是小于 {TELEGRAM_API_ID_MAX} 的数字（通常 7~8 位）"
+        )
+    if not TELEGRAM_API_HASH_PATTERN.match(api_hash):
+        raise ValidationFailedError(
+            f"`.env` 里的 TG_API_HASH 形态不对（{len(api_hash)} 位），应为 32 位十六进制字符"
+        )
+
+    cipher = FieldCipher.from_config(config)
+    account.api_id_enc = cipher.encrypt(str(api_id))
+    account.api_hash_enc = cipher.encrypt(api_hash)
+    await session.commit()
+    await session.refresh(account)
     return account
 
 

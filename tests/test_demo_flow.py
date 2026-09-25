@@ -22,6 +22,8 @@ def demo_config(project_root, valid_secret_key):
             "ADMIN_API_TOKEN": ADMIN_API_TOKEN,
             "DATABASE_URL": database_url(project_root),
             "DEMO_MODE": "true",
+            "TG_API_ID": "1234567",
+            "TG_API_HASH": "0123456789abcdef0123456789abcdef",
         },
     )
 
@@ -54,8 +56,6 @@ async def _bootstrap(demo_client) -> dict:
         json={
             "name": "演示主号",
             "phone": "+8613800001111",
-            "api_id": 123456,
-            "api_hash": "demo-api-hash-0123456789abcdef",
             "is_default": True,
         },
     )

@@ -137,6 +137,25 @@ async def delete_account(
     return {"id": account_id, "name": account.name, "deleted": True}
 
 
+@router.post("/{account_id}/credentials/refresh")
+async def refresh_credentials(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """用 .env 里的默认 API 凭据覆盖该账号保存的凭据。"""
+    config: AppConfig = request.app.state.config
+    account = await tg_account_service.get_account(session, account_id)
+    if account is None:
+        raise NotFoundError("执行账号不存在")
+    account = await tg_account_service.refresh_credentials_from_config(
+        session,
+        config,
+        account,
+    )
+    return serialize_account(config, account)
+
+
 @router.post("/{account_id}/login/start")
 async def start_login(
     account_id: int,

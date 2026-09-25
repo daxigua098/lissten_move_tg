@@ -29,6 +29,10 @@ DEFAULT_ADMIN_PASSWORD = "admin123"
 # Fernet 密钥形态：43 位 urlsafe base64 字符 + 结尾等号
 FERNET_KEY_PATTERN = re.compile(r"^[A-Za-z0-9_\-]{43}=$")
 
+# Telegram 官方 API 凭据形态
+TELEGRAM_API_ID_MAX = 2_147_483_647  # Telethon 按 32 位有符号整数打包
+TELEGRAM_API_HASH_PATTERN = re.compile(r"^[0-9a-fA-F]{32}$")
+
 LOG_LEVELS = ("TRACE", "DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR", "CRITICAL")
 
 # 环境变量 → 配置项映射（只有列出的键会覆盖 YAML）
@@ -132,6 +136,16 @@ class TelegramSection(BaseModel):
     @property
     def configured(self) -> bool:
         return self.api_id > 0 and bool(self.api_hash.strip())
+
+    @property
+    def api_id_looks_valid(self) -> bool:
+        """api_id 是否在 Telethon 能打包的范围内。"""
+        return 0 < self.api_id <= TELEGRAM_API_ID_MAX
+
+    @property
+    def api_hash_looks_valid(self) -> bool:
+        """api_hash 是否为官方形态（32 位十六进制）。"""
+        return bool(TELEGRAM_API_HASH_PATTERN.match(self.api_hash.strip()))
 
 
 class RuntimeSection(BaseModel):
@@ -303,6 +317,25 @@ def check_config(config: AppConfig) -> list[ConfigIssue]:
                 "telegram.api_id",
                 "未配置 Telegram API 凭据（TG_API_ID / TG_API_HASH）",
                 "绑定执行账号与校验 Bot Token 时需要，到 my.telegram.org 申请",
+            )
+        )
+    elif not config.telegram.api_id_looks_valid:
+        issues.append(
+            ConfigIssue(
+                "error",
+                "telegram.api_id",
+                f"API ID 超出范围（当前 {config.telegram.api_id}）",
+                f"必须是小于 {TELEGRAM_API_ID_MAX} 的数字（通常是 7~8 位）；"
+                "如果这是你的 Telegram 用户 ID，说明填错了位置",
+            )
+        )
+    elif not config.telegram.api_hash_looks_valid:
+        issues.append(
+            ConfigIssue(
+                "error",
+                "telegram.api_hash",
+                f"API Hash 形态不对（当前 {len(config.telegram.api_hash.strip())} 位）",
+                "官方 api_hash 是 32 位十六进制字符，请到 my.telegram.org 复制",
             )
         )
 

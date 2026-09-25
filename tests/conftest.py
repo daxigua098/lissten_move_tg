@@ -15,6 +15,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+@pytest.fixture(autouse=True)
+def reset_logger():
+    """每个用例后清空 loguru sink，避免写入已关闭的捕获流。"""
+    yield
+    from loguru import logger
+
+    logger.remove()
+
+
 @pytest.fixture
 def valid_secret_key() -> str:
     """形态合法的 Fernet 密钥（43 位 urlsafe base64 + 等号）。"""

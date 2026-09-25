@@ -27,6 +27,7 @@ async def _snapshot(config: AppConfig, session: AsyncSession) -> dict[str, Any]:
     heartbeat = read_status(config.path(config.runtime.status_file))
     control = read_control(control_path)
     jobs = await delivery_service.job_stats(session)
+    pending_routes = await runtime_service.pending_route_ids(session, config)
     return {
         "status": (heartbeat or {}).get("status", "stopped"),
         "pid": (heartbeat or {}).get("pid"),
@@ -37,6 +38,8 @@ async def _snapshot(config: AppConfig, session: AsyncSession) -> dict[str, Any]:
         "stop_requested": control["stop_requested"],
         "jobs": jobs,
         "queue_size": int(jobs.get("pending", 0)) + int(jobs.get("retrying", 0)),
+        "pending_route_ids": pending_routes or [],
+        "config_stale": bool(pending_routes),
     }
 
 

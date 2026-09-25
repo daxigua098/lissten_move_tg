@@ -146,6 +146,16 @@ async function act(action) {
       :description="`当前有 ${status?.counts?.leads?.undelivered} 条未推送：全量监听默认只入库，去左侧「线索池」查看全部；想让每条都进群，到线路里勾上「全量模式也推卡片」再重启运行时。`"
     />
 
+    <el-alert
+      v-if="status?.runtime?.config_stale"
+      class="panel"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="有线路还没被运行时接管"
+      :description="`线路 #${(status?.runtime?.pending_route_ids || []).join('、#')} 是新加或改过监听源的，运行时还没给它注册监听——点上面的「重启」才会开始采集。`"
+    />
+
     <el-card shadow="never" class="panel">
       <template #header>
         <span>当前登录</span>

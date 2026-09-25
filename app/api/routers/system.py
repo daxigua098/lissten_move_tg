@@ -15,7 +15,7 @@ from app.core.heartbeat import heartbeat_age_seconds, read_status
 from app.core.runtime_control import read_control
 from app.db.models import User
 from app.db.session import get_engine
-from app.services import delivery_service, lead_service, user_service
+from app.services import delivery_service, lead_service, runtime_service, user_service
 
 router = APIRouter(
     prefix="/api/system",
@@ -43,6 +43,7 @@ async def status(
     heartbeat = read_status(config.path(config.runtime.status_file))
     control = read_control(config.path(config.runtime.control_file))
     runtime_state = (heartbeat or {}).get("status", "stopped")
+    pending_routes = await runtime_service.pending_route_ids(session, config)
 
     database_status = "ok"
     try:
@@ -59,6 +60,8 @@ async def status(
             "started_at": (heartbeat or {}).get("started_at"),
             "paused": control["paused"],
             "stop_requested": control["stop_requested"],
+            "pending_route_ids": pending_routes or [],
+            "config_stale": bool(pending_routes),
         },
         "counts": {
             "users": total_users,

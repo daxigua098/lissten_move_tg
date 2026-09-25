@@ -69,6 +69,8 @@ class RuntimeService:
         # 管理员 ID 缓存：跳过管理员这条规则不该每条消息都去查一次群成员
         self._admin_cache: dict[int, set[int]] = {}
         self._last_purge_at = float("-inf")
+        # 本次启动注册了哪些线路（写进心跳，界面上用来发现"改了但没重启"）
+        self._registered: dict[str, Any] = {}
 
     @property
     def control_path(self):
@@ -93,6 +95,7 @@ class RuntimeService:
             if client is None:
                 client = await self._open_client()
             handlers = await self._register_handlers(client)
+            self._registered = handlers
             logger.info(
                 "实时监听已启动：{} 个源（A 线 {} 条 / B 线 {} 条）",
                 handlers["sources"],
@@ -168,7 +171,7 @@ class RuntimeService:
                 if chat is not None and chat.tg_id:
                     source_entities[chat_id] = int(chat.tg_id)
 
-        counts = {"sources": 0, "carry": 0, "monitor": 0}
+        counts: dict[str, Any] = {"sources": 0, "carry": 0, "monitor": 0, "ids": []}
         for chat_id, buckets in sources.items():
             tg_id = source_entities.get(chat_id)
             if not tg_id:
@@ -189,6 +192,7 @@ class RuntimeService:
 
                 client.add_event_handler(carry_handler, events.NewMessage(chats=entity))
                 counts["carry"] += len(carry_routes)
+                counts["ids"].extend(route.id for route in carry_routes)
 
             if monitor_routes:
 
@@ -197,6 +201,7 @@ class RuntimeService:
 
                 client.add_event_handler(monitor_handler, events.NewMessage(chats=entity))
                 counts["monitor"] += len(monitor_routes)
+                counts["ids"].extend(route.id for route in monitor_routes)
 
             counts["sources"] += 1
         return counts
@@ -590,15 +595,16 @@ class RuntimeService:
     async def _publish(self, *, status: str, extra: dict[str, Any]) -> None:
         async with session_scope() as session:
             counts = await delivery_service.job_stats(session)
-        write_status(
-            self.status_path,
-            {
-                "status": status,
-                "paused": is_paused(self.control_path),
-                "queue": counts,
-                **extra,
-            },
-        )
+            write_status(
+                self.status_path,
+                {
+                    "status": status,
+                    "paused": is_paused(self.control_path),
+                    "queue": counts,
+                    "routes": self._registered,
+                    **extra,
+                },
+            )
 
 
 async def runtime_status(config: AppConfig) -> dict[str, Any]:
@@ -622,6 +628,24 @@ def _runtime_is_alive(config: AppConfig) -> bool:
         return False
     age = heartbeat_age_seconds(status)
     return age is not None and age < RUNTIME_STALE_SECONDS
+
+
+async def pending_route_ids(session: Any, config: AppConfig) -> list[int] | None:
+    """启用中、但没被正在运行的运行时接管的线路 ID。
+
+    None 表示判断不出来（运行时没在跑，或心跳还是旧格式）——界面据此不做提醒。
+    """
+    from sqlalchemy import select
+
+    from app.db.models import Route
+
+    status = read_status(config.path(config.runtime.status_file))
+    routes = (status or {}).get("routes") or {}
+    registered = routes.get("ids")
+    if not _runtime_is_alive(config) or registered is None:
+        return None
+    enabled = list(await session.scalars(select(Route.id).where(Route.enabled.is_(True))))
+    return sorted(set(enabled) - set(registered))
 
 
 async def start_runtime_process(

@@ -197,8 +197,12 @@ async def test_account_rejects_bad_api_hash(admin_client) -> None:
     assert "API Hash 形态不对" in response.json()["detail"]
 
 
-async def test_refresh_credentials_from_env(admin_client, api_config) -> None:
+async def test_refresh_credentials_from_env(admin_client, api_config, project_root) -> None:
     """把账号里存的旧凭据换成 .env 里的默认凭据。"""
+    (project_root / ".env").write_text(
+        f"TG_API_ID={api_config.telegram.api_id}\nTG_API_HASH={api_config.telegram.api_hash}\n",
+        encoding="utf-8",
+    )
     created = await admin_client.post(
         "/api/accounts",
         headers=_headers(),
@@ -225,3 +229,61 @@ async def test_refresh_credentials_from_env(admin_client, api_config) -> None:
 
     assert api_id == api_config.telegram.api_id
     assert api_hash == api_config.telegram.api_hash
+
+
+async def test_refresh_credentials_reads_updated_env_file(
+    admin_client,
+    project_root,
+    api_config,
+) -> None:
+    """改完 .env 后点「用 .env 凭据」应立即生效（重新读磁盘，不用重启）。"""
+    env_path = project_root / ".env"
+    env_path.write_text(
+        f"SECRET_KEY={'A' * 43}=\n"
+        "TG_API_ID=7654321\n"
+        "TG_API_HASH=abcdefabcdefabcdefabcdefabcdefab\n",
+        encoding="utf-8",
+    )
+
+    created = await admin_client.post(
+        "/api/accounts",
+        headers=_headers(),
+        json=_payload(api_id=1111111, api_hash="b" * 32),
+    )
+    account_id = created.json()["id"]
+
+    response = await admin_client.post(
+        f"/api/accounts/{account_id}/credentials/refresh",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200, response.text
+
+    from app.db.session import session_scope
+    from app.services import tg_account_service
+
+    async with session_scope() as session:
+        account = await tg_account_service.get_account(session, account_id)
+        # .env 里的 SECRET_KEY 与 api_config 一致，可直接用它解密
+        _phone, api_id, api_hash = tg_account_service.decrypt_credentials(api_config, account)
+
+    assert api_id == 7654321
+    assert api_hash == "abcdefabcdefabcdefabcdefabcdefab"
+
+
+async def test_refresh_credentials_reports_bad_env(admin_client, project_root) -> None:
+    """.env 里还是超范围的 api_id 时，刷新应给出明确错误。"""
+    (project_root / ".env").write_text(
+        "TG_API_ID=7506007396\nTG_API_HASH=" + "a" * 32 + "\n",
+        encoding="utf-8",
+    )
+    created = await admin_client.post("/api/accounts", headers=_headers(), json=_payload())
+    account_id = created.json()["id"]
+
+    response = await admin_client.post(
+        f"/api/accounts/{account_id}/credentials/refresh",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 400
+    assert "超出范围" in response.json()["detail"]

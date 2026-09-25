@@ -217,25 +217,34 @@ async def refresh_credentials_from_config(
     session: AsyncSession,
     config: AppConfig,
     account: TgAccount,
+    *,
+    api_id: int | None = None,
+    api_hash: str | None = None,
+    source_label: str = ".env",
 ) -> TgAccount:
-    """用 .env 里的默认 API 凭据覆盖该账号已保存的凭据。"""
-    api_id = int(config.telegram.api_id or 0)
-    api_hash = config.telegram.api_hash.strip()
-    if api_id <= 0 or not api_hash:
-        raise ValidationFailedError("`.env` 里没有配置 TG_API_ID / TG_API_HASH")
-    if api_id > TELEGRAM_API_ID_MAX:
+    """用指定（默认取配置里）的 API 凭据覆盖该账号已保存的凭据。
+
+    加解密始终用内存里的配置（保证 SECRET_KEY 一致），只覆盖凭据本身。
+    """
+    target_id = int(api_id) if api_id else int(config.telegram.api_id or 0)
+    target_hash = (api_hash or config.telegram.api_hash).strip()
+
+    if target_id <= 0 or not target_hash:
+        raise ValidationFailedError(f"`{source_label}` 里没有配置 TG_API_ID / TG_API_HASH")
+    if target_id > TELEGRAM_API_ID_MAX:
         raise ValidationFailedError(
-            f"`.env` 里的 TG_API_ID 超出范围（{api_id}），"
+            f"`{source_label}` 里的 TG_API_ID 超出范围（{target_id}），"
             f"必须是小于 {TELEGRAM_API_ID_MAX} 的数字（通常 7~8 位）"
         )
-    if not TELEGRAM_API_HASH_PATTERN.match(api_hash):
+    if not TELEGRAM_API_HASH_PATTERN.match(target_hash):
         raise ValidationFailedError(
-            f"`.env` 里的 TG_API_HASH 形态不对（{len(api_hash)} 位），应为 32 位十六进制字符"
+            f"`{source_label}` 里的 TG_API_HASH 形态不对（{len(target_hash)} 位），"
+            "应为 32 位十六进制字符"
         )
 
     cipher = FieldCipher.from_config(config)
-    account.api_id_enc = cipher.encrypt(str(api_id))
-    account.api_hash_enc = cipher.encrypt(api_hash)
+    account.api_id_enc = cipher.encrypt(str(target_id))
+    account.api_hash_enc = cipher.encrypt(target_hash)
     await session.commit()
     await session.refresh(account)
     return account

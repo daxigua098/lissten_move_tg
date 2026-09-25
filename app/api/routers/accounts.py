@@ -15,8 +15,8 @@ from app.api.schemas.telegram import (
     LoginPasswordRequest,
     LoginStartRequest,
 )
-from app.core.config import AppConfig
-from app.core.errors import NotFoundError
+from app.core.config import AppConfig, ConfigError, load_config
+from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.telegram_client import session_file_path
 from app.db.base import as_utc
 from app.db.models import ROLE_SUPER_ADMIN, TgAccount
@@ -143,8 +143,20 @@ async def refresh_credentials(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """用 .env 里的默认 API 凭据覆盖该账号保存的凭据。"""
+    """用 .env 里的默认 API 凭据覆盖该账号保存的凭据。
+
+    这里重新从磁盘读取配置，这样改完 .env 点按钮即可生效，不必重启服务。
+    """
     config: AppConfig = request.app.state.config
+    try:
+        fresh = load_config(
+            config.config_path,
+            env_file=config.env_path,
+            project_root=config.project_root,
+        )
+    except ConfigError as exc:
+        raise ValidationFailedError(f"读取配置失败：{exc}") from exc
+
     account = await tg_account_service.get_account(session, account_id)
     if account is None:
         raise NotFoundError("执行账号不存在")
@@ -152,6 +164,8 @@ async def refresh_credentials(
         session,
         config,
         account,
+        api_id=fresh.telegram.api_id,
+        api_hash=fresh.telegram.api_hash,
     )
     return serialize_account(config, account)
 

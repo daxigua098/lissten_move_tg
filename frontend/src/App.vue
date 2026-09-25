@@ -15,6 +15,9 @@ const showShell = computed(
 
 const canOperate = computed(() => ["sub_admin", "super_admin"].includes(auth.role));
 
+// 当前加载的前端产物文件名，用来判断页面是不是最新构建
+const pageVersion = import.meta.url.split("/").pop();
+
 async function logout() {
   try {
     await authApi.logout();
@@ -67,6 +70,7 @@ function logoutAll() {
         <el-menu-item v-if="auth.isSuperAdmin" index="/login-history">登录历史</el-menu-item>
       </el-menu>
       <div class="aside-footer">
+        <span class="card-hint version">页面版本 {{ pageVersion }}</span>
         <el-button link type="primary" @click="logout">退出登录</el-button>
         <el-button link @click="logoutAll">退出所有设备</el-button>
       </div>
@@ -150,6 +154,12 @@ function logoutAll() {
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
+}
+
+.aside-footer .version {
+  font-size: 11px;
+  opacity: 0.6;
+  word-break: break-all;
 }
 
 .shell-header {

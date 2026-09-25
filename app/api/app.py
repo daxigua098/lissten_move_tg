@@ -22,6 +22,7 @@ from app.api.routers import (
     health,
     jobs,
     logs,
+    meta,
     routes,
     runtime,
     sources,
@@ -92,6 +93,7 @@ def create_app(
     register_exception_handlers(app)
 
     app.include_router(health.router)
+    app.include_router(meta.router)
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(logs.router)

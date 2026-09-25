@@ -178,3 +178,9 @@ export const leadsApi = {
     return `/api/leads/export.csv?${query.toString()}`;
   },
 };
+
+export const hotKeywordsApi = {
+  list: (params) => http.get("/api/hot-keywords", { params }),
+  stats: () => http.get("/api/hot-keywords/stats"),
+  promote: (payload) => http.post("/api/hot-keywords/promote", payload),
+};

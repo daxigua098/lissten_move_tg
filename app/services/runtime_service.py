@@ -43,6 +43,7 @@ from app.db.session import session_scope
 from app.services import (
     delivery_service,
     history_service,
+    hot_keyword_service,
     keyword_service,
     lead_service,
     tg_account_service,
@@ -272,6 +273,8 @@ class RuntimeService:
             return
 
         async with session_scope() as session:
+            # 热门词采集一条消息只做一次（同一条消息不因多条线路重复计数）
+            collected = False
             for route in routes:
                 fresh = await session.get(Route, route.id)
                 if fresh is None or not fresh.enabled:
@@ -317,6 +320,21 @@ class RuntimeService:
                 if is_excluded(text, exclude_words):
                     logger.debug("被排除词挡住：{}", text[:30])
                     continue
+                # 热门词采集：只做一次（同一条消息不因多条线路重复计数）
+                if not collected:
+                    collected = True
+                    await hot_keyword_service.collect_message(
+                        session,
+                        text=text,
+                        source_chat_id=fresh.source_chat_id,
+                        source_title=(
+                            source_chat.display_name
+                            or source_chat.title
+                            or source_chat.username
+                            or ""
+                        ),
+                        seen_at=view.date,
+                    )
                 hits = match_text(
                     text,
                     entries,

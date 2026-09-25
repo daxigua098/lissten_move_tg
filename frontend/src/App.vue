@@ -62,6 +62,7 @@ function logoutAll() {
         <el-menu-item v-if="canOperate" index="/targets">接收组</el-menu-item>
         <el-menu-item v-if="canOperate" index="/routes">线路管理</el-menu-item>
         <el-menu-item v-if="canOperate" index="/keywords">词库管理</el-menu-item>
+        <el-menu-item v-if="canOperate" index="/hot-keywords">热门关键词</el-menu-item>
         <el-menu-item v-if="canOperate" index="/leads">线索池</el-menu-item>
         <el-menu-item v-if="canOperate" index="/ad-assets">广告素材库</el-menu-item>
         <el-menu-item index="/jobs">投递任务</el-menu-item>

@@ -49,3 +49,10 @@ class KeywordMatchRequest(BaseModel):
     match_contains: bool = True
     match_fuzzy: bool = True
     exclude_keywords: list[str] = Field(default_factory=list)
+
+
+class HotKeywordPromoteRequest(BaseModel):
+    """把热门词加进某个关键词组。"""
+
+    token: str = Field(min_length=1, max_length=64)
+    group_id: int = Field(gt=0)

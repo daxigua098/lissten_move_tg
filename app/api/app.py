@@ -20,6 +20,7 @@ from app.api.routers import (
     auth,
     bots,
     health,
+    hot_keywords,
     jobs,
     keywords,
     leads,
@@ -109,6 +110,7 @@ def create_app(
     app.include_router(keywords.router)
     app.include_router(keywords.keyword_router)
     app.include_router(leads.router)
+    app.include_router(hot_keywords.router)
     app.include_router(uploads.router)
     app.include_router(runtime.router)
     app.include_router(jobs.router)

@@ -7,6 +7,7 @@ import Audit from "../views/Audit.vue";
 import Bots from "../views/Bots.vue";
 import ChangePassword from "../views/ChangePassword.vue";
 import Dashboard from "../views/Dashboard.vue";
+import HotKeywords from "../views/HotKeywords.vue";
 import Jobs from "../views/Jobs.vue";
 import Keywords from "../views/Keywords.vue";
 import Leads from "../views/Leads.vue";
@@ -31,6 +32,7 @@ const routes = [
   { path: "/routes", name: "routes", component: Routes, meta: { role: "sub_admin" } },
   { path: "/ad-assets", name: "ad-assets", component: AdAssets, meta: { role: "sub_admin" } },
   { path: "/keywords", name: "keywords", component: Keywords, meta: { role: "sub_admin" } },
+  { path: "/hot-keywords", name: "hot-keywords", component: HotKeywords, meta: { role: "sub_admin" } },
   { path: "/leads", name: "leads", component: Leads, meta: { role: "sub_admin" } },
   { path: "/jobs", name: "jobs", component: Jobs },
   { path: "/audit", name: "audit", component: Audit },

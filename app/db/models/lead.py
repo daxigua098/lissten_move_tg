@@ -149,3 +149,21 @@ class Lead(TimestampMixin, Base):
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     target_chat_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     target_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class HotKeyword(TimestampMixin, Base):
+    """热门关键词：从监听到的会员发言里采词，按出现次数排名。
+
+    用途是"发现用户在搜什么"，帮我们决定往词库里加什么词。
+    **永不删除**：不参与任何保留策略清理，只累加。
+    """
+
+    __tablename__ = "hot_keywords"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    count: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    message_count: Mapped[int] = mapped_column(Integer, default=0)
+    sources: Mapped[str] = mapped_column(Text, default="")
+    first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -12,6 +12,9 @@ from app.db.models.job import (
     DeliveryJob,
 )
 from app.db.models.lead import (
+    GROUP_KIND_EXCLUDE,
+    GROUP_KIND_KEYWORD,
+    GROUP_KINDS,
     MATCH_CONTAINS,
     MATCH_FUZZY,
     MATCH_MODES,
@@ -108,6 +111,9 @@ __all__ = [
     "LISTEN_MODE_ALL",
     "LISTEN_MODE_KEYWORD",
     "LISTEN_MODES",
+    "GROUP_KIND_EXCLUDE",
+    "GROUP_KIND_KEYWORD",
+    "GROUP_KINDS",
     "MATCH_CONTAINS",
     "MATCH_FUZZY",
     "MATCH_MODES",

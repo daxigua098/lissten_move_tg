@@ -158,3 +158,41 @@ async def test_cooldown_dedupes_same_person_and_keyword(db, fake_delivery_client
         _rows, total = await lead_service.list_leads(session)
     assert total == 1
     assert len(fake_delivery_client.sent) == 1
+
+
+async def test_exclude_group_blocks_message(db, fake_delivery_client) -> None:
+    """选了排除词组：组里任意一个词出现，整条消息直接忽略。"""
+    from app.db.session import session_scope
+    from app.services import keyword_service, lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, source_id, _target_id = await _prepare_monitor_route(db, listen_mode="all")
+    async with session_scope() as session:
+        group = await keyword_service.create_group(
+            session,
+            name="噪声（排除）",
+            kind="exclude",
+        )
+        await keyword_service.add_keyword(session, group.id, word="客服", aliases="小助手")
+        await route_service.update_route(
+            session,
+            route_id,
+            b_config={"listen_mode": "all", "exclude_group_ids": [group.id]},
+        )
+        route = await route_service.get_route(session, route_id)
+        assert await keyword_service.load_exclude_words(session, [group.id]) == ["客服", "小助手"]
+
+    service = RuntimeService(db)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("我是客服 有需要找我"),
+        [route],
+    )
+    await service._on_monitor_message(fake_delivery_client, _event("随便聊聊天气"), [route])
+
+    async with session_scope() as session:
+        rows, total = await lead_service.list_leads(session)
+    # 客服那条被排除词挡掉，只剩普通发言
+    assert total == 1
+    assert rows[0].text == "随便聊聊天气"
+    assert source_id

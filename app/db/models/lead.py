@@ -30,9 +30,17 @@ MATCH_CONTAINS = "contains"
 MATCH_FUZZY = "fuzzy"
 MATCH_MODES = (MATCH_CONTAINS, MATCH_FUZZY)
 
+# 词组用途：关键词（用来判断是不是线索）/ 排除词（命中就整条忽略）
+GROUP_KIND_KEYWORD = "keyword"
+GROUP_KIND_EXCLUDE = "exclude"
+GROUP_KINDS = (GROUP_KIND_KEYWORD, GROUP_KIND_EXCLUDE)
+
 
 class KeywordGroup(TimestampMixin, Base):
-    """关键词组：一条 B 线可以引用一组关键词。"""
+    """词组：关键词组用来判断命中，排除词组用来挡掉噪声。
+
+    同一种表结构：``kind`` 区分用途，一条 B 线可以多选引用多组，取并集。
+    """
 
     __tablename__ = "keyword_groups"
 
@@ -40,6 +48,11 @@ class KeywordGroup(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     description: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    kind: Mapped[str] = mapped_column(
+        String(16),
+        default=GROUP_KIND_KEYWORD,
+        index=True,
+    )
 
     keywords: Mapped[list[Keyword]] = relationship(
         back_populates="group",

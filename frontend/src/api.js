@@ -157,7 +157,7 @@ export const runtimeApi = {
 };
 
 export const keywordsApi = {
-  list: () => http.get("/api/keyword-groups"),
+  list: (kind) => http.get("/api/keyword-groups", { params: kind ? { kind } : {} }),
   seed: () => http.post("/api/keyword-groups/seed"),
   create: (payload) => http.post("/api/keyword-groups", payload),
   update: (id, payload) => http.patch(`/api/keyword-groups/${id}`, payload),

@@ -10,6 +10,8 @@ class KeywordGroupCreateRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=64)
     description: str = Field(default="", max_length=255)
+    # keyword=关键词组（判断命中）/ exclude=排除词组（命中即忽略）
+    kind: str = Field(default="keyword", pattern="^(keyword|exclude)$")
 
 
 class KeywordGroupUpdateRequest(BaseModel):
@@ -42,6 +44,7 @@ class KeywordMatchRequest(BaseModel):
 
     text: str = Field(min_length=1, max_length=4000)
     group_ids: list[int] = Field(default_factory=list)
+    exclude_group_ids: list[int] = Field(default_factory=list)
     sensitivity: str = "loose"
     match_contains: bool = True
     match_fuzzy: bool = True

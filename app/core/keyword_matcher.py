@@ -114,10 +114,8 @@ def match_text(
     normalized = normalize(text)
     if not normalized:
         return []
-    for word in exclude:
-        candidate = normalize(word)
-        if candidate and candidate in normalized:
-            return []
+    if is_excluded(text, exclude):
+        return []
 
     threshold = SENSITIVITY_THRESHOLDS.get(sensitivity, SENSITIVITY_THRESHOLDS["loose"])
     hits: list[KeywordHit] = []
@@ -153,3 +151,15 @@ def match_text(
             hits.append(best)
     hits.sort(key=lambda item: item.score, reverse=True)
     return hits
+
+
+def is_excluded(text: str | None, exclude: tuple[str, ...] | list[str]) -> bool:
+    """消息里出现任意一个排除词就算被挡住（整条丢弃，不是只忽略那个词）。"""
+    normalized = normalize(text)
+    if not normalized:
+        return False
+    for word in exclude:
+        candidate = normalize(word)
+        if candidate and candidate in normalized:
+            return True
+    return False

@@ -7,19 +7,27 @@ import { keywordsApi } from "../api";
 const loading = ref(false);
 const groups = ref([]);
 const activeGroupId = ref(null);
+const kind = ref("keyword");
 const keywordForm = reactive({ word: "", aliases: "" });
-const matchForm = reactive({ text: "", sensitivity: "loose" });
+const matchForm = reactive({ text: "", sensitivity: "loose", exclude_group_ids: [] });
 const matchResult = ref(null);
+const excludeGroups = ref([]);
 
 const activeGroup = computed(
   () => groups.value.find((item) => item.id === activeGroupId.value) || null,
 );
 
+const kindLabel = computed(() => (kind.value === "exclude" ? "排除词组" : "关键词组"));
+
 async function load() {
   loading.value = true;
   try {
-    const { data } = await keywordsApi.list();
-    groups.value = data.items;
+    const [current, others] = await Promise.all([
+      keywordsApi.list(kind.value),
+      keywordsApi.list(kind.value === "exclude" ? "keyword" : "exclude"),
+    ]);
+    groups.value = current.data.items;
+    excludeGroups.value = others.data.items;
     if (!groups.value.some((item) => item.id === activeGroupId.value)) {
       activeGroupId.value = groups.value[0]?.id ?? null;
     }
@@ -28,6 +36,13 @@ async function load() {
   } finally {
     loading.value = false;
   }
+}
+
+async function switchKind(value) {
+  kind.value = value;
+  activeGroupId.value = null;
+  matchResult.value = null;
+  await load();
 }
 
 async function seed() {
@@ -51,7 +66,7 @@ async function createGroup() {
       "新建关键词组",
       { confirmButtonText: "创建", cancelButtonText: "取消" },
     );
-    await keywordsApi.create({ name: value });
+    await keywordsApi.create({ name: value, kind: kind.value });
     ElMessage.success("已创建");
     await load();
   } catch (error) {
@@ -165,6 +180,7 @@ async function runMatch() {
     const { data } = await keywordsApi.match({
       text: matchForm.text,
       sensitivity: matchForm.sensitivity,
+      exclude_group_ids: matchForm.exclude_group_ids,
     });
     matchResult.value = data;
   } catch (error) {
@@ -178,19 +194,24 @@ onMounted(load);
 <template>
   <div v-loading="loading">
     <div class="toolbar">
-      <h2 class="page-title">关键词词库</h2>
+      <h2 class="page-title">词库</h2>
       <span class="card-hint">
-        共 {{ groups.length }} 组 · B 线监听时用它判断"这句话算不算线索"
+        {{ kindLabel }} 共 {{ groups.length }} 组 · 关键词组判断"算不算线索"，排除词组负责"挡掉噪声"
       </span>
       <div class="spacer" />
-      <el-button size="small" @click="seed">导入预置别名库</el-button>
-      <el-button size="small" type="primary" @click="createGroup">新建词组</el-button>
+      <el-button size="small" @click="seed">导入预置词库</el-button>
+      <el-button size="small" type="primary" @click="createGroup">新建{{ kindLabel }}</el-button>
       <el-button size="small" @click="load">刷新</el-button>
     </div>
 
+    <el-radio-group :model-value="kind" class="kind-switch" @change="switchKind">
+      <el-radio-button value="keyword">关键词组（判断命中）</el-radio-button>
+      <el-radio-button value="exclude">排除词组（命中即忽略）</el-radio-button>
+    </el-radio-group>
+
     <div class="columns">
       <el-card shadow="never">
-        <template #header>关键词组（{{ groups.length }}）</template>
+        <template #header>{{ kindLabel }}（{{ groups.length }}）</template>
         <div class="group-list">
           <div
             v-for="item in groups"
@@ -209,8 +230,14 @@ onMounted(load);
             </el-button>
           </div>
           <p v-if="!groups.length" class="card-hint">
-            还没有词组。点右上角「导入预置别名库」可以先来一套常用的（联系方式、资源求助、
-            引流合作、体育赛事、博彩相关），再按需改。
+            <template v-if="kind === 'exclude'">
+              还没有排除词组。点右上角「导入预置词库」会写入「通用噪声」「广告推广号」两组，
+              再按需改；线路里可以多选叠加多组。
+            </template>
+            <template v-else>
+              还没有词组。点右上角「导入预置词库」可以先来一套常用的（联系方式、资源求助、
+              引流合作、体育赛事、博彩相关），再按需改。
+            </template>
           </p>
         </div>
       </el-card>
@@ -218,7 +245,7 @@ onMounted(load);
       <el-card shadow="never">
         <template #header>
           <span v-if="activeGroup">{{ activeGroup.name }} 的关键词</span>
-          <span v-else>关键词</span>
+          <span v-else>{{ kindLabel }}的词</span>
         </template>
         <div class="add-row">
           <el-input v-model="keywordForm.word" size="small" placeholder="主词（如 体育）" />
@@ -270,11 +297,27 @@ onMounted(load);
           <el-option label="标准" value="standard" />
           <el-option label="严格（宁可少报）" value="strict" />
         </el-select>
+        <el-select
+          v-model="matchForm.exclude_group_ids"
+          multiple
+          size="small"
+          collapse-tags
+          placeholder="叠加排除词组（可选）"
+          style="width: 220px"
+        >
+          <el-option
+            v-for="item in excludeGroups"
+            :key="item.id"
+            :label="item.name"
+            :value="item.id"
+          />
+        </el-select>
         <el-button size="small" type="primary" @click="runMatch">试跑</el-button>
       </div>
       <div v-if="matchResult" class="match-result">
         <p class="card-hint">
-          参与匹配的关键词 {{ matchResult.keyword_total }} 个，命中 {{ matchResult.hits.length }} 个
+          参与匹配的关键词 {{ matchResult.keyword_total }} 个，排除词
+          {{ matchResult.exclude_total }} 个，命中 {{ matchResult.hits.length }} 个
         </p>
         <el-tag
           v-for="hit in matchResult.hits"
@@ -306,6 +349,10 @@ onMounted(load);
   display: grid;
   grid-template-columns: minmax(0, 320px) minmax(0, 1fr);
   gap: 12px;
+}
+
+.kind-switch {
+  margin-bottom: 12px;
 }
 
 .group-list {

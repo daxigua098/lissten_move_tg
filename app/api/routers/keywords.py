@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_role, session_dependency
@@ -28,10 +28,11 @@ router = APIRouter(
 
 @router.get("")
 async def list_groups(
+    kind: str | None = Query(default=None, pattern="^(keyword|exclude)$"),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """关键词组列表（含组内关键词）。"""
-    rows = await keyword_service.list_groups(session)
+    """词组列表（含组内词）；kind 区分关键词组与排除词组。"""
+    rows = await keyword_service.list_groups(session, kind)
     return {"items": [keyword_service.serialize_group(row) for row in rows]}
 
 
@@ -45,6 +46,7 @@ async def create_group(
         session,
         name=payload.name,
         description=payload.description,
+        kind=payload.kind,
     )
     return keyword_service.serialize_group(group, with_keywords=False)
 
@@ -64,16 +66,21 @@ async def match_preview(
 ) -> dict[str, Any]:
     """拿一段文本试跑关键词，看看会不会命中（调词表时很有用）。"""
     entries = await keyword_service.load_entries(session, payload.group_ids or None)
+    exclude_words = list(payload.exclude_keywords) + await keyword_service.load_exclude_words(
+        session,
+        payload.exclude_group_ids,
+    )
     hits = match_text(
         payload.text,
         entries,
         sensitivity=payload.sensitivity,
         match_contains=payload.match_contains,
         match_fuzzy=payload.match_fuzzy,
-        exclude=tuple(payload.exclude_keywords),
+        exclude=tuple(dict.fromkeys(exclude_words)),
     )
     return {
         "keyword_total": len(entries),
+        "exclude_total": len(set(exclude_words)),
         "hits": [
             {
                 "keyword": item.keyword,

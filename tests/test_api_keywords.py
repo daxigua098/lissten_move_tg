@@ -78,3 +78,51 @@ async def test_missing_group_returns_404(admin_client) -> None:
     )
 
     assert response.status_code == 404
+
+
+async def test_exclude_groups_are_separate_kind(admin_client) -> None:
+    """排除词组与关键词组分开放，互不混入匹配。"""
+    await admin_client.post("/api/keyword-groups/seed", headers=_headers())
+
+    keyword_only = (
+        await admin_client.get("/api/keyword-groups?kind=keyword", headers=_headers())
+    ).json()["items"]
+    exclude_only = (
+        await admin_client.get("/api/keyword-groups?kind=exclude", headers=_headers())
+    ).json()["items"]
+
+    assert all(item["kind"] == "keyword" for item in keyword_only)
+    assert exclude_only and all(item["kind"] == "exclude" for item in exclude_only)
+    names = [item["name"] for item in exclude_only]
+    assert "通用噪声（排除）" in names
+
+    created = await admin_client.post(
+        "/api/keyword-groups",
+        headers=_headers(),
+        json={"name": "手机号贩子（排除）", "kind": "exclude"},
+    )
+    assert created.status_code == 201
+    assert created.json()["kind"] == "exclude"
+    group_id = created.json()["id"]
+    await admin_client.post(
+        f"/api/keyword-groups/{group_id}/keywords",
+        headers=_headers(),
+        json={"group_id": group_id, "word": "卡商", "aliases": "号商,卖号"},
+    )
+
+    # 排除词组里的词只用于"挡"，不会当成关键词去命中
+    match = await admin_client.post(
+        "/api/keyword-groups/match",
+        headers=_headers(),
+        json={"text": "卡商 号商 卖号", "group_ids": []},
+    )
+    assert all(hit["keyword"] != "卡商" for hit in match.json()["hits"])
+
+    # 但作为排除词传入时，整条会被忽略
+    blocked = await admin_client.post(
+        "/api/keyword-groups/match",
+        headers=_headers(),
+        json={"text": "卡商出货 顺便聊聊篮球", "exclude_group_ids": [group_id]},
+    )
+    assert blocked.json()["exclude_total"] >= 3
+    assert blocked.json()["hits"] == []

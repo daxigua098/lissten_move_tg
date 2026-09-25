@@ -60,6 +60,8 @@ class BMonitorConfig(BaseModel):
     match_fuzzy: bool = True
     match_semantic: bool = False
     exclude_keywords: list[str] = Field(default_factory=list)
+    # 共享排除词库：多选引用多个排除词组，与本线路自定义排除词取并集
+    exclude_group_ids: list[int] = Field(default_factory=list)
     sender_whitelist: list[int] = Field(default_factory=list)
     sender_blacklist: list[int] = Field(default_factory=list)
     skip_bots: bool = True

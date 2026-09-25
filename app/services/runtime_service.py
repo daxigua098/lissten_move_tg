@@ -25,7 +25,7 @@ from app.core.content_cleaner import (
     resolve_caption,
 )
 from app.core.heartbeat import heartbeat_age_seconds, read_status, write_status
-from app.core.keyword_matcher import match_text
+from app.core.keyword_matcher import is_excluded, match_text
 from app.core.lead_extractor import extract_contacts, render_lead_card, sender_info
 from app.core.route_config import load_a_config, load_b_config
 from app.core.runtime_control import is_paused, is_stop_requested, set_paused, set_stop_requested
@@ -302,13 +302,28 @@ class RuntimeService:
                     session,
                     config.keyword_group_ids or None,
                 )
+                # 排除词在最前面判断：命中就整条忽略（全量模式同样生效）
+                exclude_words = tuple(
+                    dict.fromkeys(
+                        [
+                            *config.exclude_keywords,
+                            *await keyword_service.load_exclude_words(
+                                session,
+                                config.exclude_group_ids,
+                            ),
+                        ]
+                    )
+                )
+                if is_excluded(text, exclude_words):
+                    logger.debug("被排除词挡住：{}", text[:30])
+                    continue
                 hits = match_text(
                     text,
                     entries,
                     sensitivity=config.sensitivity,
                     match_contains=config.match_contains,
                     match_fuzzy=config.match_fuzzy,
-                    exclude=tuple(config.exclude_keywords),
+                    exclude=(),
                 )
                 hit = hits[0] if hits else None
                 if hit is None and config.listen_mode != LISTEN_MODE_ALL:

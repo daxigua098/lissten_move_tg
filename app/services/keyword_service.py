@@ -10,12 +10,19 @@ from sqlalchemy.orm import selectinload
 
 from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from app.core.keyword_matcher import KeywordEntry, parse_aliases
-from app.db.models import Keyword, KeywordGroup
+from app.db.models import (
+    GROUP_KIND_EXCLUDE,
+    GROUP_KIND_KEYWORD,
+    GROUP_KINDS,
+    Keyword,
+    KeywordGroup,
+)
 
 # 预置的常见类别别名库：让用户不用从零开始写词表。
-# 每项是 (组名, 说明, [(主词, "别名,别名")])
-SEED_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
+# 每项是 (用途, 组名, 说明, [(主词, "别名,别名")])
+SEED_GROUPS: list[tuple[str, str, str, list[tuple[str, str]]]] = [
     (
+        GROUP_KIND_KEYWORD,
         "联系方式",
         "找人要联系方式 / 留联系方式",
         [
@@ -26,6 +33,7 @@ SEED_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        GROUP_KIND_KEYWORD,
         "资源求助",
         "求片 / 求资源 / 要链接",
         [
@@ -35,6 +43,7 @@ SEED_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        GROUP_KIND_KEYWORD,
         "引流合作",
         "推广、广告位、合作洽谈",
         [
@@ -44,6 +53,7 @@ SEED_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        GROUP_KIND_KEYWORD,
         "体育赛事",
         "体育类话题（示例：篮球、足球都算体育）",
         [
@@ -53,6 +63,7 @@ SEED_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         ],
     ),
     (
+        GROUP_KIND_KEYWORD,
         "博彩相关",
         "博彩、代理、平台推广",
         [
@@ -61,14 +72,42 @@ SEED_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
             ("平台", "信誉平台,正规平台,首存,返水"),
         ],
     ),
+    (
+        GROUP_KIND_EXCLUDE,
+        "通用噪声（排除）",
+        "机器人 / 客服 / 公告这类不值得跟进的发言",
+        [
+            ("机器人", "bot,机器人助理,自动回复"),
+            ("客服", "在线客服,客服中心"),
+            ("管理", "管理员,群管,管理团队"),
+            ("公告", "系统公告,群公告,通知"),
+            ("助手", "小助手,助理,助手号"),
+        ],
+    ),
+    (
+        GROUP_KIND_EXCLUDE,
+        "广告推广号（排除）",
+        "到处打广告的号，不是潜在客户",
+        [
+            ("广告", "广告位,打广告,广告合作"),
+            ("推广", "推广位,引流,互推"),
+            ("招商", "招代理,招加盟"),
+        ],
+    ),
 ]
 
 
-async def list_groups(session: AsyncSession) -> list[KeywordGroup]:
+async def list_groups(
+    session: AsyncSession,
+    kind: str | None = None,
+) -> list[KeywordGroup]:
     # 必须预加载关键词：异步会话里惰性加载会直接报 MissingGreenlet
-    rows = await session.scalars(
+    statement = (
         select(KeywordGroup).options(selectinload(KeywordGroup.keywords)).order_by(KeywordGroup.id)
     )
+    if kind:
+        statement = statement.where(KeywordGroup.kind == kind)
+    rows = await session.scalars(statement)
     return list(rows)
 
 
@@ -84,14 +123,17 @@ async def create_group(
     *,
     name: str,
     description: str = "",
+    kind: str = GROUP_KIND_KEYWORD,
 ) -> KeywordGroup:
     clean = (name or "").strip()
     if not clean:
-        raise ValidationFailedError("关键词组名称不能为空")
+        raise ValidationFailedError("词组名称不能为空")
+    if kind not in GROUP_KINDS:
+        raise ValidationFailedError(f"词组用途必须是 {'/'.join(GROUP_KINDS)} 之一")
     existing = await session.scalar(select(KeywordGroup).where(KeywordGroup.name == clean))
     if existing is not None:
-        raise ConflictError(f"关键词组「{clean}」已存在")
-    group = KeywordGroup(name=clean, description=(description or "").strip())
+        raise ConflictError(f"词组「{clean}」已存在")
+    group = KeywordGroup(name=clean, description=(description or "").strip(), kind=kind)
     session.add(group)
     await session.commit()
     await session.refresh(group)
@@ -110,12 +152,12 @@ async def update_group(
     if name is not None:
         clean = name.strip()
         if not clean:
-            raise ValidationFailedError("关键词组名称不能为空")
+            raise ValidationFailedError("词组名称不能为空")
         duplicated = await session.scalar(
             select(KeywordGroup).where(KeywordGroup.name == clean, KeywordGroup.id != group_id)
         )
         if duplicated is not None:
-            raise ConflictError(f"关键词组「{clean}」已存在")
+            raise ConflictError(f"词组「{clean}」已存在")
         group.name = clean
     if description is not None:
         group.description = description.strip()
@@ -199,7 +241,11 @@ async def load_entries(
     statement = (
         select(Keyword)
         .join(KeywordGroup, KeywordGroup.id == Keyword.group_id)
-        .where(Keyword.enabled.is_(True), KeywordGroup.enabled.is_(True))
+        .where(
+            Keyword.enabled.is_(True),
+            KeywordGroup.enabled.is_(True),
+            KeywordGroup.kind == GROUP_KIND_KEYWORD,
+        )
     )
     if group_ids:
         statement = statement.where(Keyword.group_id.in_(group_ids))
@@ -215,19 +261,56 @@ async def load_entries(
     ]
 
 
+async def load_exclude_words(
+    session: AsyncSession,
+    group_ids: list[int] | None = None,
+) -> list[str]:
+    """把选中的排除词组展开成一串排除词（主词 + 别名）。
+
+    线路可以多选引用多个排除词组，这里取并集；词组或词被停用就不参与。
+    """
+    if not group_ids:
+        return []
+    statement = (
+        select(Keyword)
+        .join(KeywordGroup, KeywordGroup.id == Keyword.group_id)
+        .where(
+            Keyword.enabled.is_(True),
+            KeywordGroup.enabled.is_(True),
+            KeywordGroup.kind == GROUP_KIND_EXCLUDE,
+            Keyword.group_id.in_(group_ids),
+        )
+        .order_by(Keyword.id)
+    )
+    words: list[str] = []
+    for row in await session.scalars(statement):
+        for item in (row.word, *parse_aliases(row.aliases)):
+            if item and item not in words:
+                words.append(item)
+    return words
+
+
 async def ensure_seed_groups(session: AsyncSession) -> int:
-    """首次使用时写入预置别名库；已有任何分组就不动。"""
-    total = await session.scalar(select(func.count()).select_from(KeywordGroup))
-    if total:
-        return 0
+    """写入预置词库：按用途分别补齐，已经有的那一类不动。
+
+    这样老库（只有关键词组）点一次「导入预置词库」就能补上排除词组。
+    """
     created = 0
-    for name, description, keywords in SEED_GROUPS:
-        group = KeywordGroup(name=name, description=description)
-        session.add(group)
-        await session.flush()
-        for word, aliases in keywords:
-            session.add(Keyword(group_id=group.id, word=word, aliases=aliases))
-        created += 1
+    for kind in GROUP_KINDS:
+        existing = await session.scalar(
+            select(func.count()).select_from(KeywordGroup).where(KeywordGroup.kind == kind)
+        )
+        if existing:
+            continue
+        for seed_kind, name, description, keywords in SEED_GROUPS:
+            if seed_kind != kind:
+                continue
+            group = KeywordGroup(name=name, description=description, kind=kind)
+            session.add(group)
+            await session.flush()
+            for word, aliases in keywords:
+                session.add(Keyword(group_id=group.id, word=word, aliases=aliases))
+            created += 1
     await session.commit()
     return created
 
@@ -249,6 +332,7 @@ def serialize_group(row: KeywordGroup, *, with_keywords: bool = True) -> dict[st
         "name": row.name,
         "description": row.description,
         "enabled": row.enabled,
+        "kind": row.kind,
         "keyword_count": len(row.keywords) if with_keywords else None,
     }
     if with_keywords:

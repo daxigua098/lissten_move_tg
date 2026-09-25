@@ -22,6 +22,7 @@ const loading = ref(false);
 const saving = ref(false);
 const assets = ref([]);
 const keywordGroups = ref([]);
+const excludeGroups = ref([]);
 // 打开时的原始值：用来判断这次保存要不要重启运行时才生效
 const original = reactive({ sourceIds: [], businessType: null });
 const RESTART_HINT = "改了监听源或业务类型，去「运行总览」点重启才生效";
@@ -129,6 +130,7 @@ function defaults() {
     b: {
       listen_mode: "all",
       keyword_ids_text: "",
+      exclude_group_ids: [],
       sensitivity: "loose",
       match_contains: true,
       match_fuzzy: true,
@@ -230,10 +232,15 @@ async function loadAssets() {
 
 async function loadKeywordGroups() {
   try {
-    const { data } = await keywordsApi.list();
-    keywordGroups.value = data.items;
+    const [keywordResult, excludeResult] = await Promise.all([
+      keywordsApi.list("keyword"),
+      keywordsApi.list("exclude"),
+    ]);
+    keywordGroups.value = keywordResult.data.items;
+    excludeGroups.value = excludeResult.data.items;
   } catch {
     keywordGroups.value = [];
+    excludeGroups.value = [];
   }
 }
 
@@ -670,6 +677,24 @@ async function resetProgress(row) {
         </el-form-item>
         <el-form-item label="排除词（命中即整条忽略）">
           <el-select
+            v-model="form.b.exclude_group_ids"
+            multiple
+            collapse-tags
+            placeholder="从共享排除词库多选（可叠加多组）"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in excludeGroups"
+              :key="item.id"
+              :label="`${item.name}（${item.keyword_count} 个词）`"
+              :value="item.id"
+            />
+          </el-select>
+          <p class="card-hint">
+            排除词库在「关键词词库」页维护，可多选叠加多组；下面再加这条线路自己的补充词，
+            两者取并集。
+          </p>
+          <el-select
             v-model="excludeWords"
             multiple
             filterable
@@ -682,8 +707,8 @@ async function resetProgress(row) {
             <el-option v-for="word in excludeWords" :key="word" :label="word" :value="word" />
           </el-select>
           <p class="card-hint">
-            消息里出现任意一个排除词，整条直接忽略（不记线索、也不推卡片）。默认挡掉机器人、客服、管理；
-            每条线路的排除词各自保存，互不影响。
+            本条线路生效的排除词 = 上面选中的词组（可多组叠加）+ 下面这些自定义词，取并集。
+            消息里出现任意一个，整条直接忽略（不记线索、也不推卡片）；全量监听同样生效。
           </p>
         </el-form-item>
         <div class="two-cols">

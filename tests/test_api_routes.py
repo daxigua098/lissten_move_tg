@@ -413,6 +413,49 @@ async def test_route_with_multiple_sources_keeps_one_route_per_source(
     assert (await chat_client.get("/api/routes", headers=_headers())).json()["total"] == 0
 
 
+async def test_route_b_config_keeps_exclude_group_ids(chat_client, fake_account_client) -> None:
+    """线路能保存"引用了哪些排除词组"（共享词库多选）。"""
+    source = make_entity(4001, "源频道", broadcast=True, username="src4001")
+    main = make_entity(4002, "目标频道", broadcast=True, username="main4002")
+    fake_account_client.dialogs = [source, main]
+    fake_account_client.entities = {"src4001": source, "main4002": main}
+    await chat_client.post("/api/sources/sync", headers=_headers())
+    pool = (await chat_client.get("/api/sources/available", headers=_headers())).json()["items"]
+    source_id = next(item["id"] for item in pool if item["title"] == "源频道")
+    await chat_client.post("/api/sources", headers=_headers(), json={"chat_ids": [source_id]})
+    targets = (await chat_client.get("/api/targets/available", headers=_headers())).json()["items"]
+    target_id = next(item["id"] for item in targets if item["title"] == "目标频道")
+    await chat_client.post(
+        "/api/targets",
+        headers=_headers(),
+        json={"chat_ids": [target_id], "role": "lead"},
+    )
+    group = await chat_client.post(
+        "/api/keyword-groups",
+        headers=_headers(),
+        json={"name": "噪声（排除）", "kind": "exclude"},
+    )
+    group_id = group.json()["id"]
+
+    created = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "带排除词组的线路",
+            "source_chat_id": source_id,
+            "business_type": "B",
+            "target_chat_ids": [target_id],
+            "b_config": {"listen_mode": "all", "exclude_group_ids": [group_id]},
+        },
+    )
+
+    assert created.status_code == 201
+    route_id = created.json()["id"]
+    assert created.json()["b_config"]["exclude_group_ids"] == [group_id]
+    detail = (await chat_client.get(f"/api/routes/{route_id}", headers=_headers())).json()
+    assert detail["b_config"]["exclude_group_ids"] == [group_id]
+
+
 async def test_add_second_source_to_single_route_joins_same_bundle(
     chat_client,
     fake_account_client,

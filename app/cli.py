@@ -451,6 +451,28 @@ async def _sync_history(config: AppConfig, *, route_id: int | None) -> int:
 
     await init_database(config)
     try:
+        if config.app.demo_mode:
+            from app.core.demo_client import DemoAccountClient
+
+            client = DemoAccountClient()
+            async with session_scope() as session:
+                results = await history_service.sync_all_routes(
+                    session,
+                    config,
+                    client=client,
+                    route_ids=[route_id] if route_id else None,
+                )
+            print("（本地演练模式：使用模拟客户端，未连接 Telegram）")
+            for item in results:
+                if item.get("error"):
+                    print(f"[失败] {item['route']}：{item['error']}", file=sys.stderr)
+                else:
+                    print(
+                        f"[完成] {item['route']}：扫描 {item['inspected']} 条，"
+                        f"入队 {item['enqueued']} 条，过滤 {item.get('filtered', 0)} 条"
+                    )
+            return EXIT_OK
+
         async with session_scope() as session:
             account = await tg_account_service.get_default_account(session)
             if account is None:

@@ -41,6 +41,7 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "LOG_LEVEL": ("logging", "level"),
     "TG_API_ID": ("telegram", "api_id"),
     "TG_API_HASH": ("telegram", "api_hash"),
+    "DEMO_MODE": ("app", "demo_mode"),
 }
 
 
@@ -55,6 +56,8 @@ class AppSection(BaseModel):
     environment: Literal["development", "production"] = "development"
     timezone: str = "Asia/Shanghai"
     access_mode: Literal["local", "public"] = "local"
+    # 本地演练：用模拟客户端代替 Telegram，不连接网络、发送只写日志
+    demo_mode: bool = False
 
 
 class ServerSection(BaseModel):
@@ -298,6 +301,16 @@ def check_config(config: AppConfig) -> list[ConfigIssue]:
                 "server.allowed_ips",
                 "公网模式必须配置 IP 白名单",
                 "否则后台将对全网开放",
+            )
+        )
+
+    if config.app.demo_mode:
+        issues.append(
+            ConfigIssue(
+                "warning",
+                "app.demo_mode",
+                "已开启本地演练模式（不连接 Telegram，发送只写日志）",
+                "生产环境务必关闭",
             )
         )
 

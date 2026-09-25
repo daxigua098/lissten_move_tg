@@ -82,10 +82,15 @@ class RuntimeService:
         return 0
 
     async def _open_client(self) -> Any:
+        from app.core.demo_client import DemoAccountClient
+
         async with session_scope() as session:
             account = await tg_account_service.get_default_account(session)
             if account is None:
                 raise RuntimeError("没有可用的执行账号，请先在「执行账号池」登记并登录")
+            if self.config.app.demo_mode:
+                logger.warning("本地演练模式：使用模拟客户端，不会连接 Telegram")
+                return DemoAccountClient()
             if account.status != ACCOUNT_ACTIVE:
                 raise RuntimeError(
                     f"执行账号「{account.name}」状态为 {account.status}，"

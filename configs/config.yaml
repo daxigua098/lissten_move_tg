@@ -3,6 +3,7 @@ app:
   environment: development      # development / production
   timezone: Asia/Shanghai
   access_mode: local            # local 仅本机；public 需 HTTPS + IP 白名单
+  demo_mode: true               # 本地演练：用模拟客户端代替 Telegram，无需真实账号
 
 server:
   host: 127.0.0.1

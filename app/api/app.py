@@ -31,6 +31,7 @@ from app.api.routers import (
     users,
 )
 from app.core.config import AppConfig, load_config
+from app.core.demo_client import demo_account_client_factory, demo_bot_client_factory
 from app.core.paths import ensure_dir
 from app.db.session import dispose_database, get_session_factory, init_database
 from app.services import user_service
@@ -74,6 +75,10 @@ def create_app(
         lifespan=lifespan,
     )
     app.state.config = resolved
+    if resolved.app.demo_mode:
+        logger.warning("本地演练模式已开启：不会连接 Telegram，转发与发送只写日志")
+        bot_client_factory = bot_client_factory or demo_bot_client_factory()
+        account_client_factory = account_client_factory or demo_account_client_factory()
     app.state.bot_client_factory = bot_client_factory
     app.state.account_client_factory = account_client_factory
     app.add_middleware(

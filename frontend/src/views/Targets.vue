@@ -144,7 +144,7 @@ onMounted(load);
               <label v-for="item in filteredAvailable" :key="item.id" class="row">
                 <el-checkbox :value="item.id" />
                 <span class="grow">
-                  <b class="chat-name">{{ item.name || item.title || item.username }}</b>
+                  <span class="chat-name">{{ item.name || item.title || item.username }}</span>
                   <span class="card-hint">
                     {{ item.chat_type_label }}
                     <template v-if="item.username"> · @{{ item.username }}</template>
@@ -173,7 +173,7 @@ onMounted(load);
               <label v-for="item in targets" :key="item.id" class="row">
                 <el-checkbox :value="item.id" />
                 <span class="grow">
-                  <b class="chat-name">{{ item.name || item.title || item.username }}</b>
+                  <span class="chat-name">{{ item.name || item.title || item.username }}</span>
                   <span class="card-hint">
                     {{ item.chat_type_label }}
                     <template v-if="item.is_private"> · 私有</template>
@@ -271,13 +271,6 @@ onMounted(load);
 .grow {
   flex: 1;
   min-width: 0;
-}
-
-.chat-name {
-  font-weight: 500;
-  margin-right: 6px;
-  word-break: break-word;
-  white-space: normal;
 }
 
 .grow .card-hint {

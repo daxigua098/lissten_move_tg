@@ -34,6 +34,33 @@ body {
   margin: 0;
 }
 
+/*
+ * Element Plus 的 .el-checkbox-group 会把 font-size 和 line-height 置为 0，
+ * 用它来消除行内元素之间的空白。子元素一旦继承到这个 0 号字，就会被压成
+ * 0 宽 0 高：DOM 里明明有文字（可被搜索、可被读屏），界面上却完全看不见。
+ * 组内自定义内容必须显式恢复字号与行高。
+ */
+.el-checkbox-group .grow {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* 群组 / 频道名称：单独给底色，方便在长列表里一眼认出是哪个群 */
+.chat-name {
+  display: inline-block;
+  max-width: 100%;
+  padding: 1px 7px;
+  border-radius: 4px;
+  color: #1f2937;
+  background: #e8effc;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  margin-right: 4px;
+  word-break: break-word;
+  white-space: normal;
+}
+
 .toolbar {
   display: flex;
   align-items: center;

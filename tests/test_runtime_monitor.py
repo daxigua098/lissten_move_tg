@@ -198,27 +198,19 @@ async def test_exclude_group_blocks_message(db, fake_delivery_client) -> None:
     assert source_id
 
 
-class FakeBotSender:
-    """机器人客户端替身：只实现发送与预热对话列表。"""
+class FakeBotApi:
+    """Bot API 替身：只记录发出去的卡片。"""
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
-        self.dialog_calls = 0
-        self.disconnected = False
+        self.closed = False
 
-    async def get_dialogs(self, limit=None):  # noqa: ANN001
-        self.dialog_calls += 1
-        return []
+    async def send_message(self, chat_id, text, buttons=None, disable_preview=True):  # noqa: ANN001
+        self.sent.append({"chat_id": chat_id, "text": text})
+        return {"message_id": 9001 + len(self.sent)}
 
-    async def get_entity(self, identifier):  # noqa: ANN001
-        return identifier
-
-    async def send_message(self, entity, text, buttons=None):  # noqa: ANN001
-        self.sent.append({"target": entity, "text": text})
-        return SimpleNamespace(id=9001 + len(self.sent))
-
-    async def disconnect(self) -> None:
-        self.disconnected = True
+    async def close(self) -> None:
+        self.closed = True
 
 
 async def test_lead_card_can_be_sent_by_bot(db, fake_delivery_client) -> None:
@@ -249,12 +241,12 @@ async def test_lead_card_can_be_sent_by_bot(db, fake_delivery_client) -> None:
         route = await route_service.get_route(session, route_id)
         assert route.sender_mode == "bot"
 
-    bot_sender = FakeBotSender()
+    bot_api = FakeBotApi()
 
     async def factory(_config, _token):  # noqa: ANN001
-        return bot_sender
+        return bot_api
 
-    service = RuntimeService(db, bot_client_factory=factory)
+    service = RuntimeService(db, bot_api_factory=factory)
     await service._on_monitor_message(
         fake_delivery_client,
         _event("求个篮球赛推荐"),
@@ -262,9 +254,9 @@ async def test_lead_card_can_be_sent_by_bot(db, fake_delivery_client) -> None:
     )
 
     assert fake_delivery_client.sent == []  # 账号没有发言
-    assert len(bot_sender.sent) == 1  # 卡片由机器人发出
-    assert "命中线索：体育" in bot_sender.sent[0]["text"]
-    assert bot_sender.dialog_calls == 1  # 预热过一次
+    assert len(bot_api.sent) == 1  # 卡片由机器人发出
+    assert "命中线索：体育" in bot_api.sent[0]["text"]
+    assert bot_api.sent[0]["chat_id"].startswith("-")  # Bot API 用负数 chat_id
 
-    await service._close_bot_clients()
-    assert bot_sender.disconnected is True
+    await service._close_bot_apis()
+    assert bot_api.closed is True

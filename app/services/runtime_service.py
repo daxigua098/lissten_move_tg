@@ -16,6 +16,7 @@ from typing import Any
 
 from loguru import logger
 
+from app.core.bot_api import MEDIA_DOCUMENT, MEDIA_PHOTO, MEDIA_VIDEO, bot_api_chat_id
 from app.core.config import AppConfig
 from app.core.content_cleaner import (
     KIND_SERVICE,
@@ -52,6 +53,17 @@ from app.services import (
 )
 
 
+def _bot_media_kind(view_kind: str) -> str:
+    """把内容类型映射成 Bot API 的上传方式。"""
+    from app.core.content_cleaner import KIND_PHOTO, KIND_VIDEO
+
+    if view_kind == KIND_PHOTO:
+        return MEDIA_PHOTO
+    if view_kind == KIND_VIDEO:
+        return MEDIA_VIDEO
+    return MEDIA_DOCUMENT
+
+
 class RuntimeService:
     """A 线搬运运行时。"""
 
@@ -60,14 +72,14 @@ class RuntimeService:
         config: AppConfig,
         *,
         client_factory: Any = None,
-        bot_client_factory: Any = None,
+        bot_api_factory: Any = None,
         poll_interval: float = 2.0,
         heartbeat_seconds: int | None = None,
     ) -> None:
         self.config = config
         self.client_factory = client_factory
-        # 机器人客户端工厂（测试可注入替身；默认按 Token 真连）
-        self.bot_client_factory = bot_client_factory
+        # 机器人客户端工厂（测试可注入替身；默认按 Token 真连 Bot API）
+        self.bot_api_factory = bot_api_factory
         self.poll_interval = poll_interval
         self.heartbeat_seconds = heartbeat_seconds or config.runtime.heartbeat_seconds
         self._lock = RuntimeLock(config.path(config.runtime.lock_file))
@@ -77,8 +89,8 @@ class RuntimeService:
         self._last_purge_at = float("-inf")
         # 本次启动注册了哪些线路（写进心跳，界面上用来发现"改了但没重启"）
         self._registered: dict[str, Any] = {}
-        # 机器人客户端缓存：sender_mode=bot 的线路用它们发言
-        self._bot_clients: dict[int, Any] = {}
+        # 机器人（Bot API）客户端缓存：sender_mode=bot 的线路用它们发言
+        self._bot_apis: dict[int, Any] = {}
 
     @property
     def control_path(self):
@@ -162,16 +174,15 @@ class RuntimeService:
             session_path=session_path,
         )
 
-    async def _bot_client(self, bot_id: int | None) -> Any:
-        """取（并缓存）用于发言的机器人客户端。
+    async def _bot_api(self, bot_id: int | None) -> Any:
+        """取（并缓存）用于发言的机器人客户端（Bot API / HTTP）。
 
-        机器人不需要进源群——内容由执行账号下载后交给机器人上传，
-        所以风控落在机器人身上。第一次使用会把对话列表预热进实体缓存，
-        否则按数字 ID 解析目标群会失败。
+        机器人不需要在源群：内容由执行账号下载、机器人负责上传，
+        所以发言风控落在机器人身上。Bot API 只认 chat_id，不用解析实体。
         """
         if not bot_id:
             raise RuntimeError("线路选了「用机器人发送」，但没有指定机器人")
-        cached = self._bot_clients.get(bot_id)
+        cached = self._bot_apis.get(bot_id)
         if cached is not None:
             return cached
         async with session_scope() as session:
@@ -180,25 +191,22 @@ class RuntimeService:
                 raise RuntimeError("指定的机器人不存在或已停用")
             token = bot_service.decrypt_token(self.config, bot)
             bot_name = bot.name
-        factory = self.bot_client_factory
+        factory = self.bot_api_factory
         if factory is not None:
-            client = await factory(self.config, token)
+            api = await factory(self.config, token)
         else:
-            from app.core.telegram_client import build_bot_client
+            from app.core.bot_api import BotApiClient
 
-            client = build_bot_client(self.config, token)
-            await client.start(bot_token=token)
-        with contextlib.suppress(Exception):
-            await client.get_dialogs(limit=None)
-        self._bot_clients[bot_id] = client
+            api = BotApiClient(token)
+        self._bot_apis[bot_id] = api
         logger.info("已连接发送机器人「{}」（线路用它发言）", bot_name)
-        return client
+        return api
 
-    async def _close_bot_clients(self) -> None:
-        for bot_id, client in list(self._bot_clients.items()):
+    async def _close_bot_apis(self) -> None:
+        for bot_id, api in list(self._bot_apis.items()):
             with contextlib.suppress(Exception):
-                await client.disconnect()
-            self._bot_clients.pop(bot_id, None)
+                await api.close()
+            self._bot_apis.pop(bot_id, None)
 
     async def _register_handlers(self, client: Any) -> int:
         """给每条启用的线路源注册新消息监听（A 线搬运 + B 线监听共用一次注册）。"""
@@ -508,14 +516,14 @@ class RuntimeService:
         if not target_ids:
             logger.warning("线索 #{} 没有接收目标，先在线路里加一个", lead.id)
             return
-        sender_client = client
+        bot_api = None
         if route.sender_mode == SENDER_MODE_BOT:
             # 线索卡片也交给机器人发，风控不落在账号上
             try:
-                sender_client = await self._bot_client(route.notify_bot_id)
+                bot_api = await self._bot_api(route.notify_bot_id)
             except Exception as exc:  # noqa: BLE001 - 拿不到机器人就退回账号
                 logger.warning("取发送机器人失败，改用执行账号：{}", exc)
-                sender_client = client
+                bot_api = None
         card = render_lead_card(
             config.lead_template,
             sender=sender,
@@ -533,8 +541,16 @@ class RuntimeService:
             if target_chat is None or not target_chat.tg_id:
                 continue
             try:
-                target_entity = await resolve_entity(sender_client, int(target_chat.tg_id))
-                result = await sender_client.send_message(target_entity, card)
+                if bot_api is not None:
+                    result = await bot_api.send_message(
+                        bot_api_chat_id(target_chat.tg_id, target_chat.chat_type),
+                        card,
+                    )
+                    message_id = (result or {}).get("message_id")
+                else:
+                    target_entity = await resolve_entity(client, int(target_chat.tg_id))
+                    sent = await client.send_message(target_entity, card)
+                    message_id = getattr(sent, "id", None)
             except Exception as exc:  # noqa: BLE001 - 单个目标失败不影响其他目标
                 logger.warning("线索卡片推送失败（目标 {}）：{}", chat_id, exc)
                 continue
@@ -542,7 +558,7 @@ class RuntimeService:
                 session,
                 lead,
                 target_chat_id=chat_id,
-                target_message_id=getattr(result, "id", None),
+                target_message_id=message_id,
             )
             pushed += 1
         if pushed:
@@ -625,23 +641,21 @@ class RuntimeService:
             use_bot = route.sender_mode == SENDER_MODE_BOT
             try:
                 source_entity = await resolve_entity(client, int(source_chat.tg_id))
-                if use_bot:
-                    sender_client = await self._bot_client(route.notify_bot_id)
-                    # 目标群由机器人解析：机器人必须是该群成员，否则这里就会报错
-                    target_entity = await resolve_entity(sender_client, int(target_chat.tg_id))
-                else:
-                    sender_client = client
-                    target_entity = await resolve_entity(client, int(target_chat.tg_id))
             except Exception as exc:  # noqa: BLE001 - 解析失败按投递失败处理
                 await delivery_service.mark_failure(session, job, error=str(exc))
                 return 1
 
-            source_message = None
-            caption = None
-            repost_file = None
-            repost_filename = None
             if use_bot:
-                # 机器人发送：执行账号取原消息并下载媒体，交给机器人上传
+                # 机器人发送：Bot API 只认 chat_id；内容由账号取回后交给机器人上传
+                try:
+                    bot_api = await self._bot_api(route.notify_bot_id)
+                except Exception as exc:  # noqa: BLE001 - 拿不到机器人按投递失败
+                    await delivery_service.mark_failure(
+                        session,
+                        job,
+                        error=f"取发送机器人失败：{exc}",
+                    )
+                    return 1
                 source_message, cleaned = await self._load_clean_source(
                     client,
                     source_entity=source_entity,
@@ -652,18 +666,38 @@ class RuntimeService:
                     await delivery_service.mark_failure(
                         session,
                         job,
-                        error="取不到源消息，无法用机器人转发",
+                        error="取不到源消息，无法用机器人发送",
                     )
                     return 1
-                if a_config.text_mode == "clean":
-                    caption = cleaned
-                else:
-                    caption = message_view_from_telethon(source_message).text
-                repost_file, repost_filename = await self._prepare_bot_payload(
-                    client,
-                    source_message,
+                view = message_view_from_telethon(source_message)
+                caption = cleaned if a_config.text_mode == "clean" else view.text
+                content, filename = await self._prepare_bot_payload(client, source_message)
+                await delivery_service.deliver_job_via_bot(
+                    session,
+                    self.config,
+                    job=job,
+                    route=route,
+                    bot_api=bot_api,
+                    target_chat=target_chat,
+                    a_config=a_config,
+                    ad_asset=ad_asset,
+                    source_chat=source_chat,
+                    caption=caption,
+                    content=content,
+                    filename=filename,
+                    kind=_bot_media_kind(view.kind),
                 )
-            elif a_config.text_mode == "clean":
+                return 1
+
+            try:
+                target_entity = await resolve_entity(client, int(target_chat.tg_id))
+            except Exception as exc:  # noqa: BLE001 - 解析失败按投递失败处理
+                await delivery_service.mark_failure(session, job, error=str(exc))
+                return 1
+
+            source_message = None
+            caption = None
+            if a_config.text_mode == "clean":
                 source_message, caption = await self._load_clean_source(
                     client,
                     source_entity=source_entity,
@@ -676,7 +710,7 @@ class RuntimeService:
                 self.config,
                 job=job,
                 route=route,
-                client=sender_client,
+                client=client,
                 source_chat=source_chat,
                 target_chat=target_chat,
                 a_config=a_config,
@@ -685,9 +719,6 @@ class RuntimeService:
                 target_entity=target_entity,
                 source_message=source_message,
                 caption=caption,
-                repost=use_bot,
-                repost_file=repost_file,
-                repost_filename=repost_filename,
             )
             return 1
 

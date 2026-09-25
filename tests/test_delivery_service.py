@@ -356,12 +356,41 @@ async def test_repost_mode_uses_cleaned_caption(db, fake_delivery_client) -> Non
     assert fake_delivery_client.sent[0]["caption"] == "正文"
 
 
-async def test_bot_repost_sends_caption_or_file(db, fake_delivery_client) -> None:
-    """由机器人发送：纯文本走 send_message，媒体走上传，都不走转发。"""
+class FakeBotApi:
+    """Bot API 替身：只记录发出去的内容。"""
+
+    def __init__(self) -> None:
+        self.sent: list[tuple] = []
+        self.closed = False
+
+    async def send_message(self, chat_id, text, buttons=None, disable_preview=True):  # noqa: ANN001
+        self.sent.append(("message", chat_id, text))
+        return {"message_id": 7001}
+
+    async def send_media(  # noqa: ANN001
+        self,
+        chat_id,
+        *,
+        content,
+        filename,
+        caption=None,
+        kind="document",
+        buttons=None,
+    ):
+        self.sent.append(("media", chat_id, filename, caption, kind))
+        return {"message_id": 7002}
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def test_deliver_job_via_bot_sends_text_or_media(db) -> None:
+    """机器人投递：纯文本走 sendMessage，媒体走上传，chat_id 按群类型转换。"""
     route_id, source_id, target_ids = await _prepare_route(
         db,
         a_config={"ad_policy": "none"},
     )
+    bot_api = FakeBotApi()
     async with session_scope() as session:
         route = await route_service.get_route(session, route_id)
         jobs = await delivery_service.enqueue_message(
@@ -371,26 +400,24 @@ async def test_bot_repost_sends_caption_or_file(db, fake_delivery_client) -> Non
             source_chat_id=source_id,
             source_message_id=901,
         )
-        first = jobs[0].id
-        route = await route_service.get_route(session, route_id)
         source_chat = await session.get(Chat, source_id)
         target_chat = await session.get(Chat, target_ids[0])
-        await delivery_service.deliver_job(
+        await delivery_service.deliver_job_via_bot(
             session,
             db,
-            job=await session.get(DeliveryJob, first),
+            job=await session.get(DeliveryJob, jobs[0].id),
             route=route,
-            client=fake_delivery_client,
-            source_chat=source_chat,
+            bot_api=bot_api,
             target_chat=target_chat,
             a_config=ACarryConfig(ad_policy="none"),
-            repost=True,
-            repost_file=None,
+            source_chat=source_chat,
             caption="机器人发的纯文本",
         )
 
-    assert fake_delivery_client.forwarded == []
-    assert fake_delivery_client.sent[0]["text"] == "机器人发的纯文本"
+    action, chat_id, text = bot_api.sent[0]
+    assert action == "message"
+    assert chat_id.startswith("-100")  # _prepare_route 建的是频道
+    assert text == "机器人发的纯文本"
 
     async with session_scope() as session:
         route = await route_service.get_route(session, route_id)
@@ -403,24 +430,26 @@ async def test_bot_repost_sends_caption_or_file(db, fake_delivery_client) -> Non
         )
         source_chat = await session.get(Chat, source_id)
         target_chat = await session.get(Chat, target_ids[0])
-        await delivery_service.deliver_job(
+        job = await delivery_service.deliver_job_via_bot(
             session,
             db,
             job=await session.get(DeliveryJob, jobs[0].id),
             route=route,
-            client=fake_delivery_client,
-            source_chat=source_chat,
+            bot_api=bot_api,
             target_chat=target_chat,
             a_config=ACarryConfig(ad_policy="none"),
-            repost=True,
-            repost_file=b"fake-bytes",
-            repost_filename="demo.jpg",
+            source_chat=source_chat,
             caption="机器人发的图",
+            content=b"fake-bytes",
+            filename="demo.jpg",
+            kind="photo",
         )
 
-    assert fake_delivery_client.sent[1]["file"] == b"fake-bytes"
-    assert fake_delivery_client.sent[1]["caption"] == "机器人发的图"
-    assert fake_delivery_client.sent[1]["attributes"] is not None
+    assert bot_api.sent[1][0] == "media"
+    assert bot_api.sent[1][2] == "demo.jpg"
+    assert bot_api.sent[1][3] == "机器人发的图"
+    assert job.status == JOB_SUCCESS
+    assert job.target_message_id == 7002
 
 
 def test_simple_namespace_available() -> None:

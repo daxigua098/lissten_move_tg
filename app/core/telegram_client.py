@@ -251,30 +251,6 @@ async def download_media_bytes(client: Any, message: Any) -> bytes | None:
     return data if isinstance(data, bytes) else None
 
 
-async def send_repost_file(
-    client: Any,
-    *,
-    target_entity: Any,
-    data: bytes | None,
-    caption: str | None,
-    filename: str | None = None,
-) -> Any:
-    """把下载好的内容（或纯文案）发到目标。"""
-    if data is None:
-        return await client.send_message(target_entity, caption or "")
-    attributes = None
-    if filename:
-        from telethon.tl import types as tl_types
-
-        attributes = [tl_types.DocumentAttributeFilename(file_name=filename)]
-    return await client.send_file(
-        target_entity,
-        file=data,
-        caption=caption or None,
-        attributes=attributes,
-    )
-
-
 async def send_ad(
     client: Any,
     *,

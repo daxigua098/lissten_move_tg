@@ -26,7 +26,7 @@ const detailTargets = ref([]);
 const addingTargetIds = ref([]);
 const form = reactive({
   name: "",
-  source_chat_id: null,
+  source_chat_ids: [],
   business_type: "A",
   exec_account_id: null,
   notify_bot_id: null,
@@ -63,8 +63,12 @@ const keywordGroupIds = computed({
 });
 /** 线路名留空时用「监听源 → 接收目标」自动命名，避免提交空名字被后端打回。 */
 const suggestedName = computed(() => {
-  const source = props.sources.find((item) => item.id === form.source_chat_id);
-  const sourceName = source ? source.name || source.title || source.username : "";
+  const picked = form.source_chat_ids
+    .map((id) => props.sources.find((item) => item.id === id))
+    .filter(Boolean);
+  if (!picked.length) return "";
+  const first = picked[0].name || picked[0].title || picked[0].username || "";
+  const sourceName = picked.length > 1 ? `${first} 等 ${picked.length} 个源` : first;
   if (!sourceName) return "";
   const targetNames = detailTargets.value
     .map((item) => item.name || item.title || item.username)
@@ -129,7 +133,7 @@ function resetForm() {
   const blank = defaults();
   Object.assign(form, {
     name: "",
-    source_chat_id: props.sources[0]?.id ?? null,
+    source_chat_ids: props.sources[0] ? [props.sources[0].id] : [],
     business_type: "A",
     exec_account_id: null,
     notify_bot_id: null,
@@ -148,7 +152,11 @@ function applyDetail(data) {
   const blank = defaults();
   Object.assign(form, {
     name: data.name,
-    source_chat_id: data.source?.chat_id ?? null,
+    source_chat_ids: data.source_chat_ids?.length
+      ? [...data.source_chat_ids]
+      : data.source?.chat_id
+        ? [data.source.chat_id]
+        : [],
     business_type: data.business_type,
     exec_account_id: data.exec_account_id,
     notify_bot_id: data.notify_bot_id,
@@ -252,7 +260,7 @@ async function save() {
   try {
     const payload = {
       name,
-      source_chat_id: form.source_chat_id,
+      source_chat_ids: form.source_chat_ids,
       business_type: form.business_type,
       exec_account_id: form.exec_account_id,
       notify_bot_id: form.notify_bot_id,
@@ -407,8 +415,14 @@ async function resetProgress(row) {
             <el-radio-button value="B">B 监听会员</el-radio-button>
           </el-radio-group>
         </el-form-item>
-        <el-form-item label="监听源">
-          <el-select v-model="form.source_chat_id" style="width: 100%">
+        <el-form-item label="监听源（可多选）">
+          <el-select
+            v-model="form.source_chat_ids"
+            multiple
+            collapse-tags
+            placeholder="选几个就同时监听几个源"
+            style="width: 100%"
+          >
             <el-option
               v-for="item in sources"
               :key="item.id"
@@ -416,6 +430,10 @@ async function resetProgress(row) {
               :value="item.id"
             />
           </el-select>
+          <p class="card-hint">
+            多选时会按「一个源一条线路」落库（水位线与历史补齐才准确），
+            界面上算同一条线路：同一套配置、同一组接收目标，改一次全部生效。
+          </p>
         </el-form-item>
         <div class="two-cols">
           <el-form-item label="执行账号 ID（留空用默认）">

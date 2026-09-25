@@ -17,7 +17,7 @@ from app.api.schemas.route import (
     RouteTargetAddRequest,
     RouteUpdateRequest,
 )
-from app.core.errors import NotFoundError
+from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.route_config import load_a_config, load_b_config
 from app.db.base import as_utc
 from app.db.models import ROLE_SUB_ADMIN, Route
@@ -100,6 +100,8 @@ async def serialize_route(session: AsyncSession, route: Route) -> dict[str, Any]
         "targets": targets,
         "a_config": a_config.model_dump(mode="json"),
         "b_config": b_config.model_dump(mode="json"),
+        "bundle_id": route.bundle_id,
+        "source_chat_ids": await route_service.bundle_source_ids(session, route),
         "warnings": warnings,
         "created_at": as_utc(route.created_at),
         "updated_at": as_utc(route.updated_at),
@@ -140,11 +142,16 @@ async def create_route(
     identity: dict[str, Any] = Depends(current_identity),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """创建线路。"""
-    route = await route_service.create_route(
+    """创建线路（支持多选监听源：一个源一条线路，共用一组配置）。"""
+    source_ids = payload.source_chat_ids or (
+        [payload.source_chat_id] if payload.source_chat_id else []
+    )
+    if not source_ids:
+        raise ValidationFailedError("至少要选一个监听源")
+    routes = await route_service.create_route_bundle(
         session,
         name=payload.name,
-        source_chat_id=payload.source_chat_id,
+        source_chat_ids=source_ids,
         business_type=payload.business_type,
         target_chat_ids=payload.target_chat_ids,
         exec_account_id=payload.exec_account_id,
@@ -158,7 +165,9 @@ async def create_route(
         a_config=payload.a_config,
         b_config=payload.b_config,
     )
-    return await serialize_route(session, route)
+    detail = await serialize_route(session, routes[0])
+    detail["created"] = len(routes)
+    return detail
 
 
 @router.post("/matrix", status_code=201)
@@ -200,33 +209,47 @@ async def update_route(
     payload: RouteUpdateRequest,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """更新线路配置。"""
-    route = await route_service.update_route(
-        session,
-        route_id,
-        name=payload.name,
-        business_type=payload.business_type,
-        exec_account_id=payload.exec_account_id,
-        notify_bot_id=payload.notify_bot_id,
-        priority=payload.priority,
-        delay_seconds=payload.delay_seconds,
-        hourly_limit=payload.hourly_limit,
-        daily_limit=payload.daily_limit,
-        enabled=payload.enabled,
-        a_config=payload.a_config,
-        b_config=payload.b_config,
-    )
+    """更新线路配置；带 source_chat_ids 时会同步整条多源线路。"""
+    fields = {
+        "name": payload.name,
+        "business_type": payload.business_type,
+        "exec_account_id": payload.exec_account_id,
+        "notify_bot_id": payload.notify_bot_id,
+        "priority": payload.priority,
+        "delay_seconds": payload.delay_seconds,
+        "hourly_limit": payload.hourly_limit,
+        "daily_limit": payload.daily_limit,
+        "enabled": payload.enabled,
+        "a_config": payload.a_config,
+        "b_config": payload.b_config,
+    }
+    route = await route_service.update_route(session, route_id, **fields)
+    if payload.source_chat_ids:
+        await route_service.sync_route_bundle_sources(
+            session,
+            route,
+            payload.source_chat_ids,
+        )
+        # 配置同步到同组的其他线路（多源时它们是同一套规则）
+        for sibling in await route_service.bundle_routes(session, route):
+            if sibling.id != route_id:
+                await route_service.update_route(session, sibling.id, **fields)
+    route = await route_service.get_route(session, route_id)
     return await serialize_route(session, route)
 
 
 @router.delete("/{route_id}")
 async def delete_route(
     route_id: int,
+    bundle: bool = Query(default=True, description="多源线路是否整条删除"),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """删除线路。"""
+    """删除线路（多源线路默认整条一起删）。"""
+    if bundle:
+        result = await route_service.delete_route_bundle(session, route_id)
+        return {"id": route_id, "deleted": True, **result}
     route = await route_service.delete_route(session, route_id)
-    return {"id": route_id, "name": route.name, "deleted": True}
+    return {"id": route_id, "name": route.name, "deleted": True, "deleted_count": 1}
 
 
 @router.post("/{route_id}/targets", status_code=201)

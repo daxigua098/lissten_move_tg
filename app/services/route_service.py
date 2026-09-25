@@ -273,6 +273,171 @@ async def delete_route(session: AsyncSession, route_id: int) -> Route:
     return route
 
 
+def _new_bundle_id() -> str:
+    from uuid import uuid4
+
+    return uuid4().hex[:16]
+
+
+async def bundle_routes(session: AsyncSession, route: Route) -> list[Route]:
+    """同一条「线路」的所有行（含自己）。没有 bundle 就是它自己。"""
+    if not route.bundle_id:
+        return [route]
+    rows = await session.scalars(
+        select(Route).where(Route.bundle_id == route.bundle_id).order_by(Route.id)
+    )
+    return list(rows)
+
+
+async def bundle_source_ids(session: AsyncSession, route: Route) -> list[int]:
+    return [item.source_chat_id for item in await bundle_routes(session, route)]
+
+
+async def create_route_bundle(
+    session: AsyncSession,
+    *,
+    name: str,
+    source_chat_ids: list[int],
+    business_type: str,
+    target_chat_ids: list[int],
+    exec_account_id: int | None = None,
+    notify_bot_id: int | None = None,
+    priority: int = 100,
+    delay_seconds: float = 1.0,
+    hourly_limit: int | None = None,
+    daily_limit: int | None = None,
+    enabled: bool = True,
+    created_by: str | None = None,
+    a_config: dict[str, Any] | None = None,
+    b_config: dict[str, Any] | None = None,
+) -> list[Route]:
+    """一条线路可以多选监听源：每个源落一行，共用 bundle_id。
+
+    水位线是按「线路 + 接收目标」记的，一个源一行才能保证历史补齐不串、不重复。
+    """
+    source_ids: list[int] = []
+    for chat_id in source_chat_ids:
+        if chat_id not in source_ids:
+            source_ids.append(chat_id)
+    if not source_ids:
+        raise ValidationFailedError("至少要选一个监听源")
+    if not target_chat_ids:
+        raise ValidationFailedError("至少要选一个接收目标")
+
+    bundle_id = _new_bundle_id() if len(source_ids) > 1 else None
+    routes: list[Route] = []
+    for chat_id in source_ids:
+        route = await create_route(
+            session,
+            name=name,
+            source_chat_id=chat_id,
+            business_type=business_type,
+            target_chat_ids=target_chat_ids,
+            exec_account_id=exec_account_id,
+            notify_bot_id=notify_bot_id,
+            priority=priority,
+            delay_seconds=delay_seconds,
+            hourly_limit=hourly_limit,
+            daily_limit=daily_limit,
+            enabled=enabled,
+            created_by=created_by,
+            a_config=a_config,
+            b_config=b_config,
+        )
+        route.bundle_id = bundle_id
+        routes.append(route)
+    if bundle_id:
+        await session.commit()
+        for route in routes:
+            await session.refresh(route)
+    return routes
+
+
+async def sync_route_bundle_sources(
+    session: AsyncSession,
+    route: Route,
+    source_chat_ids: list[int],
+) -> dict[str, Any]:
+    """把这条线路（组）的监听源调整成给定的集合：新增建行、取消的删行。
+
+    返回 {"added": n, "removed": n, "total": n}，供界面提示。
+    """
+    wanted: list[int] = []
+    for chat_id in source_chat_ids:
+        if chat_id not in wanted:
+            wanted.append(chat_id)
+    if not wanted:
+        raise ValidationFailedError("至少要保留一个监听源")
+
+    siblings = await bundle_routes(session, route)
+    by_source = {item.source_chat_id: item for item in siblings}
+    added = 0
+    removed = 0
+
+    # 取消勾选的源：对应的行删掉（目标与水位线级联删除）
+    for chat_id, item in list(by_source.items()):
+        if chat_id not in wanted:
+            await session.delete(item)
+            removed += 1
+
+    # 新增的源：复制这条线路的配置与目标
+    template = by_source.get(route.source_chat_id) or siblings[0]
+    for chat_id in wanted:
+        if chat_id in by_source:
+            continue
+        await _require_source(session, chat_id)
+        created = Route(
+            name=template.name,
+            bundle_id=template.bundle_id or _new_bundle_id(),
+            source_chat_id=chat_id,
+            business_type=template.business_type,
+            exec_account_id=template.exec_account_id,
+            notify_bot_id=template.notify_bot_id,
+            priority=template.priority,
+            delay_seconds=template.delay_seconds,
+            hourly_limit=template.hourly_limit,
+            daily_limit=template.daily_limit,
+            enabled=template.enabled,
+            created_by=template.created_by,
+            a_config=template.a_config,
+            b_config=template.b_config,
+        )
+        session.add(created)
+        await session.flush()
+        for target in await list_route_targets(session, template.id):
+            chat = await session.get(Chat, target.target_chat_id)
+            if chat is not None:
+                await _add_target_row(session, created.id, chat)
+        added += 1
+
+    await session.commit()
+
+    # 只剩一个源时不再需要 bundle
+    remaining = [item.source_chat_id for item in await bundle_routes(session, route)]
+    if len(remaining) <= 1:
+        for item in await bundle_routes(session, route):
+            item.bundle_id = None
+        await session.commit()
+
+    return {
+        "added": added,
+        "removed": removed,
+        "total": len(set(remaining) | set(wanted)),
+    }
+
+
+async def delete_route_bundle(session: AsyncSession, route_id: int) -> dict[str, int]:
+    """删除整条线路（多个源一起删）。"""
+    route = await get_route(session, route_id)
+    if route is None:
+        raise NotFoundError("线路不存在")
+    rows = await bundle_routes(session, route)
+    for item in rows:
+        await session.delete(item)
+    await session.commit()
+    return {"deleted": len(rows)}
+
+
 async def add_targets(
     session: AsyncSession,
     route_id: int,

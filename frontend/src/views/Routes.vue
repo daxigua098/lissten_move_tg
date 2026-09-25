@@ -86,12 +86,15 @@ async function toggleEnabled(row) {
 }
 
 async function remove(row) {
+  const count = row.source_chat_ids?.length || 1;
   try {
-    await ElMessageBox.confirm(`确认删除线路「${row.name}」？`, "删除线路", {
-      type: "warning",
-      confirmButtonText: "删除",
-      cancelButtonText: "取消",
-    });
+    await ElMessageBox.confirm(
+      count > 1
+        ? `「${row.name}」同时监听了 ${count} 个源，删除会把这一组一起删掉，确认？`
+        : `确认删除线路「${row.name}」？`,
+      "删除线路",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
+    );
     await routesApi.remove(row.id);
     ElMessage.success("线路已删除");
     load();
@@ -194,7 +197,17 @@ onMounted(load);
           </template>
         </el-table-column>
         <el-table-column label="监听源" min-width="150">
-          <template #default="{ row }">{{ row.source?.name || row.source?.title || "-" }}</template>
+          <template #default="{ row }">
+            <span>{{ row.source?.name || row.source?.title || "-" }}</span>
+            <el-tag
+              v-if="(row.source_chat_ids?.length || 1) > 1"
+              size="small"
+              type="info"
+              class="bundle-tag"
+            >
+              多源 · {{ row.source_chat_ids.length }}
+            </el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="接收目标" min-width="200">
           <template #default="{ row }">
@@ -297,5 +310,9 @@ onMounted(load);
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.bundle-tag {
+  margin-left: 6px;
 }
 </style>

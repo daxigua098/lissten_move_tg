@@ -13,7 +13,9 @@ class RouteCreateRequest(BaseModel):
     """创建线路。"""
 
     name: str = Field(min_length=1, max_length=128)
-    source_chat_id: int = Field(gt=0)
+    source_chat_id: int | None = Field(default=None, gt=0)
+    # 多选监听源：给这个就按「一个源一条线路」批量建，共用 bundle
+    source_chat_ids: list[int] | None = None
     business_type: BusinessLiteral
     target_chat_ids: list[int] = Field(min_length=1)
     exec_account_id: int | None = None
@@ -44,6 +46,7 @@ class RouteUpdateRequest(BaseModel):
     """更新线路（字段均可选）。"""
 
     name: str | None = Field(default=None, min_length=1, max_length=128)
+    source_chat_ids: list[int] | None = None
     business_type: BusinessLiteral | None = None
     exec_account_id: int | None = None
     notify_bot_id: int | None = None

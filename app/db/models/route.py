@@ -72,6 +72,9 @@ class Route(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128), index=True)
+    # 多源线路：一条「线路」可以同时监听多个源，落库时每个源一行，用同一个
+    # bundle_id 串起来（水位线按「线路+目标」存，一个源一行才准确）。
+    bundle_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     source_chat_id: Mapped[int] = mapped_column(
         ForeignKey("chats.id", ondelete="CASCADE"),
         index=True,

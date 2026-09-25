@@ -254,7 +254,17 @@ class RuntimeService:
         text = (view.text or "").strip()
         if not text:
             return
-        sender = sender_info(getattr(message, "sender", None))
+        raw_sender = getattr(message, "sender", None)
+        if raw_sender is None:
+            # 事件里的 message.sender 有时是空的（尤其是频道匿名发言），
+            # 再问一次客户端，能拿到就带上发言人信息
+            with contextlib.suppress(Exception):
+                raw_sender = await message.get_sender()
+        sender = sender_info(raw_sender)
+        if view.is_post and sender.tg_user_id is None:
+            # 频道以频道身份发帖：不是会员发言，B 线不适用
+            logger.debug("跳过频道匿名发言：{}", text[:30])
+            return
 
         async with session_scope() as session:
             for route in routes:

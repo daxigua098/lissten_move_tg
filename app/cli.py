@@ -31,7 +31,6 @@ EXIT_NOT_IMPLEMENTED = 2
 
 # 尚未交付的子命令 → 所属任务
 PENDING_COMMANDS: dict[str, str] = {
-    "status": "T1-03 运行时锁与心跳",
     "backup": "T7-02 备份与恢复",
     "restore": "T7-02 备份与恢复",
 }
@@ -79,6 +78,16 @@ def build_parser() -> argparse.ArgumentParser:
     login = subparsers.add_parser("account-login", help="交互式登录执行账号（生成 session）")
     login.add_argument("--account-id", type=int, default=None, help="账号 ID")
     login.add_argument("--name", default=None, help="账号别名（与 --account-id 二选一）")
+
+    sync_history = subparsers.add_parser("sync-history", help="补齐 A 线历史消息")
+    sync_history.add_argument("--route-id", type=int, default=None, help="只补指定线路")
+    sync_history.add_argument("--all", action="store_true", help="补齐所有启用的 A 线")
+
+    subparsers.add_parser("run", help="启动搬运运行时（实时监听 + 串行投递）")
+    subparsers.add_parser("status", help="查看运行时状态与投递统计")
+    subparsers.add_parser("pause", help="暂停投递（保留监听）")
+    subparsers.add_parser("resume", help="恢复投递")
+    subparsers.add_parser("stop", help="请求运行时退出")
 
     api = subparsers.add_parser("api", help="启动后台 Web 服务")
     api.add_argument("--host", default=None, help="监听地址，默认取配置")
@@ -417,6 +426,194 @@ async def _account_login(
         await dispose_database()
 
 
+def command_sync_history(args: argparse.Namespace) -> int:
+    """补齐 A 线历史消息（按目标级水位线，不重复搬运）。"""
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        setup_logging(config)
+    except OSError as exc:
+        print(f"警告：日志文件不可写（{exc}），继续执行。", file=sys.stderr)
+
+    return asyncio.run(_sync_history(config, route_id=getattr(args, "route_id", None)))
+
+
+async def _sync_history(config: AppConfig, *, route_id: int | None) -> int:
+    import contextlib
+
+    from app.core.telegram_client import connect_user_client, session_file_path
+    from app.db.session import dispose_database, init_database, session_scope
+    from app.services import history_service, tg_account_service
+
+    await init_database(config)
+    try:
+        async with session_scope() as session:
+            account = await tg_account_service.get_default_account(session)
+            if account is None:
+                print("没有可用的执行账号，请先登记并登录。", file=sys.stderr)
+                return EXIT_FAILURE
+            _phone, api_id, api_hash = tg_account_service.decrypt_credentials(config, account)
+            session_path = session_file_path(config, account.session_name)
+            account_name = account.name
+
+        client = await connect_user_client(
+            config,
+            api_id=api_id,
+            api_hash=api_hash,
+            session_path=session_path,
+        )
+        try:
+            async with session_scope() as session:
+                results = await history_service.sync_all_routes(
+                    session,
+                    config,
+                    client=client,
+                    route_ids=[route_id] if route_id else None,
+                )
+        finally:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+    finally:
+        await dispose_database()
+
+    total = 0
+    for item in results:
+        if item.get("error"):
+            print(f"[失败] {item['route']}：{item['error']}", file=sys.stderr)
+            continue
+        total += int(item.get("enqueued", 0))
+        summary = (
+            f"[完成] {item['route']}：扫描 {item['inspected']} 条，"
+            f"入队 {item['enqueued']} 条，过滤 {item.get('filtered', 0)} 条，"
+            f"目标 {item.get('targets', 0)} 个"
+        )
+        print(summary)
+    print(f"账号：{account_name}；共入队 {total} 条。执行 python main.py run 开始投递。")
+    return EXIT_OK
+
+
+def command_run(args: argparse.Namespace) -> int:
+    """启动搬运运行时：实时监听 + 串行投递。"""
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        setup_logging(config)
+    except OSError as exc:
+        print(f"警告：日志文件不可写（{exc}），继续启动。", file=sys.stderr)
+
+    return asyncio.run(_run_runtime(config))
+
+
+async def _run_runtime(config: AppConfig) -> int:
+    from app.db.session import dispose_database, init_database
+    from app.services.runtime_service import RuntimeService
+
+    await init_database(config)
+    try:
+        return await RuntimeService(config).run()
+    except RuntimeError as exc:
+        print(f"启动失败：{exc}", file=sys.stderr)
+        return EXIT_FAILURE
+    finally:
+        await dispose_database()
+
+
+def command_status(args: argparse.Namespace) -> int:
+    """查看运行时状态与投递统计。"""
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+    return asyncio.run(_print_status(config))
+
+
+async def _print_status(config: AppConfig) -> int:
+    from app.core.heartbeat import heartbeat_age_seconds, read_status
+    from app.core.runtime_control import read_control
+    from app.db.session import dispose_database, init_database, session_scope
+    from app.services import delivery_service
+
+    status = read_status(config.path(config.runtime.status_file))
+    control = read_control(config.path(config.runtime.control_file))
+    print("== 运行时 ==")
+    if status:
+        age = heartbeat_age_seconds(status)
+        age_text = f"，最近心跳 {age:.0f} 秒前" if age is not None else ""
+        print(f"状态：{status.get('status', 'unknown')}{age_text}")
+    else:
+        print("状态：未启动（没有状态文件）")
+    paused_text = "是" if control["paused"] else "否"
+    stop_text = "是" if control["stop_requested"] else "否"
+    print(f"暂停：{paused_text}｜停止请求：{stop_text}")
+
+    await init_database(config)
+    try:
+        async with session_scope() as session:
+            stats = await delivery_service.job_stats(session)
+    finally:
+        await dispose_database()
+
+    print("== 投递统计 ==")
+    for key in ("pending", "retrying", "success", "failed", "skipped"):
+        print(f"{key}：{stats.get(key, 0)}")
+    return EXIT_OK
+
+
+def command_pause(args: argparse.Namespace) -> int:
+    """暂停投递（监听继续，任务继续入队）。"""
+    from app.core.runtime_control import set_paused
+
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+    set_paused(config.path(config.runtime.control_file), True)
+    print("已暂停投递。恢复请执行：python main.py resume")
+    return EXIT_OK
+
+
+def command_resume(args: argparse.Namespace) -> int:
+    """恢复投递。"""
+    from app.core.runtime_control import set_paused, set_stop_requested
+
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+    control_path = config.path(config.runtime.control_file)
+    set_paused(control_path, False)
+    set_stop_requested(control_path, False)
+    print("已恢复投递。")
+    return EXIT_OK
+
+
+def command_stop(args: argparse.Namespace) -> int:
+    """请求运行时进程退出。"""
+    from app.core.runtime_control import set_paused, set_stop_requested
+
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+    control_path = config.path(config.runtime.control_file)
+    set_stop_requested(control_path, True)
+    set_paused(control_path, True)
+    print("已发出停止请求，运行时会在当前任务结束后退出。")
+    return EXIT_OK
+
+
 def command_api(args: argparse.Namespace) -> int:
     """启动后台 Web 服务。"""
     try:
@@ -478,6 +675,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_set_password(args)
         if args.command == "account-login":
             return command_account_login(args)
+        if args.command == "sync-history":
+            return command_sync_history(args)
+        if args.command == "run":
+            return command_run(args)
+        if args.command == "status":
+            return command_status(args)
+        if args.command == "pause":
+            return command_pause(args)
+        if args.command == "resume":
+            return command_resume(args)
+        if args.command == "stop":
+            return command_stop(args)
         if args.command == "api":
             return command_api(args)
         return command_pending(args)

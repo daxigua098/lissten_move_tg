@@ -48,3 +48,5 @@ select = ["E", "F", "I", "UP", "B", "ASYNC"]
 # FastAPI 的依赖注入约定就是在默认值里调用 Depends()
 "app/api/*.py" = ["B008"]
 "app/api/**/*.py" = ["B008"]
+# Alembic 生成的迁移文件不参与风格检查
+"migrations/versions/*.py" = ["E501", "I001"]

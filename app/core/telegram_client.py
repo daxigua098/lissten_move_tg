@@ -5,12 +5,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.core.config import AppConfig
+from app.core.content_cleaner import (
+    KIND_DOCUMENT,
+    KIND_OTHER,
+    KIND_PHOTO,
+    KIND_POLL,
+    KIND_SERVICE,
+    KIND_TEXT,
+    KIND_VIDEO,
+    MessageView,
+)
 from app.core.errors import ValidationFailedError
 from app.core.source_resolver import ResolvedTarget
 
@@ -142,6 +153,121 @@ def profile_from_entity(entity: Any) -> ChatProfile:
         username=getattr(entity, "username", None),
         is_private=not bool(getattr(entity, "username", None)),
         member_count=getattr(entity, "participants_count", None),
+    )
+
+
+def message_view_from_telethon(message: Any) -> MessageView:
+    """把 Telethon 消息适配成净化引擎需要的 MessageView。"""
+    if getattr(message, "action", None) is not None:
+        kind = KIND_SERVICE
+    elif getattr(message, "photo", None) is not None:
+        kind = KIND_PHOTO
+    elif getattr(message, "video", None) is not None:
+        kind = KIND_VIDEO
+    elif getattr(message, "document", None) is not None:
+        kind = KIND_DOCUMENT
+    elif getattr(message, "poll", None) is not None:
+        kind = KIND_POLL
+    elif (getattr(message, "message", None) or "").strip():
+        kind = KIND_TEXT
+    else:
+        kind = KIND_OTHER
+
+    sender = getattr(message, "sender", None)
+    return MessageView(
+        message_id=int(getattr(message, "id", 0) or 0),
+        kind=kind,
+        text=getattr(message, "message", None) or "",
+        grouped_id=getattr(message, "grouped_id", None),
+        is_post=bool(getattr(message, "post", False)),
+        sender_id=getattr(message, "sender_id", None),
+        sender_username=getattr(sender, "username", None),
+        sender_is_bot=bool(getattr(sender, "bot", False)),
+        is_forwarded=bool(getattr(message, "fwd_from", None)),
+        date=getattr(message, "date", None),
+    )
+
+
+async def iter_source_messages(
+    client: Any,
+    entity: Any,
+    *,
+    min_id: int = 0,
+    limit: int = 500,
+    skip_pinned: bool = True,
+) -> list[Any]:
+    """按消息 ID 从小到大拉取历史消息（跳过置顶可选）。"""
+    messages = await client.get_messages(entity, min_id=int(min_id), limit=limit, reverse=True)
+    if skip_pinned:
+        return [item for item in messages if not getattr(item, "pinned", False)]
+    return list(messages)
+
+
+async def forward_to_target(
+    client: Any,
+    *,
+    source_entity: Any,
+    target_entity: Any,
+    message_ids: list[int],
+    drop_author: bool = True,
+) -> Any:
+    """把源消息转发到目标；drop_author=True 即"去来源标记"的 copy 模式。"""
+    return await client.forward_messages(
+        target_entity,
+        message_ids,
+        source_entity,
+        drop_author=drop_author,
+    )
+
+
+async def repost_message(
+    client: Any,
+    *,
+    target_entity: Any,
+    message: Any,
+    caption: str | None,
+) -> Any:
+    """把源消息的媒体重新上传到目标，并替换为净化后的文案。"""
+    return await client.send_file(
+        target_entity,
+        file=message,
+        caption=caption or None,
+    )
+
+
+async def send_ad(
+    client: Any,
+    *,
+    target_entity: Any,
+    text: str | None,
+    image_path: str | None = None,
+    link_url: str | None = None,
+    link_text: str | None = None,
+) -> Any:
+    """发送广告素材：图片 + 文案 + 链接按钮，或纯文案。"""
+    buttons = None
+    if link_url and link_text:
+        from telethon import Button
+
+        buttons = [[Button.url(link_text, link_url)]]
+
+    if image_path and await asyncio.to_thread(Path(image_path).is_file):
+        return await client.send_file(
+            target_entity,
+            str(image_path),
+            caption=text or None,
+            buttons=buttons,
+        )
+    return await client.send_message(target_entity, text or "", buttons=buttons)
+
+
+def render_ad_text(template: str, *, source_title: str, route_name: str) -> str:
+    """替换广告文案里的变量。"""
+    text = template or ""
+    return (
+        text.replace("{源名}", source_title or "")
+        .replace("{原发言人}", source_title or "")
+        .replace("{线路名}", route_name or "")
     )
 
 

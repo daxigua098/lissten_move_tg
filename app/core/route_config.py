@@ -29,6 +29,8 @@ class ACarryConfig(BaseModel):
     promo_blacklist: list[str] = Field(default_factory=list)
     promo_regex: list[str] = Field(default_factory=list)
     transfer_mode: Literal["copy", "forward"] = "copy"
+    # 文案处理：keep=保持原文直接转发（快）；clean=净化后重新上传（慢，但真正去掉对方广告）
+    text_mode: Literal["keep", "clean"] = "keep"
     album_aggregate: bool = True
     empty_text_policy: Literal["keep_media", "drop"] = "keep_media"
     ad_policy: Literal["none", "every", "nth"] = "nth"

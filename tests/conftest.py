@@ -259,6 +259,115 @@ class FakeAccountClient:
         raise AssertionError(f"未预期的请求：{name}")
 
 
+def fake_message(
+    message_id: int,
+    text: str = "",
+    *,
+    photo: bool = False,
+    video: bool = False,
+    pinned: bool = False,
+    grouped_id: int | None = None,
+):
+    """构造 Telethon 消息替身（含净化引擎需要的字段）。"""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=message_id,
+        message=text,
+        photo=object() if photo else None,
+        video=object() if video else None,
+        document=None,
+        poll=None,
+        action=None,
+        pinned=pinned,
+        grouped_id=grouped_id,
+        post=False,
+        sender_id=555,
+        sender=SimpleNamespace(username="seller", bot=False),
+        fwd_from=None,
+        date=datetime(2026, 9, 25, 10, 0, tzinfo=UTC),
+    )
+
+
+class FakeDeliveryClient:
+    """投递与历史同步用的 Telethon 替身。"""
+
+    def __init__(self, history: list | None = None) -> None:
+        self.history = list(history or [])
+        self.forwarded: list[dict] = []
+        self.sent: list[dict] = []
+        self.fail_times = 0
+        self.fail_with = "模拟发送失败"
+
+    async def get_entity(self, identifier):
+        return identifier
+
+    async def get_messages(self, entity, *, ids=None, min_id=0, limit=None, reverse=False):
+        if ids is not None:
+            wanted = {int(item) for item in ids}
+            found = [item for item in self.history if item.id in wanted]
+            return found[0] if len(wanted) == 1 and found else found
+        selected = [item for item in self.history if item.id > int(min_id)]
+        selected.sort(key=lambda item: item.id)
+        if limit:
+            selected = selected[: int(limit)]
+        return selected
+
+    async def forward_messages(self, entity, ids, from_peer, drop_author=False):
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError(self.fail_with)
+        self.forwarded.append(
+            {
+                "target": entity,
+                "ids": list(ids),
+                "source": from_peer,
+                "drop_author": drop_author,
+            }
+        )
+        return SimpleNamespace(id=9000 + len(self.forwarded))
+
+    async def send_message(self, entity, text, buttons=None):
+        self.sent.append({"target": entity, "text": text, "buttons": buttons})
+        return SimpleNamespace(id=8000 + len(self.sent))
+
+    async def send_file(self, entity, file=None, caption=None, buttons=None):
+        self.sent.append({"target": entity, "file": file, "caption": caption, "buttons": buttons})
+        return SimpleNamespace(id=8500 + len(self.sent))
+
+    async def disconnect(self) -> None:
+        return None
+
+
+@pytest.fixture
+def fake_delivery_client() -> FakeDeliveryClient:
+    """投递替身。"""
+    return FakeDeliveryClient()
+
+
+@pytest.fixture
+async def db(project_root, valid_secret_key) -> AsyncIterator[object]:
+    """已建表的临时数据库（服务层测试用）。"""
+    from app.core.config import load_config
+    from app.db.session import create_schema, dispose_database, init_database
+
+    config = load_config(
+        project_root=project_root,
+        environ={
+            "SECRET_KEY": valid_secret_key,
+            "ADMIN_PASSWORD": "custom-pass1",
+            "DATABASE_URL": database_url(project_root),
+        },
+    )
+    await init_database(config)
+    await create_schema()
+    try:
+        yield config
+    finally:
+        await dispose_database()
+
+
 @pytest.fixture
 def fake_account_client() -> FakeAccountClient:
     """账号客户端替身，测试可先配置 dialogs/entities/permissions。"""

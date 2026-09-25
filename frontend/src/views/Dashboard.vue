@@ -1,6 +1,6 @@
 <script setup>
 import { ElMessage } from "element-plus";
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import { logsApi } from "../api";
 import { auth } from "../stores/auth";
@@ -21,6 +21,21 @@ async function load() {
 }
 
 onMounted(load);
+
+const runtimeLabel = computed(() => {
+  const state = status.value?.runtime?.status;
+  if (state === "running") {
+    return status.value?.runtime?.paused ? "已暂停" : "运行中";
+  }
+  if (state === "stopped") return "未启动";
+  return state || "-";
+});
+
+const heartbeatText = computed(() => {
+  const age = status.value?.runtime?.heartbeat_age_seconds;
+  if (age === null || age === undefined) return "-";
+  return `${Math.round(age)} 秒前`;
+});
 </script>
 
 <template>
@@ -41,9 +56,9 @@ onMounted(load);
       </el-col>
       <el-col :xs="12" :sm="8" :md="6">
         <el-card shadow="never">
-          <div class="card-hint">监听源 / 线路</div>
-          <div class="stat-value">{{ status?.counts?.sources ?? 0 }} / {{ status?.counts?.routes ?? 0 }}</div>
-          <div class="card-hint">T1-03 后接入真实数据</div>
+          <div class="card-hint">搬运运行时</div>
+          <div class="stat-value">{{ runtimeLabel }}</div>
+          <div class="card-hint">队列 {{ status?.counts?.queue_size ?? 0 }} 条</div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="8" :md="6">
@@ -55,9 +70,11 @@ onMounted(load);
       </el-col>
       <el-col :xs="12" :sm="8" :md="6">
         <el-card shadow="never">
-          <div class="card-hint">访问模式</div>
-          <div class="stat-value">{{ status?.access_mode === "local" ? "本机" : "公网" }}</div>
-          <div class="card-hint">{{ status?.environment }}</div>
+          <div class="card-hint">投递成功</div>
+          <div class="stat-value">{{ status?.counts?.jobs?.success ?? 0 }}</div>
+          <div class="card-hint">
+            失败 {{ status?.counts?.jobs?.failed ?? 0 }} · 重试中 {{ status?.counts?.jobs?.retrying ?? 0 }}
+          </div>
         </el-card>
       </el-col>
     </el-row>
@@ -95,7 +112,7 @@ onMounted(load);
       :closable="false"
       show-icon
       title="当前是一期基础工程（T1-01 / T1-02 / E2 登录与权限）。"
-      description="监听源、接收组、线路管理、会员线索等页面会在后续任务中接入；运行时状态（T1-03）接入后这里会显示心跳、账号健康度与队列长度。"
+      description="搬运运行时用 python main.py run 启动；启动后这里会显示心跳、队列长度与投递统计。会员线索与关键词词库属于二期范围。"
     />
   </div>
 </template>

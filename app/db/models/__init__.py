@@ -1,6 +1,16 @@
 """ORM 模型聚合导出（供 Alembic autogenerate 与业务代码统一引用）。"""
 
 from app.db.base import Base, TimestampMixin, utc_now
+from app.db.models.job import (
+    JOB_FAILED,
+    JOB_PENDING,
+    JOB_PROCESSING,
+    JOB_RETRYING,
+    JOB_SKIPPED,
+    JOB_STATUSES,
+    JOB_SUCCESS,
+    DeliveryJob,
+)
 from app.db.models.route import (
     AD_POLICIES,
     AD_POLICY_EVERY,
@@ -78,6 +88,14 @@ __all__ = [
     "CHAT_CHANNEL",
     "CHAT_GROUP",
     "CHAT_SUPERGROUP",
+    "DeliveryJob",
+    "JOB_FAILED",
+    "JOB_PENDING",
+    "JOB_PROCESSING",
+    "JOB_RETRYING",
+    "JOB_SKIPPED",
+    "JOB_STATUSES",
+    "JOB_SUCCESS",
     "LISTEN_MODE_ALL",
     "LISTEN_MODE_KEYWORD",
     "LISTEN_MODES",

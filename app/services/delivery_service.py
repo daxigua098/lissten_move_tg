@@ -89,6 +89,23 @@ async def enqueue_message(
     return created
 
 
+async def requeue_stale_jobs(session: AsyncSession) -> int:
+    """把上次异常退出时留在「处理中」的任务放回队列。
+
+    否则这些任务既不会被重试也不会失败，永远卡在队列里（表现为后面的新消息一直排队）。
+    """
+    rows = list(
+        await session.scalars(select(DeliveryJob).where(DeliveryJob.status == JOB_PROCESSING))
+    )
+    for row in rows:
+        row.status = JOB_PENDING
+        row.next_retry_at = None
+        row.last_error = "上次运行时中断，已重新入队"
+    if rows:
+        await session.commit()
+    return len(rows)
+
+
 async def next_ready_job(
     session: AsyncSession,
     *,
@@ -326,6 +343,16 @@ async def deliver_job_via_bot(
             try:
                 result = await bot_api.copy_message(copy_from[0], copy_from[1], chat_id)
             except Exception as exc:  # noqa: BLE001 - 读不到源消息就退回下载再上传
+                if "not found" in str(exc).lower():
+                    # Telegram 不允许机器人读它进群之前的历史消息：这种老帖子
+                    # 只能走下载再上传，但很慢，直接跳过免得堵住后面的新消息。
+                    job.status = JOB_SKIPPED
+                    job.last_error = "机器人看不到这条历史消息（它在消息发出后才进群），已跳过"
+                    job.sent_at = None
+                    job.next_retry_at = None
+                    await session.commit()
+                    await session.refresh(job)
+                    return job
                 logger.warning("机器人直接复制失败，改用下载再上传：{}", exc)
                 result = None
 

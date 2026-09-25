@@ -11,7 +11,9 @@ from app.db.base import as_utc, utc_now
 from app.db.models import (
     JOB_FAILED,
     JOB_PENDING,
+    JOB_PROCESSING,
     JOB_RETRYING,
+    JOB_SKIPPED,
     JOB_SUCCESS,
     AdAsset,
     Chat,
@@ -541,6 +543,71 @@ async def test_deliver_job_via_bot_prefers_copy_message(db) -> None:
     assert bot_api.sent[0][0] == "copy"
     assert job.status == JOB_SUCCESS
     assert job.target_message_id == 7003
+
+
+async def test_bot_skips_history_message_it_cannot_read(db) -> None:
+    """机器人进群前的历史消息复制会报 not found：直接跳过，别占着队列。"""
+    route_id, source_id, target_ids = await _prepare_route(
+        db,
+        a_config={"ad_policy": "none"},
+    )
+
+    class NotFoundBotApi(FakeBotApi):
+        async def copy_message(self, from_chat_id, message_id, to_chat_id, caption=None):  # noqa: ANN001
+            raise RuntimeError(
+                "Telegram 拒绝了 copyMessage：Bad Request: message to copy not found"
+            )
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        jobs = await delivery_service.enqueue_message(
+            session,
+            route=route,
+            target_chat_ids=target_ids,
+            source_chat_id=source_id,
+            source_message_id=905,
+        )
+        source_chat = await session.get(Chat, source_id)
+        target_chat = await session.get(Chat, target_ids[0])
+        job = await delivery_service.deliver_job_via_bot(
+            session,
+            db,
+            job=await session.get(DeliveryJob, jobs[0].id),
+            route=route,
+            bot_api=NotFoundBotApi(),
+            target_chat=target_chat,
+            a_config=ACarryConfig(ad_policy="none"),
+            source_chat=source_chat,
+            copy_from=("-1001234567890", 905),
+            payload_loader=None,
+        )
+
+    assert job.status == JOB_SKIPPED
+    assert "历史消息" in (job.last_error or "")
+
+
+async def test_requeue_stale_jobs_puts_processing_back(db) -> None:
+    """异常退出留下的「处理中」任务要能重新入队。"""
+    route_id, source_id, target_ids = await _prepare_route(db)
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        jobs = await delivery_service.enqueue_message(
+            session,
+            route=route,
+            target_chat_ids=target_ids,
+            source_chat_id=source_id,
+            source_message_id=906,
+        )
+        job = await session.get(DeliveryJob, jobs[0].id)
+        job.status = JOB_PROCESSING
+        await session.commit()
+
+    async with session_scope() as session:
+        requeued = await delivery_service.requeue_stale_jobs(session)
+        job = await session.get(DeliveryJob, jobs[0].id)
+
+    assert requeued == 1
+    assert job.status == JOB_PENDING
 
 
 def test_simple_namespace_available() -> None:

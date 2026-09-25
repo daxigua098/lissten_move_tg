@@ -123,6 +123,11 @@ class RuntimeService:
                 handlers["monitor"],
             )
             await self._publish(status="running", extra={"routes": handlers})
+            # 上次异常退出可能留下「处理中」的任务，先放回队列再开工
+            async with session_scope() as session:
+                requeued = await delivery_service.requeue_stale_jobs(session)
+            if requeued:
+                logger.warning("上次中断留下 {} 条处理中任务，已重新入队", requeued)
             # 心跳独立跑：投递循环里在下载大文件时，界面也不会显示成掉线
             heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             try:

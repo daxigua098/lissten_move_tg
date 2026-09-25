@@ -106,6 +106,16 @@ async function act(action) {
           </div>
         </el-card>
       </el-col>
+      <el-col :xs="12" :sm="8" :md="6">
+        <el-card shadow="never">
+          <div class="card-hint">今日线索</div>
+          <div class="stat-value">{{ status?.counts?.leads?.today ?? 0 }}</div>
+          <div class="card-hint">
+            共 {{ status?.counts?.leads?.total ?? 0 }} 条 · 未推送
+            {{ status?.counts?.leads?.undelivered ?? 0 }} 条
+          </div>
+        </el-card>
+      </el-col>
     </el-row>
 
     <el-card shadow="never" class="panel">
@@ -125,6 +135,16 @@ async function act(action) {
         运行时不热加载配置：改完线路、接收目标或广告策略后，点「重启」才生效。
       </p>
     </el-card>
+
+    <el-alert
+      v-if="(status?.counts?.leads?.undelivered ?? 0) > 0"
+      class="panel"
+      type="info"
+      :closable="false"
+      show-icon
+      title="有线索只入库、没推到群里"
+      :description="`当前有 ${status?.counts?.leads?.undelivered} 条未推送：全量监听默认只入库，去左侧「线索池」查看全部；想让每条都进群，到线路里勾上「全量模式也推卡片」再重启运行时。`"
+    />
 
     <el-card shadow="never" class="panel">
       <template #header>

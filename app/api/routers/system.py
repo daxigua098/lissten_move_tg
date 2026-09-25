@@ -15,7 +15,7 @@ from app.core.heartbeat import heartbeat_age_seconds, read_status
 from app.core.runtime_control import read_control
 from app.db.models import User
 from app.db.session import get_engine
-from app.services import delivery_service, user_service
+from app.services import delivery_service, lead_service, user_service
 
 router = APIRouter(
     prefix="/api/system",
@@ -38,6 +38,7 @@ async def status(
     active_super_admins = await user_service.count_active_super_admins(session)
     jobs = await delivery_service.job_stats(session)
     queue_size = int(jobs.get("pending", 0)) + int(jobs.get("retrying", 0))
+    leads = await lead_service.lead_stats(session)
 
     heartbeat = read_status(config.path(config.runtime.status_file))
     control = read_control(config.path(config.runtime.control_file))
@@ -67,6 +68,7 @@ async def status(
             "routes": 0,
             "queue_size": queue_size,
             "jobs": jobs,
+            "leads": leads,
         },
         "retention": {
             "messages_days": config.retention.messages_raw_days,

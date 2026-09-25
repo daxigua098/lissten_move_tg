@@ -1,9 +1,10 @@
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 
 import { routesApi, sourcesApi, targetsApi } from "../api";
 import RouteEditor from "../components/RouteEditor.vue";
+import { collectRoleMismatches, targetRoleFullLabel, targetRoleShortLabel, targetRoleTagType } from "../targetRoles";
 
 const loading = ref(false);
 const routes = ref([]);
@@ -16,6 +17,13 @@ const matrix = reactive({
   source_chat_ids: [],
   target_chat_ids: [],
 });
+
+const matrixWarnings = computed(() =>
+  collectRoleMismatches(
+    matrix.business_type,
+    targets.value.filter((item) => matrix.target_chat_ids.includes(item.id)),
+  ),
+);
 
 async function load() {
   loading.value = true;
@@ -149,11 +157,21 @@ onMounted(load);
             <el-option
               v-for="item in targets"
               :key="item.id"
-              :label="`${item.name || item.title || item.username}（${item.target_role_label}）`"
+              :label="`${item.name || item.title || item.username}（${targetRoleFullLabel(item.target_role)}）`"
               :value="item.id"
             />
           </el-select>
         </div>
+        <el-alert
+          v-if="matrixWarnings.length"
+          class="matrix-warn"
+          type="error"
+          :closable="false"
+          show-icon
+          title="接收目标的用途与业务类型不一致（只是提醒，不会阻止创建）"
+        >
+          <p v-for="item in matrixWarnings" :key="item.name">{{ item.name }}：{{ item.text }}</p>
+        </el-alert>
         <div class="matrix-foot">
           <span class="card-hint">
             将创建 {{ matrix.source_chat_ids.length * matrix.target_chat_ids.length }} 条线路，已存在的自动跳过
@@ -180,8 +198,13 @@ onMounted(load);
         </el-table-column>
         <el-table-column label="接收目标" min-width="200">
           <template #default="{ row }">
-            <span v-if="row.targets.length">
-              {{ row.targets.map((item) => item.name || item.title || item.username).join("、") }}
+            <span v-if="row.targets.length" class="target-list">
+              <span v-for="item in row.targets" :key="item.chat_id" class="target-item">
+                {{ item.name || item.title || item.username }}
+                <el-tag size="small" :type="targetRoleTagType(item.target_role)">
+                  {{ targetRoleShortLabel(item.target_role) }}
+                </el-tag>
+              </span>
             </span>
             <span v-else class="card-hint">未配置</span>
           </template>
@@ -253,5 +276,26 @@ onMounted(load);
 
 .matrix-foot .card-hint {
   margin-right: auto;
+}
+
+.matrix-warn {
+  grid-column: 1 / -1;
+}
+
+.matrix-warn p {
+  margin: 2px 0;
+  line-height: 1.6;
+}
+
+.target-list {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.target-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 </style>

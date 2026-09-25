@@ -235,24 +235,32 @@ onMounted(load);
           <div class="panel-body">
             <el-checkbox-group v-model="selectedSources" class="list">
               <label v-for="item in sources" :key="item.id" class="row">
-                <el-checkbox :value="item.id" />
-                <span class="grow">
-                  <span class="chat-name">{{ item.name || item.title || item.username }}</span>
-                  <span class="card-hint">
-                    {{ item.chat_type_label }}
-                    <template v-if="item.is_private"> · 私有</template>
-                  </span>
-                  <span v-if="item.tags?.length" class="tags">
-                    <el-tag v-for="tag in item.tags" :key="tag" size="small" type="info">{{ tag }}</el-tag>
+                <span class="row-line">
+                  <el-checkbox :value="item.id" />
+                  <span class="grow">
+                    <span class="chat-name">{{ item.name || item.title || item.username }}</span>
+                    <span class="card-hint">
+                      {{ item.chat_type_label }}
+                      <template v-if="item.is_private"> · 私有</template>
+                    </span>
+                    <span v-if="item.tags?.length" class="tags">
+                      <el-tag v-for="tag in item.tags" :key="tag" size="small" type="info">
+                        {{ tag }}
+                      </el-tag>
+                    </span>
                   </span>
                 </span>
-                <el-switch
-                  v-model="item.source_enabled"
-                  size="small"
-                  @change="() => toggleEnabled(item)"
-                />
-                <el-button size="small" link type="primary" @click.prevent="editTags(item)">标签</el-button>
-                <el-button size="small" link @click.prevent="renameChat(item)">改名</el-button>
+                <span class="row-line row-actions">
+                  <el-switch
+                    v-model="item.source_enabled"
+                    size="small"
+                    @change="() => toggleEnabled(item)"
+                  />
+                  <el-button size="small" link type="primary" @click.prevent="editTags(item)">
+                    标签
+                  </el-button>
+                  <el-button size="small" link @click.prevent="renameChat(item)">改名</el-button>
+                </span>
               </label>
               <div v-if="!sources.length" class="card-hint empty">还没有监听源，从左侧勾选后点 → 添加。</div>
             </el-checkbox-group>

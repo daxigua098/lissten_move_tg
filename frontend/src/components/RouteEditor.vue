@@ -3,6 +3,12 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, reactive, ref, watch } from "vue";
 
 import { adAssetsApi, routesApi } from "../api";
+import {
+  collectRoleMismatches,
+  targetRoleFullLabel,
+  targetRoleShortLabel,
+  targetRoleTagType,
+} from "../targetRoles";
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -37,6 +43,12 @@ const visible = computed({
   set: (value) => emit("update:modelValue", value),
 });
 const isEdit = computed(() => Boolean(props.routeId));
+const targetRoleWarnings = computed(() =>
+  collectRoleMismatches(
+    form.business_type,
+    detailTargets.value.filter((item) => item.enabled !== false),
+  ),
+);
 
 function splitLines(text) {
   return String(text || "")
@@ -226,6 +238,7 @@ function pushLocalTarget(targetId) {
   if (!target) return;
   detailTargets.value.push({
     chat_id: target.id,
+    name: target.name,
     title: target.title,
     username: target.username,
     target_role: target.target_role,
@@ -361,7 +374,9 @@ async function resetProgress(row) {
         <div v-for="item in detailTargets" :key="item.chat_id" class="target-row">
           <span class="grow">
             {{ item.name || item.title || item.username }}
-            <el-tag size="small" type="info">{{ item.target_role_label }}</el-tag>
+            <el-tag size="small" :type="targetRoleTagType(item.target_role)">
+              {{ targetRoleShortLabel(item.target_role) }}
+            </el-tag>
             <el-tag v-if="item.can_post === false" size="small" type="danger">无发帖权限</el-tag>
           </span>
           <span class="card-hint">水位线 {{ item.last_delivered_message_id }}</span>
@@ -371,6 +386,16 @@ async function resetProgress(row) {
         </div>
         <div v-if="!detailTargets.length" class="card-hint">还没有接收目标</div>
       </div>
+      <el-alert
+        v-if="targetRoleWarnings.length"
+        class="role-warn"
+        type="error"
+        :closable="false"
+        show-icon
+        title="接收目标的用途与线路业务类型不一致（只是提醒，不影响投递）"
+      >
+        <p v-for="item in targetRoleWarnings" :key="item.name">{{ item.name }}：{{ item.text }}</p>
+      </el-alert>
       <div class="add-target">
         <el-select
           v-model="addingTargetIds"
@@ -382,7 +407,7 @@ async function resetProgress(row) {
           <el-option
             v-for="item in targets"
             :key="item.id"
-            :label="item.name || item.title || item.username"
+            :label="`${item.name || item.title || item.username}（${targetRoleFullLabel(item.target_role)}）`"
             :value="item.id"
           />
         </el-select>
@@ -564,6 +589,15 @@ async function resetProgress(row) {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.role-warn {
+  margin-top: 10px;
+}
+
+.role-warn p {
+  margin: 2px 0;
+  line-height: 1.6;
 }
 
 .switch-grid {

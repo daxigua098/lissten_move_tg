@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, ref } from "vue";
 
 import { targetsApi } from "../api";
+import { TARGET_ROLE_OPTIONS } from "../targetRoles";
 
 const loading = ref(false);
 const available = ref([]);
@@ -124,10 +125,25 @@ onMounted(load);
       <h2 class="page-title">接收组</h2>
       <span class="card-hint">已加入 {{ targets.length }} 个 · 可选 {{ available.length }} 个</span>
       <div class="spacer" />
-      <el-select v-model="role" size="small" style="width: 150px">
-        <el-option label="用途：内容接收" value="content" />
-        <el-option label="用途：线索接收" value="lead" />
+      <el-select v-model="role" size="small" style="width: 230px">
+        <el-option
+          v-for="item in TARGET_ROLE_OPTIONS"
+          :key="item.value"
+          :label="item.fullLabel"
+          :value="item.value"
+        />
       </el-select>
+      <el-tooltip placement="bottom-start" :show-after="150">
+        <template #content>
+          <div class="role-tip">
+            <p v-for="item in TARGET_ROLE_OPTIONS" :key="item.value">
+              <b>{{ item.label }}</b>：{{ item.hint }}
+            </p>
+            <p>用途只是分类标签，不限制投递；真正决定发到哪个群的是线路里勾选的接收目标。</p>
+          </div>
+        </template>
+        <span class="role-help">用途说明</span>
+      </el-tooltip>
       <el-checkbox v-model="checkAccess" size="small">入库前做权限预检</el-checkbox>
       <el-button size="small" @click="load">刷新</el-button>
     </div>
@@ -171,32 +187,40 @@ onMounted(load);
           <div class="panel-body">
             <el-checkbox-group v-model="selectedTargets" class="list">
               <label v-for="item in targets" :key="item.id" class="row">
-                <el-checkbox :value="item.id" />
-                <span class="grow">
-                  <span class="chat-name">{{ item.name || item.title || item.username }}</span>
-                  <span class="card-hint">
-                    {{ item.chat_type_label }}
-                    <template v-if="item.is_private"> · 私有</template>
+                <span class="row-line">
+                  <el-checkbox :value="item.id" />
+                  <span class="grow">
+                    <span class="chat-name">{{ item.name || item.title || item.username }}</span>
+                    <span class="card-hint">
+                      {{ item.chat_type_label }}
+                      <template v-if="item.is_private"> · 私有</template>
+                    </span>
                   </span>
+                  <el-tag size="small" :type="canPostLabel(item.can_post).type">
+                    {{ canPostLabel(item.can_post).text }}
+                  </el-tag>
                 </span>
-                <el-tag size="small" :type="canPostLabel(item.can_post).type">
-                  {{ canPostLabel(item.can_post).text }}
-                </el-tag>
-                <el-select
-                  :model-value="item.target_role"
-                  size="small"
-                  style="width: 120px"
-                  @change="(value) => updateTarget(item, { role: value })"
-                >
-                  <el-option label="内容接收" value="content" />
-                  <el-option label="线索接收" value="lead" />
-                </el-select>
-                <el-switch
-                  v-model="item.target_enabled"
-                  size="small"
-                  @change="() => updateTarget(item, { enabled: item.target_enabled })"
-                />
-                <el-button size="small" link @click.prevent="renameChat(item)">改名</el-button>
+                <span class="row-line row-actions">
+                  <el-select
+                    :model-value="item.target_role"
+                    size="small"
+                    style="width: 210px"
+                    @change="(value) => updateTarget(item, { role: value })"
+                  >
+                    <el-option
+                      v-for="option in TARGET_ROLE_OPTIONS"
+                      :key="option.value"
+                      :label="option.fullLabel"
+                      :value="option.value"
+                    />
+                  </el-select>
+                  <el-switch
+                    v-model="item.target_enabled"
+                    size="small"
+                    @change="() => updateTarget(item, { enabled: item.target_enabled })"
+                  />
+                  <el-button size="small" link @click.prevent="renameChat(item)">改名</el-button>
+                </span>
               </label>
               <div v-if="!targets.length" class="card-hint empty">
                 还没有接收组，从左侧勾选后点 → 添加。
@@ -215,6 +239,33 @@ onMounted(load);
       title="接收组必须能发帖"
       description="执行账号需要已加入该群/频道并有发言权限；权限预检会标记「无发帖权限」的目标，A 线投递前还会再校验一次。用途选「线索接收」的群接收 B 线的会员线索卡片。"
     />
+
+    <el-card shadow="never" class="panel-gap">
+      <template #header>用途说明：「内容接收」和「线索接收」分别是什么</template>
+      <table class="role-table">
+        <thead>
+          <tr>
+            <th>用途</th>
+            <th>对应业务线</th>
+            <th>群里会出现什么</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in TARGET_ROLE_OPTIONS" :key="item.value">
+            <td class="role-cell">
+              <el-tag size="small" :type="item.tagType">{{ item.label }}</el-tag>
+              <span class="card-hint">{{ item.fullLabel }}</span>
+            </td>
+            <td>{{ item.value === "content" ? "A 线 · 搬运帖子" : "B 线 · 监听会员" }}</td>
+            <td>{{ item.hint }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="card-hint role-note">
+        用途只是分类标签，不会限制投递：真正决定"发到哪个群"的是线路里勾选的接收目标。
+        同一个群今天当内容落点、明天又可以挂到 B 线，改这个下拉即可。
+      </p>
+    </el-card>
   </div>
 </template>
 
@@ -280,6 +331,56 @@ onMounted(load);
 
 .empty {
   padding: 16px 4px;
+}
+
+.role-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.role-help {
+  font-size: 13px;
+  color: var(--tg-muted);
+  cursor: help;
+  border-bottom: 1px dashed currentColor;
+}
+
+.role-tip {
+  max-width: 300px;
+  line-height: 1.7;
+}
+
+.role-tip p {
+  margin: 0 0 6px;
+}
+
+.role-table th,
+.role-table td {
+  border-bottom: 1px solid var(--tg-border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.6;
+}
+
+.role-table th {
+  color: var(--tg-muted);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.role-cell {
+  white-space: nowrap;
+}
+
+.role-cell .card-hint {
+  margin-left: 6px;
+}
+
+.role-note {
+  margin: 10px 0 0;
+  line-height: 1.7;
 }
 
 .arrows {

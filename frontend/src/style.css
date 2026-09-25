@@ -61,6 +61,28 @@ body {
   white-space: normal;
 }
 
+/*
+ * 穿梭框的列表行。行内元素（名称、标签、下拉、开关、按钮）在窄容器里放不下时，
+ * 允许换行，避免群名被压成一字一行的竖排。
+ */
+.row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.row-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.row-line.row-actions {
+  justify-content: flex-end;
+}
+
 .toolbar {
   display: flex;
   align-items: center;

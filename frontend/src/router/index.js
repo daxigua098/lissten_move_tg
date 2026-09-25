@@ -1,7 +1,9 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import { auth } from "../stores/auth";
+import Accounts from "../views/Accounts.vue";
 import Audit from "../views/Audit.vue";
+import Bots from "../views/Bots.vue";
 import ChangePassword from "../views/ChangePassword.vue";
 import Dashboard from "../views/Dashboard.vue";
 import Login from "../views/Login.vue";
@@ -15,6 +17,8 @@ const routes = [
   { path: "/change-password", name: "change-password", component: ChangePassword },
   { path: "/", name: "dashboard", component: Dashboard },
   { path: "/users", name: "users", component: Users, meta: { role: "super_admin" } },
+  { path: "/accounts", name: "accounts", component: Accounts, meta: { role: "super_admin" } },
+  { path: "/bots", name: "bots", component: Bots, meta: { role: "super_admin" } },
   { path: "/audit", name: "audit", component: Audit },
   { path: "/login-history", name: "login-history", component: LoginHistory, meta: { role: "super_admin" } },
   { path: "/:pathMatch(.*)*", redirect: "/" },

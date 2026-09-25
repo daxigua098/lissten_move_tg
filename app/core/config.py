@@ -39,6 +39,8 @@ ENV_OVERRIDES: dict[str, tuple[str, str]] = {
     "ADMIN_API_TOKEN": ("secrets", "admin_api_token"),
     "DATABASE_URL": ("database", "url"),
     "LOG_LEVEL": ("logging", "level"),
+    "TG_API_ID": ("telegram", "api_id"),
+    "TG_API_HASH": ("telegram", "api_hash"),
 }
 
 
@@ -105,6 +107,18 @@ class SecuritySection(BaseModel):
     password_min_length: int = Field(default=8, ge=6, le=128)
 
 
+class TelegramSection(BaseModel):
+    """Telegram API 凭据（my.telegram.org 申请），用于执行账号与 Bot 校验。"""
+
+    api_id: int = Field(default=0, ge=0)
+    api_hash: str = ""
+    proxy: str | None = None
+
+    @property
+    def configured(self) -> bool:
+        return self.api_id > 0 and bool(self.api_hash.strip())
+
+
 class RuntimeSection(BaseModel):
     """运行时锁、心跳与控制文件位置。"""
 
@@ -146,6 +160,7 @@ class AppConfig(BaseModel):
     database: DatabaseSection = Field(default_factory=DatabaseSection)
     logging: LoggingSection = Field(default_factory=LoggingSection)
     security: SecuritySection = Field(default_factory=SecuritySection)
+    telegram: TelegramSection = Field(default_factory=TelegramSection)
     runtime: RuntimeSection = Field(default_factory=RuntimeSection)
     retention: RetentionSection = Field(default_factory=RetentionSection)
     secrets: Secrets = Field(default_factory=Secrets)
@@ -266,6 +281,16 @@ def check_config(config: AppConfig) -> list[ConfigIssue]:
             )
         )
 
+    if not config.telegram.configured:
+        issues.append(
+            ConfigIssue(
+                "warning",
+                "telegram.api_id",
+                "未配置 Telegram API 凭据（TG_API_ID / TG_API_HASH）",
+                "绑定执行账号与校验 Bot Token 时需要，到 my.telegram.org 申请",
+            )
+        )
+
     if config.app.access_mode == "public" and not config.server.allowed_ips:
         issues.append(
             ConfigIssue(
@@ -338,6 +363,10 @@ def config_summary(config: AppConfig) -> list[tuple[str, str]]:
         ),
         ("加密密钥", mask_secret(config.secrets.secret_key)),
         ("内置管理员", f"{config.secrets.admin_username}（密码来自 .env）"),
+        (
+            "Telegram API",
+            "已配置" if config.telegram.configured else "未配置（绑定账号与校验 Bot 需要）",
+        ),
         ("配置文件", str(config.config_path) if config.config_path else "未找到，使用默认值"),
         ("环境文件", str(config.env_path) if config.env_path else "未找到"),
     ]

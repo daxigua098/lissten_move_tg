@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import getpass
 import json
 import secrets
 import sys
@@ -73,6 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="要求该账号下次登录后修改密码",
     )
+
+    login = subparsers.add_parser("account-login", help="交互式登录执行账号（生成 session）")
+    login.add_argument("--account-id", type=int, default=None, help="账号 ID")
+    login.add_argument("--name", default=None, help="账号别名（与 --account-id 二选一）")
 
     api = subparsers.add_parser("api", help="启动后台 Web 服务")
     api.add_argument("--host", default=None, help="监听地址，默认取配置")
@@ -321,6 +327,96 @@ async def _set_password(
         await dispose_database()
 
 
+def command_account_login(args: argparse.Namespace) -> int:
+    """交互式登录执行账号（生成/复用 session 文件）。"""
+    try:
+        config = _load_config(args)
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_FAILURE
+
+    try:
+        setup_logging(config)
+    except OSError as exc:
+        print(f"警告：日志文件不可写（{exc}），继续执行。", file=sys.stderr)
+
+    if args.account_id is None and not args.name:
+        print("请用 --account-id 或 --name 指定要登录的账号。", file=sys.stderr)
+        return EXIT_FAILURE
+    return asyncio.run(_account_login(config, account_id=args.account_id, name=args.name))
+
+
+async def _account_login(
+    config: AppConfig,
+    *,
+    account_id: int | None,
+    name: str | None,
+) -> int:
+    from app.core.paths import ensure_dir
+    from app.core.telegram_client import (
+        build_user_client,
+        fetch_account_profile,
+        session_file_path,
+    )
+    from app.db.models import ACCOUNT_DISABLED
+    from app.db.session import dispose_database, get_session_factory, init_database
+    from app.services import tg_account_service
+
+    await init_database(config)
+    try:
+        factory = get_session_factory()
+        async with factory() as session:
+            account = (
+                await tg_account_service.get_account(session, account_id)
+                if account_id is not None
+                else await tg_account_service.get_account_by_name(session, name or "")
+            )
+            if account is None:
+                print(
+                    "未找到执行账号：请先在后台「执行账号池」登记，或确认 --account-id/--name。",
+                    file=sys.stderr,
+                )
+                return EXIT_FAILURE
+            if account.status == ACCOUNT_DISABLED:
+                print("该账号已停用，请先在后台启用后再登录。", file=sys.stderr)
+                return EXIT_FAILURE
+
+            phone, api_id, api_hash = tg_account_service.decrypt_credentials(config, account)
+            session_path = session_file_path(config, account.session_name)
+            ensure_dir(session_path.parent)
+
+            print(f"登录账号：{account.name}（{account.phone_masked}）")
+            print("首次登录需输入 Telegram 发来的验证码；开启两步验证时会再提示输入密码。")
+
+            client = build_user_client(
+                config,
+                api_id=api_id,
+                api_hash=api_hash,
+                session_path=session_path,
+            )
+            try:
+                await client.start(
+                    phone=phone,
+                    code_callback=lambda: input("Telegram 验证码： ").strip(),
+                    password=lambda: getpass.getpass("两步验证密码： "),
+                )
+                profile = await fetch_account_profile(client)
+            except Exception as exc:  # noqa: BLE001 - 登录失败原因需要原样展示
+                await tg_account_service.mark_failure(session, account, error=str(exc))
+                print(f"登录失败：{exc}", file=sys.stderr)
+                return EXIT_FAILURE
+            finally:
+                with contextlib.suppress(Exception):
+                    await client.disconnect()
+
+            await tg_account_service.mark_login_success(session, account, profile=profile)
+            print(f"登录成功：@{profile.username or '-'}（用户 ID {profile.tg_user_id}）")
+            print(f"session 已保存：{session_path}.session")
+            return EXIT_OK
+    finally:
+        await dispose_database()
+
+
 def command_api(args: argparse.Namespace) -> int:
     """启动后台 Web 服务。"""
     try:
@@ -380,6 +476,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return command_create_admin(args)
         if args.command == "set-password":
             return command_set_password(args)
+        if args.command == "account-login":
+            return command_account_login(args)
         if args.command == "api":
             return command_api(args)
         return command_pending(args)

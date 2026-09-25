@@ -184,7 +184,12 @@ def test_check_config_passes_with_complete_setup(
     write_config("app:\n  access_mode: public\nserver:\n  allowed_ips:\n    - 10.0.0.1\n")
     config = load_config(
         project_root=project_root,
-        environ={"SECRET_KEY": valid_secret_key, "ADMIN_PASSWORD": "custom-pass"},
+        environ={
+            "SECRET_KEY": valid_secret_key,
+            "ADMIN_PASSWORD": "custom-pass",
+            "TG_API_ID": "123456",
+            "TG_API_HASH": "0123456789abcdef0123456789abcdef",
+        },
     )
 
     issues = check_config(config)

@@ -1,6 +1,21 @@
 """ORM 模型聚合导出（供 Alembic autogenerate 与业务代码统一引用）。"""
 
 from app.db.base import Base, TimestampMixin, utc_now
+from app.db.models.telegram import (
+    ACCOUNT_ACTIVE,
+    ACCOUNT_DISABLED,
+    ACCOUNT_PENDING,
+    ACCOUNT_RESTRICTED,
+    ACCOUNT_STATUSES,
+    CHAT_CHANNEL,
+    CHAT_GROUP,
+    CHAT_SUPERGROUP,
+    SOURCE_KIND_LOCAL,
+    SOURCE_KIND_REMOTE,
+    Chat,
+    ControlBot,
+    TgAccount,
+)
 from app.db.models.user import (
     ROLE_RANK,
     ROLE_SUB_ADMIN,
@@ -14,14 +29,27 @@ from app.db.models.user import (
 )
 
 __all__ = [
+    "ACCOUNT_ACTIVE",
+    "ACCOUNT_DISABLED",
+    "ACCOUNT_PENDING",
+    "ACCOUNT_RESTRICTED",
+    "ACCOUNT_STATUSES",
+    "CHAT_CHANNEL",
+    "CHAT_GROUP",
+    "CHAT_SUPERGROUP",
     "ROLE_RANK",
     "ROLE_SUB_ADMIN",
     "ROLE_SUPER_ADMIN",
     "ROLE_VIEWER",
+    "SOURCE_KIND_LOCAL",
+    "SOURCE_KIND_REMOTE",
     "AuditLog",
     "Base",
+    "Chat",
+    "ControlBot",
     "LoginHistory",
     "SystemSetting",
+    "TgAccount",
     "TimestampMixin",
     "User",
     "WebSession",

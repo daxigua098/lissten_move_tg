@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -168,3 +169,54 @@ async def login(
 def auth_header(token: str) -> dict[str, str]:
     """构造 Bearer 头。"""
     return {"Authorization": f"Bearer {token}"}
+
+
+class FakeBotClient:
+    """Telethon 替身：Token 以 `valid-` 开头视为有效。"""
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        self.disconnected = False
+
+    async def get_me(self) -> SimpleNamespace:
+        if not self.token.startswith("valid-"):
+            raise RuntimeError("AccessTokenInvalidError: token 无效")
+        stem = self.token.split("-", 1)[1] or "bot"
+        return SimpleNamespace(
+            id=7000000 + len(self.token),
+            username=f"{stem}_bot",
+            first_name="测试机器人",
+            last_name=None,
+            phone=None,
+            bot=True,
+        )
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+
+@pytest.fixture
+async def bot_client(api_config) -> AsyncIterator[AsyncClient]:
+    """带假 Telethon 工厂的客户端，用于控制 Bot 接口测试。"""
+    from app.api.app import create_app
+    from app.db.session import create_schema, dispose_database, init_database
+
+    await init_database(api_config)
+    await create_schema()
+    await _create_admin(api_config, must_change_password=False, is_builtin=True)
+
+    clients: list[FakeBotClient] = []
+
+    async def factory(_config, token: str) -> FakeBotClient:
+        client = FakeBotClient(token)
+        clients.append(client)
+        return client
+
+    app = create_app(api_config, bot_client_factory=factory)
+    app.state.fake_bot_clients = clients
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+            yield http_client
+    finally:
+        await dispose_database()

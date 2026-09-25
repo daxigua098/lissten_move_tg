@@ -29,6 +29,11 @@ security:
   login_window_minutes: 15
   password_min_length: 8
 
+telegram:
+  api_id: 0                     # 到 my.telegram.org 申请，或放 .env 的 TG_API_ID
+  api_hash: ""
+  proxy: null                   # 形如 socks5://127.0.0.1:1080（可选）
+
 runtime:
   heartbeat_seconds: 10
   lock_file: data/runtime.lock

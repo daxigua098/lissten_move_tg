@@ -69,6 +69,18 @@ def compare_token(supplied: str, expected: str) -> bool:
     return hmac.compare_digest(supplied, expected)
 
 
+def mask_phone(phone: str) -> str:
+    """手机号掩码：带区号时保留区号与后 4 位，其余打码。"""
+    text = (phone or "").strip()
+    digits = [char for char in text if char.isdigit()]
+    if len(digits) < 7:
+        return "*" * len(text) if text else ""
+    tail = "".join(digits[-4:])
+    if text.startswith("+"):
+        return f"+{''.join(digits[:2])}***{tail}"
+    return f"{'*' * (len(digits) - 4)}{tail}"
+
+
 class FieldCipher:
     """敏感字段加解密（Bot Token、API Hash 等）。"""
 

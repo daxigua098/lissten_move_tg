@@ -53,6 +53,8 @@ function logoutAll() {
       </div>
       <el-menu :default-active="route.path" router class="shell-menu">
         <el-menu-item index="/">运行总览</el-menu-item>
+        <el-menu-item v-if="auth.isSuperAdmin" index="/accounts">执行账号池</el-menu-item>
+        <el-menu-item v-if="auth.isSuperAdmin" index="/bots">控制 Bot</el-menu-item>
         <el-menu-item index="/audit">审计日志</el-menu-item>
         <el-menu-item v-if="auth.isSuperAdmin" index="/users">账户管理</el-menu-item>
         <el-menu-item v-if="auth.isSuperAdmin" index="/login-history">登录历史</el-menu-item>

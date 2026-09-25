@@ -65,3 +65,17 @@ export const logsApi = {
   loginHistory: (params) => http.get("/api/login-history", { params }),
   status: () => http.get("/api/system/status"),
 };
+
+export const accountsApi = {
+  list: (params) => http.get("/api/accounts", { params }),
+  create: (payload) => http.post("/api/accounts", payload),
+  update: (id, payload) => http.patch(`/api/accounts/${id}`, payload),
+  remove: (id) => http.delete(`/api/accounts/${id}`),
+};
+
+export const botsApi = {
+  list: (params) => http.get("/api/bots", { params }),
+  create: (payload) => http.post("/api/bots", payload),
+  update: (id, payload) => http.patch(`/api/bots/${id}`, payload),
+  remove: (id) => http.delete(`/api/bots/${id}`),
+};

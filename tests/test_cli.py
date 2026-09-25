@@ -40,7 +40,14 @@ def test_check_config_fails_without_secret_key(project_root, capsys) -> None:
 def test_check_config_passes_with_env_file(
     project_root, write_env, valid_secret_key, capsys
 ) -> None:
-    write_env([f"SECRET_KEY={valid_secret_key}", "ADMIN_PASSWORD=custom-pass"])
+    write_env(
+        [
+            f"SECRET_KEY={valid_secret_key}",
+            "ADMIN_PASSWORD=custom-pass",
+            "TG_API_ID=123456",
+            "TG_API_HASH=0123456789abcdef0123456789abcdef",
+        ]
+    )
 
     code = main(_args(project_root, "check-config"))
 
@@ -51,7 +58,14 @@ def test_check_config_passes_with_env_file(
 
 
 def test_check_config_json_output(project_root, write_env, valid_secret_key, capsys) -> None:
-    write_env([f"SECRET_KEY={valid_secret_key}", "ADMIN_PASSWORD=custom-pass"])
+    write_env(
+        [
+            f"SECRET_KEY={valid_secret_key}",
+            "ADMIN_PASSWORD=custom-pass",
+            "TG_API_ID=123456",
+            "TG_API_HASH=0123456789abcdef0123456789abcdef",
+        ]
+    )
 
     code = main(_args(project_root, "check-config", "--json"))
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +13,7 @@ from loguru import logger
 
 from app.api.errors import register_exception_handlers
 from app.api.middleware import register_middlewares
-from app.api.routers import auth, health, logs, system, users
+from app.api.routers import accounts, auth, bots, health, logs, system, users
 from app.core.config import AppConfig, load_config
 from app.db.session import dispose_database, get_session_factory, init_database
 from app.services import user_service
@@ -38,8 +39,11 @@ async def _warn_if_no_super_admin() -> None:
         logger.warning("系统中没有启用的超级管理员，请执行：python main.py create-admin")
 
 
-def create_app(config: AppConfig | None = None) -> FastAPI:
-    """构造应用实例。"""
+def create_app(config: AppConfig | None = None, *, bot_client_factory: Any = None) -> FastAPI:
+    """构造应用实例。
+
+    bot_client_factory 用于测试注入 Telethon 替身；生产传 None 走真实调用。
+    """
     resolved = config or load_config()
     app = FastAPI(
         title="TG 线索运营系统",
@@ -47,6 +51,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.config = resolved
+    app.state.bot_client_factory = bot_client_factory
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.server.cors_origins,
@@ -62,6 +67,8 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     app.include_router(users.router)
     app.include_router(logs.router)
     app.include_router(system.router)
+    app.include_router(accounts.router)
+    app.include_router(bots.router)
 
     mount_frontend(app, resolved)
     return app

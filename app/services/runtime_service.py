@@ -36,11 +36,13 @@ from app.db.models import (
     BUSINESS_CARRY,
     BUSINESS_MONITOR,
     LISTEN_MODE_ALL,
+    SENDER_MODE_BOT,
     Chat,
     Route,
 )
 from app.db.session import session_scope
 from app.services import (
+    bot_service,
     delivery_service,
     history_service,
     hot_keyword_service,
@@ -58,11 +60,14 @@ class RuntimeService:
         config: AppConfig,
         *,
         client_factory: Any = None,
+        bot_client_factory: Any = None,
         poll_interval: float = 2.0,
         heartbeat_seconds: int | None = None,
     ) -> None:
         self.config = config
         self.client_factory = client_factory
+        # 机器人客户端工厂（测试可注入替身；默认按 Token 真连）
+        self.bot_client_factory = bot_client_factory
         self.poll_interval = poll_interval
         self.heartbeat_seconds = heartbeat_seconds or config.runtime.heartbeat_seconds
         self._lock = RuntimeLock(config.path(config.runtime.lock_file))
@@ -72,6 +77,8 @@ class RuntimeService:
         self._last_purge_at = float("-inf")
         # 本次启动注册了哪些线路（写进心跳，界面上用来发现"改了但没重启"）
         self._registered: dict[str, Any] = {}
+        # 机器人客户端缓存：sender_mode=bot 的线路用它们发言
+        self._bot_clients: dict[int, Any] = {}
 
     @property
     def control_path(self):
@@ -109,6 +116,7 @@ class RuntimeService:
             if owns_client and client is not None:
                 with contextlib.suppress(Exception):
                     await client.disconnect()
+            await self._close_bot_clients()
             self._lock.release()
             await self._publish(status="stopped", extra={})
         return 0
@@ -153,6 +161,44 @@ class RuntimeService:
             api_hash=api_hash,
             session_path=session_path,
         )
+
+    async def _bot_client(self, bot_id: int | None) -> Any:
+        """取（并缓存）用于发言的机器人客户端。
+
+        机器人不需要进源群——内容由执行账号下载后交给机器人上传，
+        所以风控落在机器人身上。第一次使用会把对话列表预热进实体缓存，
+        否则按数字 ID 解析目标群会失败。
+        """
+        if not bot_id:
+            raise RuntimeError("线路选了「用机器人发送」，但没有指定机器人")
+        cached = self._bot_clients.get(bot_id)
+        if cached is not None:
+            return cached
+        async with session_scope() as session:
+            bot = await bot_service.get_bot(session, bot_id)
+            if bot is None or not bot.enabled:
+                raise RuntimeError("指定的机器人不存在或已停用")
+            token = bot_service.decrypt_token(self.config, bot)
+            bot_name = bot.name
+        factory = self.bot_client_factory
+        if factory is not None:
+            client = await factory(self.config, token)
+        else:
+            from app.core.telegram_client import build_bot_client
+
+            client = build_bot_client(self.config, token)
+            await client.start(bot_token=token)
+        with contextlib.suppress(Exception):
+            await client.get_dialogs(limit=None)
+        self._bot_clients[bot_id] = client
+        logger.info("已连接发送机器人「{}」（线路用它发言）", bot_name)
+        return client
+
+    async def _close_bot_clients(self) -> None:
+        for bot_id, client in list(self._bot_clients.items()):
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+            self._bot_clients.pop(bot_id, None)
 
     async def _register_handlers(self, client: Any) -> int:
         """给每条启用的线路源注册新消息监听（A 线搬运 + B 线监听共用一次注册）。"""
@@ -462,6 +508,14 @@ class RuntimeService:
         if not target_ids:
             logger.warning("线索 #{} 没有接收目标，先在线路里加一个", lead.id)
             return
+        sender_client = client
+        if route.sender_mode == SENDER_MODE_BOT:
+            # 线索卡片也交给机器人发，风控不落在账号上
+            try:
+                sender_client = await self._bot_client(route.notify_bot_id)
+            except Exception as exc:  # noqa: BLE001 - 拿不到机器人就退回账号
+                logger.warning("取发送机器人失败，改用执行账号：{}", exc)
+                sender_client = client
         card = render_lead_card(
             config.lead_template,
             sender=sender,
@@ -479,8 +533,8 @@ class RuntimeService:
             if target_chat is None or not target_chat.tg_id:
                 continue
             try:
-                target_entity = await resolve_entity(client, int(target_chat.tg_id))
-                result = await client.send_message(target_entity, card)
+                target_entity = await resolve_entity(sender_client, int(target_chat.tg_id))
+                result = await sender_client.send_message(target_entity, card)
             except Exception as exc:  # noqa: BLE001 - 单个目标失败不影响其他目标
                 logger.warning("线索卡片推送失败（目标 {}）：{}", chat_id, exc)
                 continue
@@ -568,16 +622,48 @@ class RuntimeService:
 
                 ad_asset = await session.get(AdAsset, a_config.ad_asset_id)
 
+            use_bot = route.sender_mode == SENDER_MODE_BOT
             try:
                 source_entity = await resolve_entity(client, int(source_chat.tg_id))
-                target_entity = await resolve_entity(client, int(target_chat.tg_id))
+                if use_bot:
+                    sender_client = await self._bot_client(route.notify_bot_id)
+                    # 目标群由机器人解析：机器人必须是该群成员，否则这里就会报错
+                    target_entity = await resolve_entity(sender_client, int(target_chat.tg_id))
+                else:
+                    sender_client = client
+                    target_entity = await resolve_entity(client, int(target_chat.tg_id))
             except Exception as exc:  # noqa: BLE001 - 解析失败按投递失败处理
                 await delivery_service.mark_failure(session, job, error=str(exc))
                 return 1
 
             source_message = None
             caption = None
-            if a_config.text_mode == "clean":
+            repost_file = None
+            repost_filename = None
+            if use_bot:
+                # 机器人发送：执行账号取原消息并下载媒体，交给机器人上传
+                source_message, cleaned = await self._load_clean_source(
+                    client,
+                    source_entity=source_entity,
+                    job=job,
+                    a_config=a_config,
+                )
+                if source_message is None:
+                    await delivery_service.mark_failure(
+                        session,
+                        job,
+                        error="取不到源消息，无法用机器人转发",
+                    )
+                    return 1
+                if a_config.text_mode == "clean":
+                    caption = cleaned
+                else:
+                    caption = message_view_from_telethon(source_message).text
+                repost_file, repost_filename = await self._prepare_bot_payload(
+                    client,
+                    source_message,
+                )
+            elif a_config.text_mode == "clean":
                 source_message, caption = await self._load_clean_source(
                     client,
                     source_entity=source_entity,
@@ -590,7 +676,7 @@ class RuntimeService:
                 self.config,
                 job=job,
                 route=route,
-                client=client,
+                client=sender_client,
                 source_chat=source_chat,
                 target_chat=target_chat,
                 a_config=a_config,
@@ -599,6 +685,9 @@ class RuntimeService:
                 target_entity=target_entity,
                 source_message=source_message,
                 caption=caption,
+                repost=use_bot,
+                repost_file=repost_file,
+                repost_filename=repost_filename,
             )
             return 1
 
@@ -625,6 +714,29 @@ class RuntimeService:
         view = message_view_from_telethon(message)
         caption = clean_text(view.text, CleanRules.from_config(a_config.model_dump()))
         return message, caption
+
+    async def _prepare_bot_payload(
+        self,
+        client: Any,
+        message: Any,
+    ) -> tuple[bytes | None, str | None]:
+        """用机器人发送时，先把媒体下载成字节（机器人不必在源群里）。"""
+        from app.core.telegram_client import download_media_bytes
+
+        data = None
+        try:
+            data = await download_media_bytes(client, message)
+        except Exception as exc:  # noqa: BLE001 - 下载失败就只发文案
+            logger.warning("下载源媒体失败（将只发文案）：{}", exc)
+        filename = getattr(getattr(message, "file", None), "name", None)
+        if not filename:
+            document = getattr(message, "document", None)
+            for attribute in getattr(document, "attributes", None) or []:
+                name = getattr(attribute, "file_name", None)
+                if name:
+                    filename = name
+                    break
+        return data, filename
 
     async def stop(self) -> None:
         """请求停止循环。"""

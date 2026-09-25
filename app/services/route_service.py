@@ -20,6 +20,8 @@ from app.db.models import (
     BACKFILL_IDLE,
     BUSINESS_CARRY,
     BUSINESS_TYPES,
+    SENDER_MODE_ACCOUNT,
+    SENDER_MODES,
     TARGET_ROLE_CONTENT,
     Chat,
     ControlBot,
@@ -30,6 +32,17 @@ from app.db.models import (
 )
 
 DEFAULT_TARGET_ROLE = TARGET_ROLE_CONTENT
+DEFAULT_SENDER_MODE = SENDER_MODE_ACCOUNT
+
+
+def _validate_sender_mode(sender_mode: str | None, notify_bot_id: int | None) -> None:
+    """用机器人发送时必须先选好机器人。"""
+    if sender_mode is None:
+        return
+    if sender_mode not in SENDER_MODES:
+        raise ValidationFailedError(f"发送方式必须是 {'/'.join(SENDER_MODES)} 之一")
+    if sender_mode != SENDER_MODE_ACCOUNT and not notify_bot_id:
+        raise ValidationFailedError("选择「用机器人发送」时，必须先在下面选一个机器人")
 
 
 async def list_routes(
@@ -107,6 +120,7 @@ async def create_route(
     target_chat_ids: list[int],
     exec_account_id: int | None = None,
     notify_bot_id: int | None = None,
+    sender_mode: str | None = None,
     priority: int = 100,
     delay_seconds: float = 1.0,
     hourly_limit: int | None = None,
@@ -123,6 +137,7 @@ async def create_route(
     b_model: BMonitorConfig = parse_b_config_payload(b_config)
     validate_route_config(business_type, a_model, b_model)
     await _validate_owner_refs(session, exec_account_id, notify_bot_id)
+    _validate_sender_mode(sender_mode, notify_bot_id)
 
     route = Route(
         name=(name or "").strip() or _default_name(source, targets[0]),
@@ -130,6 +145,7 @@ async def create_route(
         business_type=business_type,
         exec_account_id=exec_account_id,
         notify_bot_id=notify_bot_id,
+        sender_mode=sender_mode or DEFAULT_SENDER_MODE,
         priority=priority,
         delay_seconds=delay_seconds,
         hourly_limit=hourly_limit,
@@ -156,6 +172,7 @@ async def create_routes_matrix(
     business_type: str,
     exec_account_id: int | None = None,
     notify_bot_id: int | None = None,
+    sender_mode: str | None = None,
     delay_seconds: float = 1.0,
     a_config: dict[str, Any] | None = None,
     b_config: dict[str, Any] | None = None,
@@ -192,6 +209,7 @@ async def create_routes_matrix(
                 target_chat_ids=[target.id],
                 exec_account_id=exec_account_id,
                 notify_bot_id=notify_bot_id,
+                sender_mode=sender_mode,
                 delay_seconds=delay_seconds,
                 a_config=a_config,
                 b_config=b_config,
@@ -215,6 +233,7 @@ async def update_route(
     enabled: bool | None = None,
     a_config: dict[str, Any] | None = None,
     b_config: dict[str, Any] | None = None,
+    sender_mode: str | None = None,
 ) -> Route:
     """更新线路配置。"""
     route = await get_route(session, route_id)
@@ -245,6 +264,9 @@ async def update_route(
         route.exec_account_id = exec_account_id
     if notify_bot_id is not None:
         route.notify_bot_id = notify_bot_id
+    if sender_mode is not None:
+        _validate_sender_mode(sender_mode, notify_bot_id or route.notify_bot_id)
+        route.sender_mode = sender_mode
     if priority is not None:
         route.priority = priority
     if delay_seconds is not None:
@@ -302,6 +324,7 @@ async def create_route_bundle(
     target_chat_ids: list[int],
     exec_account_id: int | None = None,
     notify_bot_id: int | None = None,
+    sender_mode: str | None = None,
     priority: int = 100,
     delay_seconds: float = 1.0,
     hourly_limit: int | None = None,
@@ -335,6 +358,7 @@ async def create_route_bundle(
             target_chat_ids=target_chat_ids,
             exec_account_id=exec_account_id,
             notify_bot_id=notify_bot_id,
+            sender_mode=sender_mode,
             priority=priority,
             delay_seconds=delay_seconds,
             hourly_limit=hourly_limit,

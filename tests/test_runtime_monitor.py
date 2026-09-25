@@ -196,3 +196,75 @@ async def test_exclude_group_blocks_message(db, fake_delivery_client) -> None:
     assert total == 1
     assert rows[0].text == "随便聊聊天气"
     assert source_id
+
+
+class FakeBotSender:
+    """机器人客户端替身：只实现发送与预热对话列表。"""
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self.dialog_calls = 0
+        self.disconnected = False
+
+    async def get_dialogs(self, limit=None):  # noqa: ANN001
+        self.dialog_calls += 1
+        return []
+
+    async def get_entity(self, identifier):  # noqa: ANN001
+        return identifier
+
+    async def send_message(self, entity, text, buttons=None):  # noqa: ANN001
+        self.sent.append({"target": entity, "text": text})
+        return SimpleNamespace(id=9001 + len(self.sent))
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+
+
+async def test_lead_card_can_be_sent_by_bot(db, fake_delivery_client) -> None:
+    """线路选了「用机器人发送」：卡片由机器人发出，不经过账号。"""
+    from app.core.security import FieldCipher
+    from app.db.models import ControlBot
+    from app.db.session import session_scope
+    from app.services import route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(db)
+    async with session_scope() as session:
+        cipher = FieldCipher.from_config(db)
+        bot = ControlBot(
+            name="发送机器人",
+            token_enc=cipher.encrypt("123456:ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+            enabled=True,
+        )
+        session.add(bot)
+        await session.commit()
+        await session.refresh(bot)
+        await route_service.update_route(
+            session,
+            route_id,
+            sender_mode="bot",
+            notify_bot_id=bot.id,
+        )
+        route = await route_service.get_route(session, route_id)
+        assert route.sender_mode == "bot"
+
+    bot_sender = FakeBotSender()
+
+    async def factory(_config, _token):  # noqa: ANN001
+        return bot_sender
+
+    service = RuntimeService(db, bot_client_factory=factory)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐"),
+        [route],
+    )
+
+    assert fake_delivery_client.sent == []  # 账号没有发言
+    assert len(bot_sender.sent) == 1  # 卡片由机器人发出
+    assert "命中线索：体育" in bot_sender.sent[0]["text"]
+    assert bot_sender.dialog_calls == 1  # 预热过一次
+
+    await service._close_bot_clients()
+    assert bot_sender.disconnected is True

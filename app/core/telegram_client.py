@@ -239,6 +239,42 @@ async def repost_message(
     )
 
 
+async def download_media_bytes(client: Any, message: Any) -> bytes | None:
+    """把源消息的媒体下载成内存字节。
+
+    用机器人发送时必须这么做：机器人未必在源群里，拿不到原消息的引用，
+    只能由执行账号下载、机器人再上传（文案与来源标记都不带）。
+    """
+    if getattr(message, "media", None) is None:
+        return None
+    data = await client.download_media(message, file=bytes)
+    return data if isinstance(data, bytes) else None
+
+
+async def send_repost_file(
+    client: Any,
+    *,
+    target_entity: Any,
+    data: bytes | None,
+    caption: str | None,
+    filename: str | None = None,
+) -> Any:
+    """把下载好的内容（或纯文案）发到目标。"""
+    if data is None:
+        return await client.send_message(target_entity, caption or "")
+    attributes = None
+    if filename:
+        from telethon.tl import types as tl_types
+
+        attributes = [tl_types.DocumentAttributeFilename(file_name=filename)]
+    return await client.send_file(
+        target_entity,
+        file=data,
+        caption=caption or None,
+        attributes=attributes,
+    )
+
+
 async def send_ad(
     client: Any,
     *,

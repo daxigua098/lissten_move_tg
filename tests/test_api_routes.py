@@ -314,6 +314,68 @@ async def test_create_route_with_blank_name_returns_readable_error(
     assert body["issues"][0]["location"] == "body.name"
 
 
+async def test_route_sender_mode_bot_needs_a_bot(bot_client, api_config) -> None:
+    """选择「用机器人发送」时必须指定机器人；指定后能保存并回显。"""
+    from test_api_bots import VALID_TOKEN
+
+    from app.core.telegram_client import ChatProfile
+    from app.db.session import session_scope
+    from app.services import chat_service
+
+    async with session_scope() as session:
+        source = await chat_service.upsert_chat_from_profile(
+            session,
+            ChatProfile(
+                tg_id=5101,
+                chat_type="supergroup",
+                title="发言方式测试源",
+                username=None,
+                is_private=True,
+            ),
+        )
+        await chat_service.set_source(session, source)
+        target = await chat_service.upsert_chat_from_profile(
+            session,
+            ChatProfile(
+                tg_id=5102,
+                chat_type="supergroup",
+                title="发言方式测试目标",
+                username=None,
+                is_private=True,
+            ),
+        )
+        await chat_service.set_target(session, target, role="lead")
+        source_id, target_id = source.id, target.id
+
+    base = {
+        "name": "机器人发送线路",
+        "source_chat_id": source_id,
+        "business_type": "B",
+        "target_chat_ids": [target_id],
+        "b_config": {"listen_mode": "all"},
+        "sender_mode": "bot",
+    }
+    bad = await bot_client.post("/api/routes", headers=_headers(), json=base)
+    assert bad.status_code == 400
+    assert "机器人" in bad.json()["detail"]
+
+    bot = await bot_client.post(
+        "/api/bots",
+        headers=_headers(),
+        json={"name": "发送机器人", "token": VALID_TOKEN},
+    )
+    assert bot.status_code == 201
+
+    ok = await bot_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={**base, "notify_bot_id": bot.json()["id"]},
+    )
+    assert ok.status_code == 201
+    assert ok.json()["sender_mode"] == "bot"
+    assert ok.json()["notify_bot_id"] == bot.json()["id"]
+
+
 async def test_target_switch_disables_delivery_in_all_routes(
     chat_client,
     fake_account_client,

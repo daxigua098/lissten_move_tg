@@ -2,7 +2,7 @@
 import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, reactive, ref, watch } from "vue";
 
-import { adAssetsApi, keywordsApi, routesApi } from "../api";
+import { adAssetsApi, botsApi, keywordsApi, routesApi } from "../api";
 import MatchHelp from "./MatchHelp.vue";
 import {
   collectRoleMismatches,
@@ -24,6 +24,7 @@ const saving = ref(false);
 const assets = ref([]);
 const keywordGroups = ref([]);
 const excludeGroups = ref([]);
+const bots = ref([]);
 // 打开时的原始值：用来判断这次保存要不要重启运行时才生效
 const original = reactive({ sourceIds: [], businessType: null });
 const RESTART_HINT = "改了监听源或业务类型，去「运行总览」点重启才生效";
@@ -42,6 +43,7 @@ const form = reactive({
   business_type: "A",
   exec_account_id: null,
   notify_bot_id: null,
+  sender_mode: "account",
   priority: 100,
   delay_seconds: 1.0,
   hourly_limit: null,
@@ -159,6 +161,7 @@ function resetForm() {
     business_type: "A",
     exec_account_id: null,
     notify_bot_id: null,
+    sender_mode: "account",
     priority: 100,
     delay_seconds: 1.0,
     hourly_limit: null,
@@ -188,6 +191,7 @@ function applyDetail(data) {
     business_type: data.business_type,
     exec_account_id: data.exec_account_id,
     notify_bot_id: data.notify_bot_id,
+    sender_mode: data.sender_mode || "account",
     priority: data.priority,
     delay_seconds: data.delay_seconds,
     hourly_limit: data.hourly_limit,
@@ -239,9 +243,12 @@ async function loadKeywordGroups() {
     ]);
     keywordGroups.value = keywordResult.data.items;
     excludeGroups.value = excludeResult.data.items;
+    const botResult = await botsApi.list({ limit: 100 });
+    bots.value = botResult.data.items;
   } catch {
     keywordGroups.value = [];
     excludeGroups.value = [];
+    bots.value = [];
   }
 }
 
@@ -297,6 +304,7 @@ async function save() {
       business_type: form.business_type,
       exec_account_id: form.exec_account_id,
       notify_bot_id: form.notify_bot_id,
+      sender_mode: form.sender_mode,
       priority: form.priority,
       delay_seconds: form.delay_seconds,
       hourly_limit: form.hourly_limit,
@@ -488,6 +496,34 @@ async function resetProgress(row) {
             <el-input v-model.number="form.daily_limit" placeholder="不限" />
           </el-form-item>
         </div>
+        <el-form-item label="由谁去目标群发言">
+          <el-radio-group v-model="form.sender_mode">
+            <el-radio value="account">用执行账号发</el-radio>
+            <el-radio value="bot">用机器人发</el-radio>
+          </el-radio-group>
+          <p class="card-hint">
+            用机器人发：只要把机器人拉进接收群、给它发言权限就行，被限制也伤不到账号。
+            机器人通常不在源群，所以内容是执行账号取回后由机器人重新上传——因此<strong>不会带来源标记</strong>，
+            文案按上面的「文案处理」规则（clean 净化 / keep 原文）。
+          </p>
+        </el-form-item>
+        <el-form-item v-if="form.sender_mode === 'bot'" label="用于发言的机器人">
+          <el-select
+            v-model="form.notify_bot_id"
+            placeholder="选择控制 Bot"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in bots"
+              :key="item.id"
+              :label="`${item.name}${item.bot_username ? ` (@${item.bot_username})` : ''}`"
+              :value="item.id"
+            />
+          </el-select>
+          <p v-if="!bots.length" class="card-hint">
+            还没有机器人，先去「控制 Bot」页添加一个。
+          </p>
+        </el-form-item>
       </el-form>
 
       <el-divider content-position="left">接收目标</el-divider>

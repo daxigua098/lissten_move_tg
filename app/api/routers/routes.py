@@ -82,6 +82,7 @@ async def serialize_route(session: AsyncSession, route: Route) -> dict[str, Any]
         "daily_limit": route.daily_limit,
         "exec_account_id": route.exec_account_id,
         "notify_bot_id": route.notify_bot_id,
+        "sender_mode": route.sender_mode,
         "created_by": route.created_by,
         "source": (
             {
@@ -156,6 +157,7 @@ async def create_route(
         target_chat_ids=payload.target_chat_ids,
         exec_account_id=payload.exec_account_id,
         notify_bot_id=payload.notify_bot_id,
+        sender_mode=payload.sender_mode,
         priority=payload.priority,
         delay_seconds=payload.delay_seconds,
         hourly_limit=payload.hourly_limit,
@@ -183,6 +185,7 @@ async def create_matrix(
         business_type=payload.business_type,
         exec_account_id=payload.exec_account_id,
         notify_bot_id=payload.notify_bot_id,
+        sender_mode=payload.sender_mode,
         delay_seconds=payload.delay_seconds,
         a_config=payload.a_config,
         b_config=payload.b_config,
@@ -215,6 +218,7 @@ async def update_route(
         "business_type": payload.business_type,
         "exec_account_id": payload.exec_account_id,
         "notify_bot_id": payload.notify_bot_id,
+        "sender_mode": payload.sender_mode,
         "priority": payload.priority,
         "delay_seconds": payload.delay_seconds,
         "hourly_limit": payload.hourly_limit,

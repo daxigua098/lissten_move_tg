@@ -15,6 +15,7 @@ from app.core.telegram_client import (
     render_ad_text,
     repost_message,
     send_ad,
+    send_repost_file,
 )
 from app.db.base import utc_now
 from app.db.models import (
@@ -192,6 +193,9 @@ async def deliver_job(
     target_entity: Any = None,
     source_message: Any = None,
     caption: str | None = None,
+    repost: bool = False,
+    repost_file: bytes | None = None,
+    repost_filename: str | None = None,
 ) -> DeliveryJob:
     """执行一次投递：转发消息 → 按策略附加广告 → 更新状态。"""
     job.status = JOB_PROCESSING
@@ -200,7 +204,16 @@ async def deliver_job(
 
     message_ids = _message_ids(job)
     try:
-        if a_config.text_mode == "clean" and source_message is not None:
+        if repost:
+            # 机器人发送：内容由上游下载好，这里只负责发出去
+            result = await send_repost_file(
+                client,
+                target_entity=target_entity,
+                data=repost_file,
+                caption=caption,
+                filename=repost_filename,
+            )
+        elif a_config.text_mode == "clean" and source_message is not None:
             # 净化后的文案只能通过重新上传生效，转发无法修改原文
             result = await repost_message(
                 client,

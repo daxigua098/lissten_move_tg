@@ -372,8 +372,16 @@ class FakeDeliveryClient:
         self.sent.append({"target": entity, "text": text, "buttons": buttons})
         return SimpleNamespace(id=8000 + len(self.sent))
 
-    async def send_file(self, entity, file=None, caption=None, buttons=None):
-        self.sent.append({"target": entity, "file": file, "caption": caption, "buttons": buttons})
+    async def send_file(self, entity, file=None, caption=None, buttons=None, attributes=None):
+        self.sent.append(
+            {
+                "target": entity,
+                "file": file,
+                "caption": caption,
+                "buttons": buttons,
+                "attributes": attributes,
+            }
+        )
         return SimpleNamespace(id=8500 + len(self.sent))
 
     async def disconnect(self) -> None:

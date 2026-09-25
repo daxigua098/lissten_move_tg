@@ -356,5 +356,72 @@ async def test_repost_mode_uses_cleaned_caption(db, fake_delivery_client) -> Non
     assert fake_delivery_client.sent[0]["caption"] == "正文"
 
 
+async def test_bot_repost_sends_caption_or_file(db, fake_delivery_client) -> None:
+    """由机器人发送：纯文本走 send_message，媒体走上传，都不走转发。"""
+    route_id, source_id, target_ids = await _prepare_route(
+        db,
+        a_config={"ad_policy": "none"},
+    )
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        jobs = await delivery_service.enqueue_message(
+            session,
+            route=route,
+            target_chat_ids=target_ids,
+            source_chat_id=source_id,
+            source_message_id=901,
+        )
+        first = jobs[0].id
+        route = await route_service.get_route(session, route_id)
+        source_chat = await session.get(Chat, source_id)
+        target_chat = await session.get(Chat, target_ids[0])
+        await delivery_service.deliver_job(
+            session,
+            db,
+            job=await session.get(DeliveryJob, first),
+            route=route,
+            client=fake_delivery_client,
+            source_chat=source_chat,
+            target_chat=target_chat,
+            a_config=ACarryConfig(ad_policy="none"),
+            repost=True,
+            repost_file=None,
+            caption="机器人发的纯文本",
+        )
+
+    assert fake_delivery_client.forwarded == []
+    assert fake_delivery_client.sent[0]["text"] == "机器人发的纯文本"
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        jobs = await delivery_service.enqueue_message(
+            session,
+            route=route,
+            target_chat_ids=target_ids,
+            source_chat_id=source_id,
+            source_message_id=902,
+        )
+        source_chat = await session.get(Chat, source_id)
+        target_chat = await session.get(Chat, target_ids[0])
+        await delivery_service.deliver_job(
+            session,
+            db,
+            job=await session.get(DeliveryJob, jobs[0].id),
+            route=route,
+            client=fake_delivery_client,
+            source_chat=source_chat,
+            target_chat=target_chat,
+            a_config=ACarryConfig(ad_policy="none"),
+            repost=True,
+            repost_file=b"fake-bytes",
+            repost_filename="demo.jpg",
+            caption="机器人发的图",
+        )
+
+    assert fake_delivery_client.sent[1]["file"] == b"fake-bytes"
+    assert fake_delivery_client.sent[1]["caption"] == "机器人发的图"
+    assert fake_delivery_client.sent[1]["attributes"] is not None
+
+
 def test_simple_namespace_available() -> None:
     assert SimpleNamespace(x=1).x == 1

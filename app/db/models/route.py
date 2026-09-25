@@ -24,6 +24,11 @@ BUSINESS_CARRY = "A"
 BUSINESS_MONITOR = "B"
 BUSINESS_TYPES = (BUSINESS_CARRY, BUSINESS_MONITOR)
 
+# 谁去目标群发言：执行账号 / 机器人（机器人被拉进目标群并给权限即可，风控不碰账号）
+SENDER_MODE_ACCOUNT = "account"
+SENDER_MODE_BOT = "bot"
+SENDER_MODES = (SENDER_MODE_ACCOUNT, SENDER_MODE_BOT)
+
 TRANSFER_MODE_COPY = "copy"
 TRANSFER_MODE_FORWARD = "forward"
 TRANSFER_MODES = (TRANSFER_MODE_COPY, TRANSFER_MODE_FORWARD)
@@ -87,6 +92,11 @@ class Route(TimestampMixin, Base):
     notify_bot_id: Mapped[int | None] = mapped_column(
         ForeignKey("control_bots.id", ondelete="SET NULL"),
         nullable=True,
+    )
+    sender_mode: Mapped[str] = mapped_column(
+        String(16),
+        default=SENDER_MODE_ACCOUNT,
+        index=True,
     )
     priority: Mapped[int] = mapped_column(Integer, default=100)
     delay_seconds: Mapped[float] = mapped_column(Float, default=1.0)

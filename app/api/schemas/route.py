@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 BusinessLiteral = Literal["A", "B"]
+SenderModeLiteral = Literal["account", "bot"]
 
 
 class RouteCreateRequest(BaseModel):
@@ -20,6 +21,7 @@ class RouteCreateRequest(BaseModel):
     target_chat_ids: list[int] = Field(min_length=1)
     exec_account_id: int | None = None
     notify_bot_id: int | None = None
+    sender_mode: SenderModeLiteral | None = None
     priority: int = Field(default=100, ge=0, le=10000)
     delay_seconds: float = Field(default=1.0, ge=0.2, le=600)
     hourly_limit: int | None = Field(default=None, ge=1)
@@ -37,6 +39,7 @@ class RouteMatrixRequest(BaseModel):
     business_type: BusinessLiteral = "A"
     exec_account_id: int | None = None
     notify_bot_id: int | None = None
+    sender_mode: SenderModeLiteral | None = None
     delay_seconds: float = Field(default=1.0, ge=0.2, le=600)
     a_config: dict[str, Any] | None = None
     b_config: dict[str, Any] | None = None
@@ -50,6 +53,7 @@ class RouteUpdateRequest(BaseModel):
     business_type: BusinessLiteral | None = None
     exec_account_id: int | None = None
     notify_bot_id: int | None = None
+    sender_mode: SenderModeLiteral | None = None
     priority: int | None = Field(default=None, ge=0, le=10000)
     delay_seconds: float | None = Field(default=None, ge=0.2, le=600)
     hourly_limit: int | None = Field(default=None, ge=1)

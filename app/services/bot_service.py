@@ -96,6 +96,11 @@ async def get_bot(session: AsyncSession, bot_id: int) -> ControlBot | None:
     return await session.get(ControlBot, bot_id)
 
 
+def decrypt_token(config: AppConfig, bot: ControlBot) -> str:
+    """解密 Bot Token（发送时用它建立机器人客户端）。"""
+    return FieldCipher.from_config(config).decrypt(bot.token_enc)
+
+
 async def get_bot_by_name(session: AsyncSession, name: str) -> ControlBot | None:
     """按名称查询控制 Bot。"""
     return await session.scalar(select(ControlBot).where(ControlBot.name == (name or "").strip()))

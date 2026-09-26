@@ -52,6 +52,18 @@ async def test_static_asset_is_served(spa_client) -> None:
     assert "console.log" in response.text
 
 
+async def test_entry_html_is_revalidated_and_assets_are_cached(spa_client) -> None:
+    """入口页必须每次校验：否则浏览器拿旧的 index.html 去加载旧 bundle，
+    改了功能用户也看不到（就是这次"页面上还是老按钮"的原因）。
+    """
+    index = await spa_client.get("/")
+    asset = await spa_client.get("/assets/app.js")
+
+    # 中间件还会补 no-store/must-revalidate，只要确保它必须回源校验即可
+    assert "no-cache" in index.headers["cache-control"]
+    assert "immutable" in asset.headers["cache-control"]
+
+
 async def test_unknown_api_path_is_json_404(spa_client) -> None:
     response = await spa_client.get("/api/not-exist")
 

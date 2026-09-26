@@ -43,6 +43,19 @@ from app.services import user_service
 from app.services.upload_service import uploads_directory
 
 
+class HashedAssetFiles(StaticFiles):
+    """构建产物（文件名带哈希）：可以放心强缓存一年。
+
+    入口 index.html 必须每次校验，否则浏览器会一直用旧的 index.html 去加载
+    早就不存在的旧 bundle——改了功能用户也看不到。
+    """
+
+    def file_response(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """启动时初始化数据库，关闭时释放连接。"""
@@ -143,7 +156,7 @@ def mount_frontend(app: FastAPI, config: AppConfig) -> None:
 
     assets_dir = dist / "assets"
     if assets_dir.is_dir():
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+        app.mount("/assets", HashedAssetFiles(directory=assets_dir), name="assets")
 
     index_file = dist / "index.html"
     resolved_dist = dist.resolve()
@@ -155,7 +168,7 @@ def mount_frontend(app: FastAPI, config: AppConfig) -> None:
             raise HTTPException(status_code=404, detail="Not Found")
         candidate = (dist / full_path).resolve()
         if full_path and candidate.is_file() and candidate.is_relative_to(resolved_dist):
-            return FileResponse(candidate)
+            return FileResponse(candidate, headers={"Cache-Control": "no-cache"})
         if not index_file.is_file():
             raise HTTPException(status_code=404, detail="前端尚未构建")
-        return FileResponse(index_file)
+        return FileResponse(index_file, headers={"Cache-Control": "no-cache"})

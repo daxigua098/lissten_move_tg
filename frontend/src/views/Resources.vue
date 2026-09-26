@@ -353,30 +353,61 @@ async function enqueueJoin(action) {
     return;
   }
   try {
-    const { data } = await resourcesApi.join({ ids, action });
-    const ok = data.queued?.length || 0;
-    const bad = data.failures?.length || 0;
-    ElMessage.success(
-      `已排入${action === "join" ? "加群" : "退群"}队列 ${ok} 条${bad ? `，${bad} 条未入队` : ""}`,
-    );
-    if (bad) ElMessage.warning(data.failures[0].reason);
+    const { data } = await resourcesApi.join({ ids, action, execute_now: true });
+    if (action === "join") {
+      reportJoin(data);
+    } else {
+      const ok = data.queued?.length || 0;
+      ElMessage.success(`已排入退群队列 ${ok} 条`);
+    }
+    if (data.failures?.length) ElMessage.warning(data.failures[0].reason);
     await load();
   } catch (error) {
     ElMessage.error(error.message);
   }
 }
 
+/** 把「立刻执行」的结果说清楚：真进群了、还是排队到几点、还是失败。 */
+function reportJoin(data) {
+  const executed = data.executed || [];
+  const success = executed.filter((item) => item.status === "success");
+  const approval = executed.filter((item) => item.status === "waiting_approval");
+  const failed = executed.filter((item) => item.status === "failed");
+
+  if (success.length) {
+    ElMessage.success(`账号已加入 ${success.length} 个群 / 频道`);
+  }
+  if (approval.length) {
+    ElMessage.info(`${approval.length} 个需要管理员审批，已记为待审批`);
+  }
+  if (failed.length) {
+    ElMessage.error(`加入失败：${failed[0].error || "原因未知"}`);
+  }
+
+  const queuedCount = (data.queued?.length || 0) - executed.length;
+  if (queuedCount > 0) {
+    const first = data.queued.find((item) => !item.finished_at);
+    const when = first?.scheduled_at ? first.scheduled_at.replace("T", " ").slice(5, 16) : null;
+    ElMessage.warning(
+      `还有 ${queuedCount} 个在限速队列里${when ? `（最近一个计划 ${when}）` : ""}，等运行时按节奏执行`,
+    );
+  }
+  if (data.note) {
+    ElMessage.warning(data.note);
+  }
+  if (!executed.length && !queuedCount && !data.note) {
+    ElMessage.info("没有需要执行的任务");
+  }
+}
+
 /** 卡片/详情上的「让账号加入」：排进限速队列。 */
 async function enqueueJoinOne(row) {
   try {
-    const { data } = await resourcesApi.join({ ids: [row.id] });
+    const { data } = await resourcesApi.join({ ids: [row.id], execute_now: true });
     if (data.failures?.length) {
       ElMessage.error(data.failures[0].reason);
     } else {
-      ElMessage.success("已排入加群队列（按限速执行）");
-      if (!runtimeRunning.value) {
-        ElMessage.warning("运行时没在跑：队列要等它在「运行总览」启动后才会执行");
-      }
+      reportJoin(data);
     }
     await load();
     if (drawerVisible.value && detail.value?.id === row.id) await openDetail(row);
@@ -627,7 +658,7 @@ onMounted(async () => {
         :closable="false"
         show-icon
         title="运行时没在跑：加群与探测都不会执行"
-        description="排进队列的加群会一直等着。到「运行总览」启动运行时，队列才会按限速执行、才真的能监听到数据。"
+        description="点卡片上的「让账号加入」会立刻执行一次；排在限速队列里的、以及自动探测，都要等运行时启动后才会跑。"
       />
     </div>
 

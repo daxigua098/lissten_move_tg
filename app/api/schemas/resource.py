@@ -46,6 +46,8 @@ class ResourceJoinRequest(BaseModel):
     ids: list[int] = Field(min_length=1)
     account_id: int | None = None
     action: str = Field(default="join", pattern="^(join|leave)$")
+    # 点了就立刻执行（而不是只排队等运行时）；超出限速的部分仍然排队
+    execute_now: bool = True
 
 
 class ResourceAdoptRequest(BaseModel):

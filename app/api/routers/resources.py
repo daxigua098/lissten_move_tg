@@ -28,6 +28,7 @@ from app.core.config import AppConfig
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status
 from app.core.telegram_client import ChatProfile
+from app.db.base import utc_now
 from app.db.models import ROLE_SUB_ADMIN
 from app.services import (
     chat_service,
@@ -454,12 +455,19 @@ async def refresh_resources(
 async def enqueue_join(
     payload: ResourceJoinRequest,
     request: Request,
+    identity: dict[str, Any] = Depends(current_identity),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """批量加入群组池 / 退出（F-R12 / F-R14）：只入队，由限速器按节奏执行。"""
+    """批量加入 / 退出（F-R12 / F-R14）。
+
+    先按限速排队，然后**立刻执行到点的那几条**——用户点了「让账号加入」就应该
+    真的进群，而不是被一个没启动的运行时干等。超出限速的留在队列里，
+    由运行时按节奏补跑。
+    """
     config = _config(request)
     queued: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    pending: list[Any] = []
     for resource_id in payload.ids:
         resource = await resource_service.get_resource(session, resource_id)
         if resource is None:
@@ -477,7 +485,57 @@ async def enqueue_join(
             failures.append({"id": resource_id, "reason": str(getattr(exc, "detail", exc))})
             continue
         queued.append(resource_join_service.serialize_task(task, resource))
-    return {"queued": queued, "failures": failures}
+        pending.append(task)
+
+    result: dict[str, Any] = {
+        "queued": queued,
+        "failures": failures,
+        "executed": [],
+        "account": None,
+    }
+    if payload.execute_now and not failures and pending:
+        await _run_queued_now(session, config, request, payload, pending, identity, result)
+    return result
+
+
+async def _run_queued_now(
+    session: AsyncSession,
+    config: AppConfig,
+    request: Request,
+    payload: ResourceJoinRequest,
+    tasks: list[Any],
+    identity: dict[str, Any],
+    result: dict[str, Any],
+) -> None:
+    """把到点的队列任务立刻跑掉（限速已经体现在 scheduled_at 上）。"""
+    try:
+        account, client = await _open_client(
+            session,
+            config,
+            account_id=payload.account_id,
+            client_factory=_client_factory(request),
+        )
+    except Exception as exc:  # noqa: BLE001 - 没有可用账号时保持排队
+        result["note"] = f"已排队，但立刻执行没成功：{str(exc)[:120]}"
+        return
+    actor = str(identity.get("username") or "api")
+    moment = utc_now()
+    try:
+        for task in tasks:
+            if not resource_join_service.is_due(task, now=moment):
+                continue  # 超出限速：留在队列里
+            outcome = await resource_join_service.run_task(
+                session,
+                config,
+                client,
+                task,
+                actor=actor,
+            )
+            result["executed"].append({"resource_id": task.resource_id, **outcome})
+        result["account"] = account.name if account else None
+    finally:
+        with contextlib.suppress(Exception):
+            await client.disconnect()
 
 
 # ------------------------------------------------------------------ 单条资源

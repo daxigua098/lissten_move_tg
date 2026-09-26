@@ -34,6 +34,7 @@ from app.db.models import (
     JOIN_SUCCESS,
     JOIN_WAITING_APPROVAL,
     RESOURCE_RETIRED,
+    STATE_ACTIVE,
     STATE_LEFT,
     ResourceJoinTask,
     TgResource,
@@ -207,6 +208,19 @@ async def enqueue(
     return task
 
 
+def is_due(task: ResourceJoinTask, *, now: datetime | None = None) -> bool:
+    """这条队列任务现在就该执行吗？
+
+    限速命中时 ``scheduled_at`` 会被推到未来，这时候点了「让账号加入」也只能排队，
+    等运行时（或下次点击）到点再执行。
+    """
+    if task.status != JOIN_PENDING:
+        return False
+    moment = now or utc_now()
+    scheduled = as_utc(task.scheduled_at)
+    return scheduled is None or scheduled <= moment
+
+
 async def next_due_task(
     session: AsyncSession,
     *,
@@ -266,6 +280,9 @@ async def run_task(
     if task.action == JOIN_ACTION_LEAVE:
         resource.status = RESOURCE_RETIRED
         resource.resource_state = STATE_LEFT
+    else:
+        # 加群成功＝账号已经在这个群里，探测/采纳都不用再排一次加群
+        resource.resource_state = STATE_ACTIVE
     await session.commit()
     await resource_quota_service.bump(
         session,
@@ -292,13 +309,23 @@ async def _perform(client: Any, resource: TgResource, *, action: str) -> None:
             return
         raise ValidationFailedError("还没有加入这个私密群，无法退出")
 
+    if action == JOIN_ACTION_JOIN:
+        # 加群必须优先用公开用户名解析。
+        # 账号还没进群时，MTProto 里没有这个 peer 的 access_hash，
+        # 拿数字 ID 去 get_entity 一定失败（就算这个 ID 是从目录站拿到的真 ID）。
+        if resource.username:
+            entity = await client.get_entity(resource.username)
+        elif resource.tg_id is not None:
+            entity = await resolve_entity(client, int(resource.tg_id))
+        else:
+            raise ValidationFailedError("该资源既没有用户名也没有数字 ID，无法加入")
+        await join_chat(client, entity)
+        return
+
     if resource.tg_id is None:
         raise ValidationFailedError("该资源没有可用的数字 ID")
     entity = await resolve_entity(client, int(resource.tg_id))
-    if action == JOIN_ACTION_JOIN:
-        await join_chat(client, entity)
-    else:
-        await leave_chat(client, entity)
+    await leave_chat(client, entity)
 
 
 async def _handle_failure(

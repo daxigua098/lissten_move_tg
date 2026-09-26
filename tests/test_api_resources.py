@@ -339,13 +339,17 @@ async def test_resource_exposes_public_link_and_join_state(
     )
     assert queued.status_code == 201
     assert queued.json()["failures"] == []
+    # 点了就真的执行：不是只排进队列
+    executed = queued.json()["executed"]
+    assert [entry["status"] for entry in executed] == ["success"]
+    assert 4401 in fake_resource_client.joined
 
     listed = (await resource_api_client.get("/api/resources", headers=headers)).json()["items"][0]
-    assert listed["join"]["status"] == "pending"
+    assert listed["join"]["status"] == "success"
     assert listed["join"]["scheduled_at"] is not None
 
     detail = await resource_api_client.get(f"/api/resources/{item['id']}", headers=headers)
-    assert detail.json()["join"]["status"] == "pending"
+    assert detail.json()["join"]["status"] == "success"
     assert detail.json()["link"] == "https://t.me/public_group"
 
 

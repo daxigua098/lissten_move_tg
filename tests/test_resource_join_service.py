@@ -160,9 +160,12 @@ async def test_run_join_success_writes_quota_and_audit(
     async with session_scope() as session:
         quota = await resource_quota_service.get_quota(session, probe_account)
         audits = list(await session.scalars(select(AuditLog)))
+        joined_row = await resource_service.require_resource(session, resource.id)
     assert quota is not None and quota.joins == 1
     assert audits[0].method == "JOIN"
     assert audits[0].username == "admin"
+    # 加群成功＝账号已在群里：标出来，后续探测/采纳不必再排加群
+    assert joined_row.resource_state == "active"
 
 
 async def test_waiting_approval_is_not_a_failure(
@@ -260,6 +263,20 @@ async def test_queue_stats_and_serialize(db, probe_account) -> None:
     assert counts["pending"] == 1
     assert payload["action"] == "join"
     assert payload["resource_name"] == "求职群"
+
+
+async def test_is_due_respects_schedule(db, probe_account) -> None:
+    """到点没到点：限速把计划时间推到未来时，点了「让账号加入」也只能排队。"""
+    resource = await _create(3019, "群", username="due_check")
+    task_id = await _enqueue(db, resource.id, probe_account)
+
+    async with session_scope() as session:
+        task = await session.get(ResourceJoinTask, task_id)
+        assert resource_join_service.is_due(task) is True
+        task.scheduled_at = utc_now() + timedelta(minutes=30)
+        assert resource_join_service.is_due(task) is False
+        task.status = JOIN_SUCCESS
+        assert resource_join_service.is_due(task) is False
 
 
 async def test_next_due_task_returns_scheduled(db, probe_account) -> None:

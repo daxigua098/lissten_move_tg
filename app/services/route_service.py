@@ -35,12 +35,19 @@ DEFAULT_TARGET_ROLE = TARGET_ROLE_CONTENT
 DEFAULT_SENDER_MODE = SENDER_MODE_ACCOUNT
 
 
-def _validate_sender_mode(sender_mode: str | None, notify_bot_id: int | None) -> None:
-    """用机器人发送时必须先选好机器人。"""
+def _validate_sender_mode(
+    sender_mode: str | None,
+    notify_bot_id: int | None,
+    business_type: str,
+) -> None:
+    """谁去目标群发言：A 线只能用执行账号，B 线可以用机器人（必须先选好机器人）。"""
     if sender_mode is None:
         return
     if sender_mode not in SENDER_MODES:
         raise ValidationFailedError(f"发送方式必须是 {'/'.join(SENDER_MODES)} 之一")
+    if business_type == BUSINESS_CARRY and sender_mode != SENDER_MODE_ACCOUNT:
+        # 机器人读不到源群帖子（Bot 隐私模式默认开启），搬运帖子的 A 线只能由账号发
+        raise ValidationFailedError("A 线是搬运帖子，机器人无法转发帖子，只能用执行账号发送")
     if sender_mode != SENDER_MODE_ACCOUNT and not notify_bot_id:
         raise ValidationFailedError("选择「用机器人发送」时，必须先在下面选一个机器人")
 
@@ -137,7 +144,7 @@ async def create_route(
     b_model: BMonitorConfig = parse_b_config_payload(b_config)
     validate_route_config(business_type, a_model, b_model)
     await _validate_owner_refs(session, exec_account_id, notify_bot_id)
-    _validate_sender_mode(sender_mode, notify_bot_id)
+    _validate_sender_mode(sender_mode, notify_bot_id, business_type)
 
     route = Route(
         name=(name or "").strip() or _default_name(source, targets[0]),
@@ -265,7 +272,11 @@ async def update_route(
     if notify_bot_id is not None:
         route.notify_bot_id = notify_bot_id
     if sender_mode is not None:
-        _validate_sender_mode(sender_mode, notify_bot_id or route.notify_bot_id)
+        _validate_sender_mode(
+            sender_mode,
+            notify_bot_id or route.notify_bot_id,
+            next_type,
+        )
         route.sender_mode = sender_mode
     if priority is not None:
         route.priority = priority

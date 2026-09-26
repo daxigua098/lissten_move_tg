@@ -16,7 +16,7 @@ from typing import Any
 
 from loguru import logger
 
-from app.core.bot_api import MEDIA_DOCUMENT, MEDIA_PHOTO, MEDIA_VIDEO, bot_api_chat_id
+from app.core.bot_api import bot_api_chat_id
 from app.core.config import AppConfig
 from app.core.content_cleaner import (
     KIND_SERVICE,
@@ -51,17 +51,6 @@ from app.services import (
     lead_service,
     tg_account_service,
 )
-
-
-def _bot_media_kind(view_kind: str) -> str:
-    """把内容类型映射成 Bot API 的上传方式。"""
-    from app.core.content_cleaner import KIND_PHOTO, KIND_VIDEO
-
-    if view_kind == KIND_PHOTO:
-        return MEDIA_PHOTO
-    if view_kind == KIND_VIDEO:
-        return MEDIA_VIDEO
-    return MEDIA_DOCUMENT
 
 
 class RuntimeService:
@@ -657,60 +646,10 @@ class RuntimeService:
 
                 ad_asset = await session.get(AdAsset, a_config.ad_asset_id)
 
-            use_bot = route.sender_mode == SENDER_MODE_BOT
             try:
                 source_entity = await resolve_entity(client, int(source_chat.tg_id))
             except Exception as exc:  # noqa: BLE001 - 解析失败按投递失败处理
                 await delivery_service.mark_failure(session, job, error=str(exc))
-                return 1
-
-            if use_bot:
-                # 机器人发送：Bot API 只认 chat_id；内容由账号取回后交给机器人上传
-                try:
-                    bot_api = await self._bot_api(route.notify_bot_id)
-                except Exception as exc:  # noqa: BLE001 - 拿不到机器人按投递失败
-                    await delivery_service.mark_failure(
-                        session,
-                        job,
-                        error=f"取发送机器人失败：{exc}",
-                    )
-                    return 1
-
-                async def load_payload() -> delivery_service.BotPayload:
-                    message, cleaned = await self._load_clean_source(
-                        client,
-                        source_entity=source_entity,
-                        job=job,
-                        a_config=a_config,
-                    )
-                    if message is None:
-                        raise RuntimeError("取不到源消息，无法用机器人发送")
-                    view = message_view_from_telethon(message)
-                    data, name = await self._prepare_bot_payload(client, message)
-                    return delivery_service.BotPayload(
-                        caption=cleaned if a_config.text_mode == "clean" else view.text,
-                        content=data,
-                        filename=name,
-                        kind=_bot_media_kind(view.kind),
-                    )
-
-                await delivery_service.deliver_job_via_bot(
-                    session,
-                    self.config,
-                    job=job,
-                    route=route,
-                    bot_api=bot_api,
-                    target_chat=target_chat,
-                    a_config=a_config,
-                    ad_asset=ad_asset,
-                    source_chat=source_chat,
-                    payload_loader=load_payload,
-                    # 机器人若也在源群，直接用 copyMessage：不用下载、快得多
-                    copy_from=(
-                        bot_api_chat_id(source_chat.tg_id, source_chat.chat_type),
-                        int(job.source_message_id),
-                    ),
-                )
                 return 1
 
             try:
@@ -769,29 +708,6 @@ class RuntimeService:
         view = message_view_from_telethon(message)
         caption = clean_text(view.text, CleanRules.from_config(a_config.model_dump()))
         return message, caption
-
-    async def _prepare_bot_payload(
-        self,
-        client: Any,
-        message: Any,
-    ) -> tuple[bytes | None, str | None]:
-        """用机器人发送时，先把媒体下载成字节（机器人不必在源群里）。"""
-        from app.core.telegram_client import download_media_bytes
-
-        data = None
-        try:
-            data = await download_media_bytes(client, message)
-        except Exception as exc:  # noqa: BLE001 - 下载失败就只发文案
-            logger.warning("下载源媒体失败（将只发文案）：{}", exc)
-        filename = getattr(getattr(message, "file", None), "name", None)
-        if not filename:
-            document = getattr(message, "document", None)
-            for attribute in getattr(document, "attributes", None) or []:
-                name = getattr(attribute, "file_name", None)
-                if name:
-                    filename = name
-                    break
-        return data, filename
 
     async def stop(self) -> None:
         """请求停止循环。"""

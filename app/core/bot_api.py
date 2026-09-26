@@ -20,10 +20,6 @@ DEFAULT_TIMEOUT = httpx.Timeout(connect=15.0, read=300.0, write=300.0, pool=30.0
 # 与 chats.chat_type 对齐
 _CHANNEL_TYPES = ("channel", "supergroup")
 
-MEDIA_PHOTO = "photo"
-MEDIA_VIDEO = "video"
-MEDIA_DOCUMENT = "document"
-
 
 class BotApiError(RuntimeError):
     """Bot API 调用失败（带上 Telegram 的 description，便于排查）。"""
@@ -37,15 +33,6 @@ def bot_api_chat_id(tg_id: int, chat_type: str | None = None) -> str:
     if chat_type in _CHANNEL_TYPES:
         return f"-100{int(tg_id)}"
     return f"-{int(tg_id)}"
-
-
-def media_method(kind: str) -> tuple[str, str]:
-    """按内容类型选 Bot API 方法与表单字段名。"""
-    if kind == MEDIA_PHOTO:
-        return "sendPhoto", "photo"
-    if kind == MEDIA_VIDEO:
-        return "sendVideo", "video"
-    return "sendDocument", "document"
 
 
 class BotApiClient:
@@ -108,28 +95,6 @@ class BotApiClient:
             or {}
         )
 
-    async def copy_message(
-        self,
-        from_chat_id: str,
-        message_id: int,
-        to_chat_id: str,
-        *,
-        caption: str | None = None,
-    ) -> dict[str, Any]:
-        """把一条消息复制到目标（不显示「转发自」，也不下载文件）。
-
-        前提是机器人能读到源消息（即它也在源群里）；读不到时调用方要退回
-        「下载再上传」。
-        """
-        data: dict[str, Any] = {
-            "chat_id": to_chat_id,
-            "from_chat_id": from_chat_id,
-            "message_id": int(message_id),
-        }
-        if caption is not None:
-            data["caption"] = caption
-        return await self.call("copyMessage", data=data) or {}
-
     async def send_message(
         self,
         chat_id: str,
@@ -150,26 +115,3 @@ class BotApiClient:
                 ensure_ascii=False,
             )
         return await self.call("sendMessage", data=data) or {}
-
-    async def send_media(
-        self,
-        chat_id: str,
-        *,
-        content: bytes,
-        filename: str,
-        caption: str | None = None,
-        kind: str = MEDIA_DOCUMENT,
-        buttons: list[list[dict[str, Any]]] | None = None,
-    ) -> dict[str, Any]:
-        """上传媒体（图片/视频/文件），可带文案。"""
-        method, field = media_method(kind)
-        data: dict[str, Any] = {"chat_id": chat_id}
-        if caption:
-            data["caption"] = caption
-        if buttons:
-            data["reply_markup"] = json.dumps(
-                {"inline_keyboard": buttons},
-                ensure_ascii=False,
-            )
-        files = {field: (filename, content)}
-        return await self.call(method, data=data, files=files) or {}

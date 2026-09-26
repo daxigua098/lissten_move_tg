@@ -375,6 +375,21 @@ async def test_route_sender_mode_bot_needs_a_bot(bot_client, api_config) -> None
     assert ok.json()["sender_mode"] == "bot"
     assert ok.json()["notify_bot_id"] == bot.json()["id"]
 
+    # A 线（搬运帖子）不允许用机器人发送：机器人读不到源群帖子
+    carry = await bot_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            **base,
+            "name": "搬运线路",
+            "business_type": "A",
+            "a_config": {"ad_policy": "none"},
+            "notify_bot_id": bot.json()["id"],
+        },
+    )
+    assert carry.status_code == 400
+    assert "机器人无法转发帖子" in carry.json()["detail"]
+
 
 async def test_target_switch_disables_delivery_in_all_routes(
     chat_client,

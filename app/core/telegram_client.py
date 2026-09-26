@@ -239,18 +239,6 @@ async def repost_message(
     )
 
 
-async def download_media_bytes(client: Any, message: Any) -> bytes | None:
-    """把源消息的媒体下载成内存字节。
-
-    用机器人发送时必须这么做：机器人未必在源群里，拿不到原消息的引用，
-    只能由执行账号下载、机器人再上传（文案与来源标记都不带）。
-    """
-    if getattr(message, "media", None) is None:
-        return None
-    data = await client.download_media(message, file=bytes)
-    return data if isinstance(data, bytes) else None
-
-
 async def send_ad(
     client: Any,
     *,

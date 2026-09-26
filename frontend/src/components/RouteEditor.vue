@@ -278,6 +278,14 @@ watch(
   },
 );
 
+// 切回 A 线（搬运）时强制用账号发：机器人读不到源群帖子
+watch(
+  () => form.business_type,
+  (value) => {
+    if (value === "A") form.sender_mode = "account";
+  },
+);
+
 async function save() {
   const name = (form.name || "").trim() || suggestedName.value;
   if (!name) {
@@ -496,18 +504,27 @@ async function resetProgress(row) {
             <el-input v-model.number="form.daily_limit" placeholder="不限" />
           </el-form-item>
         </div>
-        <el-form-item label="由谁去目标群发言">
+        <el-form-item v-if="form.business_type === 'A'" label="由谁去目标群发言">
+          <el-tag size="small" type="info">执行账号</el-tag>
+          <p class="card-hint">
+            A 线是搬运帖子：机器人读不到源群的帖子（Telegram 隐私模式限制），
+            所以只能用执行账号发送。需要机器人发言的是 B 线（线索卡片）。
+          </p>
+        </el-form-item>
+        <el-form-item v-else label="由谁去目标群发言">
           <el-radio-group v-model="form.sender_mode">
             <el-radio value="account">用执行账号发</el-radio>
             <el-radio value="bot">用机器人发</el-radio>
           </el-radio-group>
           <p class="card-hint">
-            用机器人发：只要把机器人拉进接收群、给它发言权限就行，被限制也伤不到账号。
-            机器人通常不在源群，所以内容是执行账号取回后由机器人重新上传——因此<strong>不会带来源标记</strong>，
-            文案按上面的「文案处理」规则（clean 净化 / keep 原文）。
+            B 线的线索卡片是纯文本，用机器人发只要把它拉进接收群、给它发言权限即可，
+            被限制也伤不到账号。
           </p>
         </el-form-item>
-        <el-form-item v-if="form.sender_mode === 'bot'" label="用于发言的机器人">
+        <el-form-item
+          v-if="form.business_type === 'B' && form.sender_mode === 'bot'"
+          label="用于发言的机器人"
+        >
           <el-select
             v-model="form.notify_bot_id"
             placeholder="选择控制 Bot"

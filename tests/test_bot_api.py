@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app.core.bot_api import BotApiClient, BotApiError, bot_api_chat_id, media_method
+from app.core.bot_api import BotApiClient, BotApiError, bot_api_chat_id
 
 
 def test_chat_id_conversion_matches_bot_api_rules() -> None:
@@ -16,13 +16,6 @@ def test_chat_id_conversion_matches_bot_api_rules() -> None:
     assert bot_api_chat_id(5590277516, "group") == "-5590277516"
     # 类型缺失时按普通群处理（Telegram 会报错，至少不会发错目标）
     assert bot_api_chat_id(1234, None) == "-1234"
-
-
-def test_media_method_mapping() -> None:
-    assert media_method("photo") == ("sendPhoto", "photo")
-    assert media_method("video") == ("sendVideo", "video")
-    assert media_method("document") == ("sendDocument", "document")
-    assert media_method("其它") == ("sendDocument", "document")
 
 
 async def test_send_message_raises_readable_error() -> None:

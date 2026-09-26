@@ -413,14 +413,24 @@ def serialize_run(run: ResourceDirectoryRun) -> dict[str, Any]:
 
 
 def serialize_task(task: ResourceDiscoverTask) -> dict[str, Any]:
-    """目录任务的对外结构。
-
-    与发现任务共用同一套结构（``source`` 已经在基础序列化里），这里只做别名，
-    让目录相关的调用方不必知道底层实现。
-    """
-    from app.services.resource_discover_service import serialize_task as _serialize
-
-    return _serialize(task)
+    """目录任务的对外结构。"""
+    last_run = as_utc(task.last_run_at)
+    next_run = as_utc(task.next_run_at)
+    return {
+        "id": task.id,
+        "kind": task.kind,
+        "source": task.source,
+        "keyword": task.keyword,
+        "category": task.category,
+        "enabled": task.enabled,
+        "hits": task.hits,
+        "new_found": task.new_found,
+        "flood_waits": task.flood_waits,
+        "last_error": task.last_error,
+        "last_run_at": last_run.isoformat() if last_run else None,
+        "next_run_at": next_run.isoformat() if next_run else None,
+        "due": bool(task.enabled and (next_run is None or next_run <= utc_now())),
+    }
 
 
 async def overview(session: AsyncSession, config: AppConfig) -> dict[str, Any]:

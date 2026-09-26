@@ -39,6 +39,7 @@ from app.db.models import (
     ACCOUNT_ACTIVE,
     BUSINESS_CARRY,
     BUSINESS_MONITOR,
+    DISCOVER_LINK,
     LISTEN_MODE_ALL,
     SENDER_MODE_BOT,
     Chat,
@@ -53,7 +54,6 @@ from app.services import (
     hot_keyword_service,
     keyword_service,
     lead_service,
-    resource_discover_service,
     resource_join_service,
     resource_probe_service,
     resource_service,
@@ -548,7 +548,7 @@ class RuntimeService:
                             or source_chat.username
                             or ""
                         ),
-                        discovered_by="link",
+                        discovered_by=DISCOVER_LINK,
                     )
                 # 热门词采集：只做一次（同一条消息不因多条线路重复计数）
                 if not collected:
@@ -797,7 +797,7 @@ class RuntimeService:
                 await asyncio.sleep(self.poll_interval)
 
     async def _resource_tick(self, client: Any) -> None:
-        """资源发现的节奏：加群队列 → 发现任务 → 探测候选，一轮只做一件。
+        """资源发现的节奏：加群队列 → 目录同步 → 探测候选，一轮只做一件。
 
         每轮只做一件事是刻意设计的：加群、搜索、探测都要消耗账号的请求额度，
         串行执行时"是哪一步在触发风控"一目了然，也天然满足 F-R12 的"同账号串行"。
@@ -815,23 +815,6 @@ class RuntimeService:
                     task,
                     actor="runtime",
                 )
-                return
-
-            discover = await resource_discover_service.next_due_task(session)
-            if discover is not None:
-                outcome = await resource_discover_service.run_task(
-                    session,
-                    self.config,
-                    client,
-                    discover,
-                    account_id=account_id,
-                )
-                if outcome.new_resources:
-                    logger.info(
-                        "发现任务「{}」新增 {} 条候选",
-                        outcome.keyword,
-                        outcome.new_resources,
-                    )
                 return
 
             directory = await directory_sync_service.next_due_task(session)

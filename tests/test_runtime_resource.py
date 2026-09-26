@@ -152,30 +152,33 @@ async def test_resource_tick_runs_due_join_task(
     assert stored.status == JOIN_SUCCESS
 
 
-async def test_resource_tick_runs_due_discover_task(
+async def test_resource_tick_runs_due_directory_task(
     db,
     fake_resource_client,
     probe_account,
 ) -> None:
-    """到点的发现任务会被运行时无人值守地执行（F-R02）。"""
+    """到点的目录同步任务会被运行时无人值守地执行（F-R24）。"""
     from sqlalchemy import select
 
     from app.db.models import TgResource
     from app.db.session import session_scope
-    from app.services import resource_discover_service
+    from app.services import directory_sync_service
     from app.services.runtime_service import RuntimeService
+    from tests.test_directory_sync_service import _combot_fetcher
 
-    chat = fake_resource_client.add_chat(9301, "求职群", username="job_tick", member_count=500)
-    fake_resource_client.add_search("求职", [chat])
+    db.resource.directory_request_interval = 0
     async with session_scope() as session:
-        await resource_discover_service.create_task(session, kind="keyword", keyword="求职")
+        await directory_sync_service.create_task(session, source="combot", scope="zh")
 
     service = RuntimeService(db)
+    # 注入抓取替身：运行时不该真的去访问三方站
+    service._directory_fetcher = _combot_fetcher()
     await service._resource_tick(fake_resource_client)
 
     async with session_scope() as session:
         rows = list(await session.scalars(select(TgResource)))
-    assert [row.username for row in rows] == ["job_tick"]
+    assert {row.username for row in rows} == {"qqpp", "rongcheng_travel"}
+    assert all(row.source_site == "combot" for row in rows)
 
 
 async def test_resource_tick_probes_never_probed_candidate(
@@ -217,20 +220,21 @@ async def test_resource_tick_probes_never_probed_candidate(
 
 
 async def test_resource_tick_prefers_join_queue(db, fake_resource_client, probe_account) -> None:
-    """一轮只做一件事：加群队列优先于发现任务（同账号串行）。"""
+    """一轮只做一件事：加群队列优先于目录同步（同账号串行）。"""
     from app.db.models import JOIN_SUCCESS, ResourceJoinTask
     from app.db.session import session_scope
     from app.services import (
-        resource_discover_service,
+        directory_sync_service,
         resource_join_service,
         resource_service,
     )
     from app.services.resource_service import ResourceRef
     from app.services.runtime_service import RuntimeService
+    from tests.test_directory_sync_service import _combot_fetcher
 
+    db.resource.directory_request_interval = 0
     fake_resource_client.add_chat(9501, "待加入群", username="join_first")
-    chat = fake_resource_client.add_chat(9502, "求职群", username="job_later")
-    fake_resource_client.add_search("求职", [chat])
+    directory_fetcher = _combot_fetcher()
     async with session_scope() as session:
         outcome = await resource_service.upsert_resource(
             session,
@@ -244,13 +248,13 @@ async def test_resource_tick_prefers_join_queue(db, fake_resource_client, probe_
             jitter=False,
         )
         task_id = task.id
-        await resource_discover_service.create_task(session, kind="keyword", keyword="求职")
+        await directory_sync_service.create_task(session, source="combot", scope="zh")
 
     service = RuntimeService(db)
+    service._directory_fetcher = directory_fetcher
     await service._resource_tick(fake_resource_client)
 
     async with session_scope() as session:
         stored = await session.get(ResourceJoinTask, task_id)
-        probes = await resource_service.list_resources(session, keyword="job_later")
     assert stored.status == JOIN_SUCCESS
-    assert probes[1] == 0  # 这一轮没有执行发现任务
+    assert directory_fetcher.requests == []  # 这一轮没有执行目录同步

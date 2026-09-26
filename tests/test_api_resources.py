@@ -36,20 +36,17 @@ async def test_list_is_empty_before_collecting(resource_api_client) -> None:
     assert response.json() == {"items": [], "total": 0, "limit": 100, "offset": 0}
 
 
-async def test_overview_facets_and_quota(resource_api_client) -> None:
+async def test_overview_and_facets(resource_api_client) -> None:
     headers = await _token(resource_api_client)
 
     overview = await resource_api_client.get("/api/resources/overview", headers=headers)
     facets = await resource_api_client.get("/api/resources/facets", headers=headers)
-    quota = await resource_api_client.get("/api/resources/quota", headers=headers)
 
     assert overview.status_code == 200
     body = overview.json()
     assert body["searches_left"] == body["search_daily_limit"]
     assert body["join_daily_limit"] == 50
     assert facets.json()["sorts"][0]["value"] == "activity"
-    assert quota.json()["limits"]["join_hourly_limit"] == 10
-    assert len(quota.json()["items"]) == 1  # 一个执行账号
 
 
 async def test_import_resolves_and_probes(resource_api_client, fake_resource_client) -> None:
@@ -194,87 +191,18 @@ async def test_blacklist_filters_and_blocks_discovery(
     )
     assert blacklisted.json()["total"] == 1
 
-    # 再采一次同一个群：黑名单资源不会被重新收录
+    # 再补搜一次同一个群：黑名单资源不会被重新收录
     fake_resource_client.add_search("求职", [fake_resource_client.entities[4001]])
     collected = await resource_api_client.post(
-        "/api/resources/collect",
+        "/api/resources/discover-online",
         headers=headers,
-        json={"keywords": ["求职"]},
+        json={"keywords": ["求职"], "sites": ["telegram"]},
     )
     assert collected.status_code == 200
-    assert collected.json()["results"][0]["new_resources"] == 0
+    assert collected.json()["new_total"] == 0
 
 
-async def test_collect_with_keywords_stores_candidates(
-    resource_api_client,
-    fake_resource_client,
-) -> None:
-    headers = await _token(resource_api_client)
-    first = fake_resource_client.add_chat(4101, "求职群一", username="job_one", member_count=3000)
-    second = fake_resource_client.add_chat(4102, "求职群二", username="job_two", member_count=900)
-    fake_resource_client.add_search("求职", [first, second])
-
-    response = await resource_api_client.post(
-        "/api/resources/collect",
-        headers=headers,
-        json={"keywords": ["求职"]},
-    )
-
-    assert response.status_code == 200
-    assert response.json()["results"][0]["new_resources"] == 2
-    listing = await resource_api_client.get("/api/resources", headers=headers)
-    assert listing.json()["total"] == 2
-    assert all(item["status"] == "candidate" for item in listing.json()["items"])
-
-
-async def test_discover_task_crud_and_hotword_import(
-    resource_api_client,
-    fake_resource_client,
-) -> None:
-    headers = await _token(resource_api_client)
-
-    created = await resource_api_client.post(
-        "/api/resources/discover-tasks",
-        headers=headers,
-        json={"kind": "keyword", "keyword": "求职", "category": "行业"},
-    )
-    assert created.status_code == 201
-    task_id = created.json()["id"]
-
-    duplicated = await resource_api_client.post(
-        "/api/resources/discover-tasks",
-        headers=headers,
-        json={"kind": "keyword", "keyword": "求职"},
-    )
-    assert duplicated.status_code == 409
-
-    updated = await resource_api_client.patch(
-        f"/api/resources/discover-tasks/{task_id}",
-        headers=headers,
-        json={"enabled": False},
-    )
-    assert updated.json()["enabled"] is False
-
-    presets = await resource_api_client.post(
-        "/api/resources/discover-tasks/phrase-presets",
-        headers=headers,
-    )
-    assert presets.json()["created"] > 0
-
-    listing = await resource_api_client.get(
-        "/api/resources/discover-tasks",
-        headers=headers,
-    )
-    assert listing.json()["items"][0]["due"] in (True, False)
-
-    deleted = await resource_api_client.delete(
-        f"/api/resources/discover-tasks/{task_id}",
-        headers=headers,
-    )
-    assert deleted.json()["deleted"] is True
-
-
-async def test_join_queue_enqueue_and_list(resource_api_client, fake_resource_client) -> None:
+async def test_join_queue_enqueue(resource_api_client, fake_resource_client) -> None:
     headers = await _token(resource_api_client)
     await _seed_resource(fake_resource_client, tg_id=4201, username="join_me")
     await resource_api_client.post(
@@ -295,10 +223,7 @@ async def test_join_queue_enqueue_and_list(resource_api_client, fake_resource_cl
     assert response.status_code == 201
     assert response.json()["failures"] == []
     assert response.json()["queued"][0]["status"] == "pending"
-
-    queue = await resource_api_client.get("/api/resources/join-tasks", headers=headers)
-    assert queue.json()["total"] == 1
-    assert queue.json()["items"][0]["resource_title"] == "求职大群"
+    assert response.json()["queued"][0]["resource_title"] == "求职大群"
 
 
 async def test_adopt_creates_source_and_route(resource_api_client, fake_resource_client) -> None:

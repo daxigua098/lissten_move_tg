@@ -34,6 +34,8 @@ from app.core.telegram_client import (
 )
 from app.db.base import utc_now
 from app.db.models import (
+    DISCOVER_LINK,
+    DISCOVER_MANUAL,
     PROBE_FAILED,
     PROBE_OK,
     STATE_ACTIVE,
@@ -79,7 +81,7 @@ async def absorb_links(
     *,
     text: str | None,
     source_title: str,
-    discovered_by: str = "link",
+    discovered_by: str = DISCOVER_LINK,
     priority: bool = False,
 ) -> int:
     """从一段文本里提链接进候选池（返回新增条数）。
@@ -476,7 +478,7 @@ async def import_resources(
                 member_count_approx=bool(profile.member_count and profile.member_count >= 5000),
                 source_url=text,
             ),
-            discovered_by="manual",
+            discovered_by=DISCOVER_MANUAL,
             discovered_from="手动添加",
         )
         if outcome.resource is None:

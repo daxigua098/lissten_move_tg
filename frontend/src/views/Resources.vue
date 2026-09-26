@@ -257,41 +257,6 @@ function searchHotWord(token) {
   search();
 }
 
-/** 把当前搜索词沉淀成常驻发现任务（F-R19）。 */
-async function saveKeywordTask() {
-  const keyword = filters.keyword.trim();
-  if (!keyword) {
-    ElMessage.warning("先输入一个关键词");
-    return;
-  }
-  try {
-    await resourcesApi.createDiscoverTask({ kind: "keyword", keyword, category: "临时搜索" });
-    ElMessage.success(`已把「${keyword}」加进常驻发现任务`);
-  } catch (error) {
-    ElMessage.error(error.message);
-  }
-}
-
-async function collect() {
-  loading.value = true;
-  try {
-    const { data } = await resourcesApi.collect({ keywords: [] });
-    const item = (data.results || [])[0];
-    if (!item) {
-      ElMessage.info(data.hint || "没有到点的发现任务");
-    } else if (item.skipped) {
-      ElMessage.info(`「${item.keyword}」本轮跳过（${item.skipped}）`);
-    } else {
-      ElMessage.success(`「${item.keyword}」发现 ${item.hits} 个，新增 ${item.new_resources} 条候选`);
-    }
-    await load();
-  } catch (error) {
-    ElMessage.error(error.message);
-  } finally {
-    loading.value = false;
-  }
-}
-
 async function openDetail(row) {
   drawerVisible.value = true;
   detailLoading.value = true;
@@ -550,12 +515,8 @@ onMounted(async () => {
           同时在线补搜
           <FieldHelp v-bind="RESOURCE_HELP.onlineSearch" />
         </el-checkbox>
-        <el-button size="small" link type="primary" @click="saveKeywordTask">
-          把这个词加进常驻发现任务
-        </el-button>
         <div class="spacer" />
         <el-button size="small" @click="openImport">手动添加</el-button>
-        <el-button size="small" @click="collect">采集一次</el-button>
         <el-button size="small" @click="exportCsv">导出</el-button>
       </div>
 

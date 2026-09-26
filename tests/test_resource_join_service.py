@@ -241,37 +241,16 @@ async def test_leave_retires_resource(db, fake_resource_client, probe_account) -
     assert quota is not None and quota.leaves == 1
 
 
-async def test_retry_and_cancel_task(db, probe_account) -> None:
-    resource = await _create(3016, "群", username="some_group")
-    task_id = await _enqueue(db, resource.id, probe_account)
-
-    async with session_scope() as session:
-        task = await session.get(ResourceJoinTask, task_id)
-        task.status = JOIN_FAILED
-        task.attempts = 3
-        await session.commit()
-
-    async with session_scope() as session:
-        retried = await resource_join_service.retry_task(session, task_id)
-    assert retried.status == JOIN_PENDING
-    assert retried.attempts == 0
-
-    async with session_scope() as session:
-        cancelled = await resource_join_service.cancel_task(session, task_id)
-    assert cancelled.status == JOIN_FAILED
-    assert cancelled.last_error == "已取消"
-
-
 async def test_queue_stats_and_serialize(db, probe_account) -> None:
     resource = await _create(3017, "求职群", username="stat_group")
     await _enqueue(db, resource.id, probe_account)
 
     async with session_scope() as session:
-        rows, total = await resource_join_service.list_tasks(session)
+        rows = list(await session.scalars(select(ResourceJoinTask)))
         counts = await resource_join_service.stats(session)
         payload = resource_join_service.serialize_task(rows[0], resource)
 
-    assert total == 1
+    assert len(rows) == 1
     assert counts["pending"] == 1
     assert payload["action"] == "join"
     assert payload["resource_name"] == "求职群"

@@ -50,7 +50,7 @@ async def test_telegram_channel_stores_and_counts_quota(
     ]
     assert result["new_total"] == 2
     assert {row.username for row in rows} == {"job_one", "job_two"}
-    assert all(row.discovered_from == "临时搜索：求职" for row in rows)
+    assert all(row.discovered_from == "在线补搜：求职" for row in rows)
     assert quota is not None and quota.searches == 1
 
 
@@ -80,6 +80,34 @@ async def test_combot_channel_only_matches_local_catalog(db) -> None:
     assert result["results"][0]["status"] == "local"
     assert result["results"][0]["hits"] == 1
     assert result["results"][0]["new_resources"] == 0
+
+
+async def test_telegram_flood_wait_is_reported_not_retried(
+    db,
+    fake_resource_client,
+    probe_account,
+) -> None:
+    fake_resource_client.search_errors["求职"] = RuntimeError(
+        "A wait of 3600 seconds is required (caused by FloodWaitError)"
+    )
+
+    async with session_scope() as session:
+        result = await resource_discover_service.search_online(
+            session,
+            db,
+            fake_resource_client,
+            keywords=["求职"],
+            sites=["telegram"],
+            account_id=probe_account,
+        )
+        quota = await resource_quota_service.get_quota(session, probe_account)
+
+    item = result["results"][0]
+    assert item["status"] == "error"
+    assert "3600" in item["error"]
+    # 不再自动重试轰炸，只如实记一次限流
+    assert quota is not None and quota.flood_waits == 1
+    assert fake_resource_client.searches == ["求职"]
 
 
 async def test_failure_isolation_between_channels(db) -> None:

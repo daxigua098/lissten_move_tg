@@ -56,18 +56,14 @@ STATE_BANNED = "banned"
 STATE_LEFT = "left"
 RESOURCE_STATES = (STATE_ACTIVE, STATE_PRIVATE, STATE_BANNED, STATE_LEFT)
 
-# 发现来源（F-R02 ~ F-R05）
+# 发现来源：这条资源是"怎么进来的"（``discovered_by`` 字段）
 DISCOVER_KEYWORD = "keyword"
 DISCOVER_LINK = "link"
-DISCOVER_HOTWORD = "hotword"
-DISCOVER_PHRASE = "phrase"
 DISCOVER_MANUAL = "manual"
 DISCOVER_DIRECTORY = "directory"  # 三方目录站（F-R20 / F-R21）
 DISCOVER_SOURCES = (
     DISCOVER_KEYWORD,
     DISCOVER_LINK,
-    DISCOVER_HOTWORD,
-    DISCOVER_PHRASE,
     DISCOVER_MANUAL,
     DISCOVER_DIRECTORY,
 )
@@ -251,15 +247,15 @@ class ResourceProbeLog(TimestampMixin, Base):
 
 
 class ResourceDiscoverTask(TimestampMixin, Base):
-    """发现任务：一个关键词 / 句式 / 热门词 / 目录范围。"""
+    """目录同步任务：某个站点某个范围的定时同步（F-R24）。"""
 
     __tablename__ = "resource_discover_tasks"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    kind: Mapped[str] = mapped_column(String(16), default=DISCOVER_KEYWORD, index=True)
+    kind: Mapped[str] = mapped_column(String(16), default=DISCOVER_DIRECTORY, index=True)
     keyword: Mapped[str] = mapped_column(String(64))
     category: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # 渠道：NULL / telegram 表示走 Telegram 搜索；combot / tgme 走目录同步（v1.2）
+    # 渠道：combot / tgme（目录同步）；NULL 视为历史数据，运行时不会执行
     source: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     last_run_at: Mapped[datetime | None] = mapped_column(

@@ -115,45 +115,38 @@ async def test_directory_sync_rejects_unknown_site(
     assert fake_directory_fetcher.requests == []
 
 
-async def test_directory_task_is_not_run_by_telegram_collect(
+async def test_directory_task_endpoint_is_idempotent(
     directory_api_client,
-    fake_directory_fetcher,
-    fake_resource_client,
 ) -> None:
     headers = await _token(directory_api_client)
 
-    created = await directory_api_client.post(
-        "/api/resources/discover-tasks",
+    first = await directory_api_client.post(
+        "/api/resources/directory/tasks",
         headers=headers,
-        json={
-            "kind": "directory",
-            "keyword": "combot:zh",
-            "category": "zh",
-            "source": "combot",
-        },
+        json={"source": "combot", "scope": "zh"},
     )
-    assert created.status_code == 201, created.text
-    assert created.json()["source"] == "combot"
-    assert created.json()["kind"] == "directory"
+    assert first.status_code == 201, first.text
+    payload = first.json()
+    assert payload["source"] == "combot"
+    assert payload["kind"] == "directory"
+    assert payload["category"] == "zh"
+    assert payload["due"] is True
 
-    # 只有目录任务能带 source
+    # 同站同范围幂等：不会攒出第二条定时任务
+    again = await directory_api_client.post(
+        "/api/resources/directory/tasks",
+        headers=headers,
+        json={"source": "combot", "scope": "zh"},
+    )
+    assert again.status_code == 201
+    assert again.json()["id"] == payload["id"]
+
     bad = await directory_api_client.post(
-        "/api/resources/discover-tasks",
+        "/api/resources/directory/tasks",
         headers=headers,
-        json={"kind": "keyword", "keyword": "求职", "source": "combot"},
+        json={"source": "telegram", "scope": "zh"},
     )
-    assert bad.status_code == 400
-
-    # 「采集一次」是 Telegram 侧的显式动作，不该把目录任务的范围当关键词去搜群
-    collected = await directory_api_client.post(
-        "/api/resources/collect",
-        headers=headers,
-        json={"keywords": []},
-    )
-    assert collected.status_code == 200, collected.text
-    assert collected.json()["results"] == []
-    assert collected.json()["hint"] == "没有到点的发现任务"
-    assert fake_resource_client.searches == []
+    assert bad.status_code == 422
 
 
 async def test_manual_content_rating_is_locked(

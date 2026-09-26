@@ -16,12 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import current_identity, require_role, session_dependency
 from app.api.schemas.resource import (
     DirectorySyncRequest,
-    DiscoverTaskCreateRequest,
-    DiscoverTaskUpdateRequest,
-    HotwordImportRequest,
+    DirectoryTaskRequest,
     OnlineSearchRequest,
     ResourceAdoptRequest,
-    ResourceCollectRequest,
     ResourceImportRequest,
     ResourceJoinRequest,
     ResourceRefreshRequest,
@@ -192,25 +189,6 @@ async def resource_counts(session: AsyncSession = Depends(session_dependency)) -
     return await resource_service.counts(session)
 
 
-@router.get("/quota")
-async def quota_board(
-    request: Request,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """按账号展示当天配额（P-R03）。"""
-    config = _config(request)
-    return {
-        "items": await resource_quota_service.board(session),
-        "limits": {
-            "search_daily_limit": config.resource.search_daily_limit,
-            "probe_daily_limit": config.resource.probe_daily_limit,
-            "join_hourly_limit": config.resource.join_hourly_limit,
-            "join_daily_limit": config.resource.join_daily_limit,
-        },
-        "recent": await resource_quota_service.recent_days(session, days=7),
-    }
-
-
 @router.get("/export.csv")
 async def export_resources(
     keyword: str | None = Query(default=None),
@@ -265,86 +243,6 @@ async def export_resources(
     )
 
 
-# ------------------------------------------------------------------ 发现任务
-
-
-@router.get("/discover-tasks")
-async def list_discover_tasks(
-    kind: str | None = Query(default=None),
-    enabled: bool | None = Query(default=None),
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """发现任务列表（关键词 / 句式 / 热门词）。"""
-    rows = await resource_discover_service.list_tasks(session, kind=kind, enabled=enabled)
-    return {"items": [resource_discover_service.serialize_task(row) for row in rows]}
-
-
-@router.post("/discover-tasks", status_code=201)
-async def create_discover_task(
-    payload: DiscoverTaskCreateRequest,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """新增发现任务。"""
-    task = await resource_discover_service.create_task(
-        session,
-        kind=payload.kind,
-        keyword=payload.keyword,
-        category=payload.category,
-        source=payload.source,
-        enabled=payload.enabled,
-    )
-    return resource_discover_service.serialize_task(task)
-
-
-@router.post("/discover-tasks/import-hotwords")
-async def import_hotwords(
-    payload: HotwordImportRequest,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """F-R04：把热门词 Top N 一键加进发现关键词库。"""
-    return await resource_discover_service.import_hotwords(
-        session,
-        top_n=payload.top_n,
-        min_count=payload.min_count,
-    )
-
-
-@router.post("/discover-tasks/phrase-presets")
-async def add_phrase_presets(
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """F-R05：写入一批句式模板。"""
-    created = await resource_discover_service.ensure_phrase_presets(session)
-    return {"created": created, "presets": list(resource_discover_service.PHRASE_PRESETS)}
-
-
-@router.patch("/discover-tasks/{task_id}")
-async def update_discover_task(
-    task_id: int,
-    payload: DiscoverTaskUpdateRequest,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """改关键词 / 分类 / 启停。"""
-    task = await resource_discover_service.update_task(
-        session,
-        task_id,
-        keyword=payload.keyword,
-        category=payload.category,
-        enabled=payload.enabled,
-    )
-    return resource_discover_service.serialize_task(task)
-
-
-@router.delete("/discover-tasks/{task_id}")
-async def delete_discover_task(
-    task_id: int,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """删除发现任务。"""
-    await resource_discover_service.delete_task(session, task_id)
-    return {"id": task_id, "deleted": True}
-
-
 # ------------------------------------------------------------------ 加群队列
 
 
@@ -397,79 +295,22 @@ async def directory_sync(
             await fetcher.aclose()
 
 
-@router.get("/join-tasks")
-async def list_join_tasks(
-    status: str | None = Query(default=None),
-    action: str | None = Query(default=None),
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+@router.post("/directory/tasks", status_code=201)
+async def create_directory_task(
+    payload: DirectoryTaskRequest,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """加群 / 退群队列。"""
-    rows, total = await resource_join_service.list_tasks(
+    """把某个站点某个范围设为「每天自动同步」（同站同范围幂等）。"""
+    task = await directory_sync_service.create_task(
         session,
-        status=status,
-        action=action,
-        limit=limit,
-        offset=offset,
+        source=payload.source,
+        scope=payload.scope,
+        enabled=payload.enabled,
     )
-    items = []
-    for row in rows:
-        resource = await resource_service.get_resource(session, row.resource_id)
-        items.append(resource_join_service.serialize_task(row, resource))
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
-
-
-@router.post("/join-tasks/{task_id}/retry")
-async def retry_join_task(
-    task_id: int,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """重试失败 / 待审批的队列任务。"""
-    task = await resource_join_service.retry_task(session, task_id)
-    return resource_join_service.serialize_task(task)
-
-
-@router.post("/join-tasks/{task_id}/cancel")
-async def cancel_join_task(
-    task_id: int,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """取消排队中的任务。"""
-    task = await resource_join_service.cancel_task(session, task_id)
-    return resource_join_service.serialize_task(task)
+    return directory_sync_service.serialize_task(task)
 
 
 # ------------------------------------------------------------------ 显式动作
-
-
-@router.post("/collect")
-async def collect_once(
-    payload: ResourceCollectRequest,
-    request: Request,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """采集一次：跑一批到点的发现任务，或按指定关键词搜一轮（F-R02）。"""
-    config = _config(request)
-    account, client = await _open_client(
-        session,
-        config,
-        account_id=payload.account_id,
-        client_factory=_client_factory(request),
-    )
-    try:
-        result = await resource_discover_service.discover_once(
-            session,
-            config,
-            client,
-            keywords=payload.keywords,
-            limit=payload.limit,
-            account_id=account.id if account else None,
-        )
-    finally:
-        with contextlib.suppress(Exception):
-            await client.disconnect()
-    return {"account": account.name if account else None, **result}
 
 
 @router.post("/discover-online")

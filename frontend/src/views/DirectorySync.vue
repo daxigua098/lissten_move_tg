@@ -96,11 +96,9 @@ async function createTask(source) {
     return;
   }
   try {
-    await resourcesApi.createDiscoverTask({
-      kind: "directory",
-      keyword: `${source}:${scope}`.slice(0, 64),
-      category: scope,
+    await resourcesApi.createDirectoryTask({
       source,
+      scope,
     });
     ElMessage.success(`已建立每 24 小时自动同步的任务（${source} / ${scope}）`);
   } catch (error) {

@@ -48,14 +48,6 @@ class ResourceJoinRequest(BaseModel):
     action: str = Field(default="join", pattern="^(join|leave)$")
 
 
-class ResourceCollectRequest(BaseModel):
-    """采集一次：不填关键词就跑一批到点的发现任务。"""
-
-    keywords: list[str] = Field(default_factory=list)
-    account_id: int | None = None
-    limit: int = Field(default=20, ge=1, le=100)
-
-
 class ResourceAdoptRequest(BaseModel):
     """采纳：写成监听源，可选顺手建线。"""
 
@@ -65,27 +57,6 @@ class ResourceAdoptRequest(BaseModel):
     target_chat_ids: list[int] = Field(default_factory=list)
     route_name: str | None = Field(default=None, max_length=128)
     defer_join: bool = False
-
-
-class DiscoverTaskCreateRequest(BaseModel):
-    """新增发现任务。"""
-
-    kind: str = Field(
-        default="keyword",
-        pattern="^(keyword|phrase|hotword|link|directory)$",
-    )
-    keyword: str = Field(min_length=1, max_length=64)
-    category: str | None = Field(default=None, max_length=32)
-    source: str | None = Field(default=None, pattern="^(telegram|combot|tgme)$")
-    enabled: bool = True
-
-
-class DiscoverTaskUpdateRequest(BaseModel):
-    """修改发现任务。"""
-
-    keyword: str | None = Field(default=None, min_length=1, max_length=64)
-    category: str | None = Field(default=None, max_length=32)
-    enabled: bool | None = None
 
 
 class DirectorySyncRequest(BaseModel):
@@ -98,6 +69,14 @@ class DirectorySyncRequest(BaseModel):
     resume: bool = True
 
 
+class DirectoryTaskRequest(BaseModel):
+    """把某个站点某个范围设为每天自动同步（F-R24）。"""
+
+    source: str = Field(default="combot", pattern="^(combot|tgme)$")
+    scope: str = Field(default="zh", min_length=1, max_length=32)
+    enabled: bool = True
+
+
 class OnlineSearchRequest(BaseModel):
     """搜索时的在线补搜（F-R19）：本地结果已经先渲染，这一步只追加。"""
 
@@ -105,10 +84,3 @@ class OnlineSearchRequest(BaseModel):
     sites: list[str] = Field(default_factory=lambda: ["telegram", "combot", "tgme"])
     limit: int = Field(default=20, ge=1, le=100)
     account_id: int | None = None
-
-
-class HotwordImportRequest(BaseModel):
-    """把热门词导入发现关键词库。"""
-
-    top_n: int = Field(default=20, ge=1, le=200)
-    min_count: int = Field(default=2, ge=1, le=100000)

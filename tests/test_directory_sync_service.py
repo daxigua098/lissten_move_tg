@@ -18,7 +18,7 @@ from app.db.models import (
     TgResource,
 )
 from app.db.session import session_scope
-from app.services import directory_sync_service, resource_discover_service, resource_service
+from app.services import directory_sync_service, resource_service
 from app.services.resource_service import ResourceRef
 from tests.conftest import FakeDirectoryFetcher
 from tests.test_directory_sites import TGME_HTML
@@ -311,12 +311,6 @@ async def test_directory_task_counters_and_telegram_runner_ignores_it(db) -> Non
         stored = await session.get(ResourceDiscoverTask, task_id)
         outcome = await directory_sync_service.run_task(session, db, stored, fetcher=fetcher)
         stored = await session.get(ResourceDiscoverTask, task_id)
-        # Telegram 的发现循环不会把目录任务当成关键词去搜群
-        assert await resource_discover_service.next_due_task(session) is None
-        # 就算被错误地喂给 Telegram 发现器，也明确跳过而不是搜"zh"
-        skipped = await resource_discover_service.run_task(
-            session, db, fetcher, stored, account_id=None
-        )
 
     assert outcome["scope"] == "zh"
     assert outcome["run"]["items_added"] == 2
@@ -326,5 +320,4 @@ async def test_directory_task_counters_and_telegram_runner_ignores_it(db) -> Non
     assert stored.last_run_at is not None
     assert stored.next_run_at > stored.last_run_at
     assert stored.last_error is None
-    assert skipped.skipped == "directory"
     assert fetcher.requests and "combot.org" in fetcher.requests[0]

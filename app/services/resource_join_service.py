@@ -20,7 +20,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import AppConfig
-from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
+from app.core.errors import ConflictError, ValidationFailedError
 from app.core.telegram_client import classify_join_error, join_chat, leave_chat, resolve_entity
 from app.core.telegram_client import join_invite as _join_invite
 from app.db.base import as_utc, utc_now
@@ -211,33 +211,6 @@ async def enqueue(
     return task
 
 
-async def list_tasks(
-    session: AsyncSession,
-    *,
-    status: str | None = None,
-    action: str | None = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> tuple[list[ResourceJoinTask], int]:
-    """队列列表。"""
-    conditions = []
-    if status:
-        conditions.append(ResourceJoinTask.status == status)
-    if action:
-        conditions.append(ResourceJoinTask.action == action)
-    statement = select(ResourceJoinTask).order_by(
-        ResourceJoinTask.scheduled_at.asc().nulls_last(),
-        ResourceJoinTask.id.asc(),
-    )
-    count_statement = select(func.count()).select_from(ResourceJoinTask)
-    for condition in conditions:
-        statement = statement.where(condition)
-        count_statement = count_statement.where(condition)
-    rows = list(await session.scalars(statement.limit(limit).offset(offset)))
-    total = int(await session.scalar(count_statement) or 0)
-    return rows, total
-
-
 async def next_due_task(
     session: AsyncSession,
     *,
@@ -386,38 +359,6 @@ async def _handle_failure(
         "error": task.last_error,
         "retry_at": task.scheduled_at.isoformat() if task.scheduled_at else None,
     }
-
-
-async def retry_task(session: AsyncSession, task_id: int) -> ResourceJoinTask:
-    """手动重试一条失败的任务。"""
-    task = await session.get(ResourceJoinTask, task_id)
-    if task is None:
-        raise NotFoundError("队列任务不存在")
-    if task.status not in (JOIN_FAILED, JOIN_WAITING_APPROVAL):
-        raise ConflictError("只有失败或待审批的任务需要重试")
-    task.status = JOIN_PENDING
-    task.attempts = 0
-    task.last_error = None
-    task.scheduled_at = utc_now()
-    task.finished_at = None
-    await session.commit()
-    await session.refresh(task)
-    return task
-
-
-async def cancel_task(session: AsyncSession, task_id: int) -> ResourceJoinTask:
-    """取消排队中的任务。"""
-    task = await session.get(ResourceJoinTask, task_id)
-    if task is None:
-        raise NotFoundError("队列任务不存在")
-    if task.status not in (JOIN_PENDING, JOIN_WAITING_APPROVAL):
-        raise ConflictError("只有排队中或待审批的任务可以取消")
-    task.status = JOIN_FAILED
-    task.last_error = "已取消"
-    task.finished_at = utc_now()
-    await session.commit()
-    await session.refresh(task)
-    return task
 
 
 async def _write_audit(

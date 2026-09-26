@@ -1,42 +1,47 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import { auth } from "../stores/auth";
-import Accounts from "../views/Accounts.vue";
-import AdAssets from "../views/AdAssets.vue";
-import Audit from "../views/Audit.vue";
-import Bots from "../views/Bots.vue";
 import ChangePassword from "../views/ChangePassword.vue";
-import Dashboard from "../views/Dashboard.vue";
-import HotKeywords from "../views/HotKeywords.vue";
-import Jobs from "../views/Jobs.vue";
-import Keywords from "../views/Keywords.vue";
+import ConfigTabs from "../views/ConfigTabs.vue";
+import LibraryTabs from "../views/LibraryTabs.vue";
 import Leads from "../views/Leads.vue";
 import Login from "../views/Login.vue";
-import LoginHistory from "../views/LoginHistory.vue";
-import Routes from "../views/Routes.vue";
-import Sources from "../views/Sources.vue";
-import Targets from "../views/Targets.vue";
-import Users from "../views/Users.vue";
+import OpsTabs from "../views/OpsTabs.vue";
+import OverviewTabs from "../views/OverviewTabs.vue";
+import SystemTabs from "../views/SystemTabs.vue";
 
 const ROLE_RANK = { viewer: 1, sub_admin: 2, super_admin: 3 };
 
 const routes = [
   { path: "/login", name: "login", component: Login, meta: { public: true } },
   { path: "/change-password", name: "change-password", component: ChangePassword },
-  { path: "/", name: "dashboard", component: Dashboard },
-  { path: "/users", name: "users", component: Users, meta: { role: "super_admin" } },
-  { path: "/accounts", name: "accounts", component: Accounts, meta: { role: "super_admin" } },
-  { path: "/bots", name: "bots", component: Bots, meta: { role: "super_admin" } },
-  { path: "/sources", name: "sources", component: Sources, meta: { role: "sub_admin" } },
-  { path: "/targets", name: "targets", component: Targets, meta: { role: "sub_admin" } },
-  { path: "/routes", name: "routes", component: Routes, meta: { role: "sub_admin" } },
-  { path: "/ad-assets", name: "ad-assets", component: AdAssets, meta: { role: "sub_admin" } },
-  { path: "/keywords", name: "keywords", component: Keywords, meta: { role: "sub_admin" } },
-  { path: "/hot-keywords", name: "hot-keywords", component: HotKeywords, meta: { role: "sub_admin" } },
+  // 合并后的 6 个入口；子页面用 ?tab= 定位
+  { path: "/", name: "dashboard", component: OverviewTabs },
+  { path: "/config", name: "config", component: ConfigTabs, meta: { role: "sub_admin" } },
+  { path: "/library", name: "library", component: LibraryTabs, meta: { role: "sub_admin" } },
   { path: "/leads", name: "leads", component: Leads, meta: { role: "sub_admin" } },
-  { path: "/jobs", name: "jobs", component: Jobs },
-  { path: "/audit", name: "audit", component: Audit },
-  { path: "/login-history", name: "login-history", component: LoginHistory, meta: { role: "super_admin" } },
+  { path: "/ops", name: "ops", component: OpsTabs, meta: { role: "super_admin" } },
+  { path: "/system", name: "system", component: SystemTabs, meta: { role: "sub_admin" } },
+  // 旧地址保留重定向，收藏夹与脚本不受影响
+  { path: "/sources", redirect: { path: "/config", query: { tab: "sources" } } },
+  { path: "/targets", redirect: { path: "/config", query: { tab: "targets" } } },
+  { path: "/routes", redirect: { path: "/config", query: { tab: "routes" } } },
+  { path: "/ad-assets", redirect: { path: "/config", query: { tab: "ads" } } },
+  {
+    path: "/keywords",
+    name: "keywords",
+    redirect: { path: "/library", query: { tab: "keywords" } },
+  },
+  { path: "/hot-keywords", redirect: { path: "/library", query: { tab: "hot" } } },
+  { path: "/jobs", redirect: { path: "/", query: { tab: "jobs" } } },
+  { path: "/accounts", redirect: { path: "/ops", query: { tab: "accounts" } } },
+  { path: "/bots", redirect: { path: "/ops", query: { tab: "bots" } } },
+  { path: "/audit", redirect: { path: "/system", query: { tab: "audit" } } },
+  { path: "/users", redirect: { path: "/system", query: { tab: "users" } } },
+  {
+    path: "/login-history",
+    redirect: { path: "/system", query: { tab: "login-history" } },
+  },
   { path: "/:pathMatch(.*)*", redirect: "/" },
 ];
 

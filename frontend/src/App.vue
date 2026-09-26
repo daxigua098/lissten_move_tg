@@ -58,19 +58,11 @@ function logoutAll() {
       </div>
       <el-menu :default-active="route.path" router class="shell-menu">
         <el-menu-item index="/">运行总览</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/sources">监听源</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/targets">接收组</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/routes">线路管理</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/keywords">词库管理</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/hot-keywords">热门关键词</el-menu-item>
+        <el-menu-item v-if="canOperate" index="/config">线路配置</el-menu-item>
+        <el-menu-item v-if="canOperate" index="/library">词库</el-menu-item>
         <el-menu-item v-if="canOperate" index="/leads">线索池</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/ad-assets">广告素材库</el-menu-item>
-        <el-menu-item index="/jobs">投递任务</el-menu-item>
-        <el-menu-item v-if="auth.isSuperAdmin" index="/accounts">执行账号池</el-menu-item>
-        <el-menu-item v-if="auth.isSuperAdmin" index="/bots">控制 Bot</el-menu-item>
-        <el-menu-item index="/audit">审计日志</el-menu-item>
-        <el-menu-item v-if="auth.isSuperAdmin" index="/users">账户管理</el-menu-item>
-        <el-menu-item v-if="auth.isSuperAdmin" index="/login-history">登录历史</el-menu-item>
+        <el-menu-item v-if="auth.isSuperAdmin" index="/ops">账号与机器人</el-menu-item>
+        <el-menu-item v-if="canOperate" index="/system">系统管理</el-menu-item>
       </el-menu>
       <div class="aside-footer">
         <span class="card-hint version">页面版本 {{ pageVersion }}</span>

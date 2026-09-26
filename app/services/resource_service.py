@@ -896,6 +896,22 @@ RATING_LABELS = {
     "sensitive": "敏感",
     "unknown": "未判定",
 }
+# 目录站的语言代码是两字母，卡片墙的 chip 用中文更好读（认不出来的原样显示）
+LANGUAGE_LABELS = {
+    "zh": "中文",
+    "en": "英文",
+    "ru": "俄语",
+    "ar": "阿拉伯语",
+    "hi": "印地语",
+    "fa": "波斯语",
+    "tr": "土耳其语",
+    "id": "印尼语",
+    "es": "西班牙语",
+    "vi": "越南语",
+    "th": "泰语",
+    "ja": "日语",
+    "ko": "韩语",
+}
 
 
 async def _group_counts(
@@ -940,7 +956,10 @@ async def counts(session: AsyncSession) -> dict[str, Any]:
 
     moment = utc_now()
     return {
-        "languages": _labeled(await _group_counts(session, TgResource.language, limit=12)),
+        "languages": _labeled(
+            await _group_counts(session, TgResource.language, limit=12),
+            LANGUAGE_LABELS,
+        ),
         "categories": _labeled(top_categories),
         "chat_types": _labeled(
             await _group_counts(session, TgResource.chat_type),

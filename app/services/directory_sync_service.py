@@ -105,12 +105,21 @@ async def list_runs(
 
 
 def resume_page(run: ResourceDirectoryRun | None) -> int:
-    """下一轮从第几页开始：上一轮**没跑完**才续点，正常跑完的从头来。"""
+    """下一轮从第几页开始。
+
+    - 没跑过、或上一轮正常跑完 → 从第 1 页开始（重新对齐一遍目录）；
+    - 上一轮**没跑完** → 从断点继续；
+    - 上一轮虽然记的是 partial，但已经抓满 ``pages_total``（老版本的越界误报）→ 也从头来。
+    """
     if run is None:
         return 1
     if run.result == SYNC_OK:
         return 1
-    return max(1, int(run.pages_done or 0) + 1)
+    done = max(0, int(run.pages_done or 0))
+    total = run.pages_total
+    if total is not None and done >= int(total):
+        return 1
+    return max(1, done + 1)
 
 
 def next_run_at(config: AppConfig, *, base: Any = None):
@@ -203,6 +212,10 @@ async def sync_once(
         if run.requests_used >= remaining:
             result = SYNC_PARTIAL
             error = "今日目录请求额度已用完，剩下的页下次继续"
+            break
+        # 目录规模是实测值：抓满 pages_total 就收工，别去请求越界页
+        # （combot 对越界 offset 返回的是非 JSON，会被误判成失败）
+        if run.pages_total is not None and page > run.pages_total:
             break
         try:
             entries = await fetch_page(
@@ -347,6 +360,24 @@ async def create_task(
     return task
 
 
+async def delete_task(session: AsyncSession, task_id: int) -> bool:
+    """取消一个目录定时任务（同步历史不受影响）。"""
+    task = await session.get(ResourceDiscoverTask, task_id)
+    if task is None or task.kind != DISCOVER_DIRECTORY:
+        return False
+    await session.delete(task)
+    await session.commit()
+    return True
+
+
+async def scoped_tasks(session: AsyncSession) -> dict[tuple[str, str], ResourceDiscoverTask]:
+    """按「站点 + 范围」索引的目录任务（界面判断某个范围有没有开自动同步）。"""
+    rows = await session.scalars(
+        select(ResourceDiscoverTask).where(ResourceDiscoverTask.kind == DISCOVER_DIRECTORY)
+    )
+    return {(row.source or "", row.category or ""): row for row in rows}
+
+
 async def run_task(
     session: AsyncSession,
     config: AppConfig,
@@ -438,15 +469,8 @@ async def overview(session: AsyncSession, config: AppConfig) -> dict[str, Any]:
     section = config.resource
     configured = set(section.directory_sites)
     # 目录任务里出现过的范围也算进来，手动加过的范围不会从界面上消失
-    task_scopes = [
-        item
-        for item in await session.scalars(
-            select(ResourceDiscoverTask.category)
-            .where(ResourceDiscoverTask.kind == DISCOVER_DIRECTORY)
-            .distinct()
-        )
-        if item
-    ]
+    tasks = await scoped_tasks(session)
+    task_scopes = [scope for (_source, scope) in tasks if scope]
     scopes = [item for item in dict.fromkeys([*section.directory_scopes, *task_scopes]) if item]
 
     sites: list[dict[str, Any]] = []
@@ -454,6 +478,7 @@ async def overview(session: AsyncSession, config: AppConfig) -> dict[str, Any]:
         scopes_payload: list[dict[str, Any]] = []
         for scope in scopes:
             run = await last_run(session, source, scope)
+            task = tasks.get((source, scope))
             scopes_payload.append(
                 {
                     "scope": scope,
@@ -463,6 +488,8 @@ async def overview(session: AsyncSession, config: AppConfig) -> dict[str, Any]:
                         page_size=section.directory_page_size,
                     ),
                     "last_run": serialize_run(run) if run else None,
+                    "task_id": task.id if task else None,
+                    "auto": bool(task and task.enabled),
                 }
             )
         sites.append(

@@ -310,6 +310,18 @@ async def create_directory_task(
     return directory_sync_service.serialize_task(task)
 
 
+@router.delete("/directory/tasks/{task_id}")
+async def delete_directory_task(
+    task_id: int,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """取消「每天自动同步」（已经同步下来的资源不动）。"""
+    deleted = await directory_sync_service.delete_task(session, task_id)
+    if not deleted:
+        raise NotFoundError("目录任务不存在")
+    return {"id": task_id, "deleted": True}
+
+
 # ------------------------------------------------------------------ 显式动作
 
 

@@ -203,6 +203,38 @@ async def test_daily_request_limit_stops_then_skips(db) -> None:
     assert len(fetcher.requests) == 1
 
 
+async def test_sync_completes_at_pages_total_without_touching_out_of_range(
+    db,
+) -> None:
+    """中文榜实测 24 页：抓满就收工，不去请求越界页（combot 对越界返回非 JSON）。"""
+    db.resource.directory_request_interval = 0
+    fetcher = FakeDirectoryFetcher(default="<html>not json</html>")
+    for page in range(24):
+        fetcher.add_page(
+            f"offset={page * 100}&",
+            _payload(_item(f"群{page}", f"group{page}", -(1000 + page), 100 + page)),
+        )
+
+    async with session_scope() as session:
+        outcome = await directory_sync_service.sync_once(session, db, COMBOT, "zh", fetcher=fetcher)
+        rows = list(await session.scalars(select(TgResource)))
+
+    assert outcome["result"] == SYNC_OK
+    assert outcome["run"]["pages_done"] == 24
+    assert outcome["run"]["requests_used"] == 24
+    assert outcome["run"]["error"] is None
+    assert len(rows) == 24
+    assert not any("offset=2400" in url for url in fetcher.requests)
+
+    # 再同步一次：上一轮已经到底，应该从头重新对齐，而不是从第 25 页续
+    async with session_scope() as session:
+        again = await directory_sync_service.sync_once(session, db, COMBOT, "zh", fetcher=fetcher)
+    assert again["resumed_from"] is None
+    assert again["run"]["pages_done"] == 24
+    assert again["run"]["items_seen"] == 24
+    assert again["run"]["items_added"] == 0
+
+
 async def test_disabled_directory_skips_without_run(db) -> None:
     db.resource.directory_enabled = False
     fetcher = _combot_fetcher()

@@ -203,6 +203,7 @@ export const resourcesApi = {
   directoryRuns: (params) => http.get("/api/resources/directory/runs", { params }),
   directorySync: (payload) => http.post("/api/resources/directory/sync", payload),
   createDirectoryTask: (payload) => http.post("/api/resources/directory/tasks", payload),
+  removeDirectoryTask: (id) => http.delete(`/api/resources/directory/tasks/${id}`),
   exportUrl: (params) => {
     const query = new URLSearchParams();
     Object.entries(params || {}).forEach(([key, value]) => {

@@ -106,6 +106,22 @@ async function createTask(source) {
   }
 }
 
+async function removeTask(taskId) {
+  try {
+    await resourcesApi.removeDirectoryTask(taskId);
+    ElMessage.success("已取消自动同步");
+    await load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+/** 某个站点某个范围是否已经开了自动同步。 */
+function autoTask(source, scope) {
+  const site = (overview.value?.sites || []).find((item) => item.source === source);
+  return (site?.scopes || []).find((item) => item.scope === scope && item.auto);
+}
+
 onMounted(load);
 </script>
 
@@ -165,6 +181,17 @@ onMounted(load);
               同步一次
             </el-button>
             <el-button size="small" @click="createTask('combot')">设为每 24 小时自动同步</el-button>
+            <el-tag
+              v-for="item in (sitePayload('combot')?.scopes || []).filter((s) => s.auto)"
+              :key="`auto-${item.scope}`"
+              size="small"
+              type="success"
+            >
+              {{ item.scope }} 已自动同步
+              <el-button size="small" link type="danger" @click="removeTask(item.task_id)">
+                取消
+              </el-button>
+            </el-tag>
           </div>
           <div class="card-hint">
             上次同步：

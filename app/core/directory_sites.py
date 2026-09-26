@@ -193,7 +193,10 @@ def parse_combot_page(payload: Any, *, scope: str = SCOPE_GLOBAL) -> list[Direct
         try:
             payload = json.loads(payload)
         except json.JSONDecodeError as exc:
-            raise ValidationFailedError(f"combot 返回的不是 JSON：{exc}") from exc
+            # 越界页 / 被限流时会返回 HTML，这里要说人话，别把 json 的原始报错抛给用户
+            raise ValidationFailedError(
+                f"combot 返回的不是 JSON（可能被限流或站点改版）：{exc}"
+            ) from exc
     if isinstance(payload, dict):
         # 兼容 {"items": [...]} / {"data": [...]} 这类包装
         payload = payload.get("items") or payload.get("data") or []

@@ -148,6 +148,29 @@ async def test_directory_task_endpoint_is_idempotent(
     )
     assert bad.status_code == 422
 
+    # 状态页能看出这个范围已经开了自动同步
+    overview = await directory_api_client.get("/api/resources/directory/sources", headers=headers)
+    scopes = {item["scope"]: item for item in overview.json()["sites"][0]["scopes"]}
+    assert scopes["zh"]["auto"] is True
+    assert scopes["zh"]["task_id"] == payload["id"]
+
+    # 可以取消；取消之后状态页立刻反映出来
+    removed = await directory_api_client.delete(
+        f"/api/resources/directory/tasks/{payload['id']}",
+        headers=headers,
+    )
+    assert removed.status_code == 200
+    assert removed.json()["deleted"] is True
+    after = await directory_api_client.get("/api/resources/directory/sources", headers=headers)
+    scopes_after = {item["scope"]: item for item in after.json()["sites"][0]["scopes"]}
+    assert scopes_after["zh"]["auto"] is False
+
+    missing = await directory_api_client.delete(
+        f"/api/resources/directory/tasks/{payload['id']}",
+        headers=headers,
+    )
+    assert missing.status_code == 404
+
 
 async def test_manual_content_rating_is_locked(
     directory_api_client,

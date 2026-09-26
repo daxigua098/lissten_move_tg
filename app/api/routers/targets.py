@@ -65,6 +65,21 @@ async def list_available(
     return page(rows, total, limit, offset)
 
 
+@router.post("/sync")
+async def sync_dialogs(
+    request: Request,
+    account_id: int | None = Query(default=None),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """从执行账号同步已加入的群组/频道到群组池（左侧「可选群组」的来源）。"""
+    return await chat_sync_service.sync_dialogs(
+        session,
+        request.app.state.config,
+        account_id=account_id,
+        client_factory=_client_factory(request),
+    )
+
+
 @router.post("", status_code=201)
 async def add_targets(
     payload: TargetAddRequest,

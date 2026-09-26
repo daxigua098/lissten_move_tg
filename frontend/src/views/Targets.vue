@@ -6,6 +6,7 @@ import { targetsApi } from "../api";
 import { TARGET_ROLE_OPTIONS } from "../targetRoles";
 
 const loading = ref(false);
+const syncing = ref(false);
 const available = ref([]);
 const targets = ref([]);
 const selectedAvailable = ref([]);
@@ -37,6 +38,21 @@ async function load() {
     ElMessage.error(error.message);
   } finally {
     loading.value = false;
+  }
+}
+
+async function syncDialogs() {
+  syncing.value = true;
+  try {
+    const { data } = await targetsApi.sync();
+    ElMessage.success(
+      `已从 ${data.account} 同步：新增 ${data.created} 个、更新 ${data.updated} 个`,
+    );
+    await load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    syncing.value = false;
   }
 }
 
@@ -154,6 +170,9 @@ onMounted(load);
         <span class="role-help">用途说明</span>
       </el-tooltip>
       <el-checkbox v-model="checkAccess" size="small">入库前做权限预检</el-checkbox>
+      <el-button size="small" :loading="syncing" @click="syncDialogs">
+        同步账号里的群组
+      </el-button>
       <el-button size="small" @click="load">刷新</el-button>
     </div>
 
@@ -177,7 +196,8 @@ onMounted(load);
                 </span>
               </label>
               <div v-if="!filteredAvailable.length" class="card-hint empty">
-                没有可选项。先在「监听源」页同步群组池，或直接输入链接添加。
+                没有可选项。点右上角「同步账号里的群组」把执行账号已加入的群/频道拉过来；
+                如果账号是刚建的群，在 Telegram 里进一次群再同步即可。
               </div>
             </el-checkbox-group>
           </div>

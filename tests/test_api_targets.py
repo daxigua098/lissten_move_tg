@@ -124,3 +124,31 @@ async def test_target_inputs_resolve_links(chat_client, fake_account_client) -> 
     assert body["added"][0]["tg_id"] == 2001
     # check_access=False 时不做预检
     assert body["added"][0]["can_post"] is None
+
+
+async def test_targets_sync_pulls_newly_created_group_into_pool(
+    chat_client,
+    fake_account_client,
+) -> None:
+    """账号里新建的群，能在「接收组」页直接同步出来（不用绕到监听源页）。"""
+    _fill(fake_account_client)
+    await chat_client.post("/api/sources/sync", headers=_headers())
+    before = (await chat_client.get("/api/targets/available", headers=_headers())).json()
+    assert "新拉的车友群" not in {item["title"] for item in before["items"]}
+
+    fresh = make_entity(2009, "新拉的车友群", username="new_club", participants_count=88)
+    fake_account_client.dialogs.append(fresh)
+    fake_account_client.entities[2009] = fresh
+    fake_account_client.entities["new_club"] = fresh
+
+    synced = await chat_client.post("/api/targets/sync", headers=_headers())
+    assert synced.status_code == 200
+    assert synced.json()["created"] == 1
+    assert synced.json()["account"] == "主号"
+
+    after = (await chat_client.get("/api/targets/available", headers=_headers())).json()
+    titles = {item["title"]: item for item in after["items"]}
+    assert "新拉的车友群" in titles
+    # 同步过来的群能直接当接收组用，带 tg_id 与用户名
+    assert titles["新拉的车友群"]["tg_id"] == 2009
+    assert titles["新拉的车友群"]["username"] == "new_club"

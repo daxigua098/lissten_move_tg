@@ -112,6 +112,7 @@ export const sourcesApi = {
 export const targetsApi = {
   list: (params) => http.get("/api/targets", { params }),
   available: (params) => http.get("/api/targets/available", { params }),
+  sync: () => http.post("/api/targets/sync"),
   add: (payload) => http.post("/api/targets", payload),
   update: (id, payload) => http.patch(`/api/targets/${id}`, payload),
   remove: (id) => http.delete(`/api/targets/${id}`),

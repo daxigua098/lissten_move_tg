@@ -89,7 +89,7 @@ async def test_directory_sync_endpoint_then_list_and_runs(
     by_rating = await directory_api_client.get(
         "/api/resources",
         headers=headers,
-        params={"content_rating": "unknown"},
+        params={"content_rating": "normal"},
     )
     assert by_rating.json()["total"] == 2
     first = listing.json()["items"][0]

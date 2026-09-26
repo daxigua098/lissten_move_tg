@@ -19,6 +19,7 @@ from app.api.schemas.resource import (
     DiscoverTaskCreateRequest,
     DiscoverTaskUpdateRequest,
     HotwordImportRequest,
+    OnlineSearchRequest,
     ResourceAdoptRequest,
     ResourceCollectRequest,
     ResourceImportRequest,
@@ -91,6 +92,8 @@ async def list_resources(
         default=None,
         pattern="^(normal|sensitive|unknown)$",
     ),
+    include_sensitive: bool = Query(default=False),
+    due_refresh: bool = Query(default=False),
     sort: str = Query(default="activity"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -115,6 +118,8 @@ async def list_resources(
         status=status,
         source_site=source_site,
         content_rating=content_rating,
+        include_sensitive=include_sensitive,
+        due_refresh=due_refresh,
         sort=sort,
         limit=limit,
         offset=offset,
@@ -181,6 +186,12 @@ async def resource_facets(session: AsyncSession = Depends(session_dependency)) -
     }
 
 
+@router.get("/counts")
+async def resource_counts(session: AsyncSession = Depends(session_dependency)) -> dict[str, Any]:
+    """卡片墙的分类 chips 与快捷榜计数（纯读库，F-R23）。"""
+    return await resource_service.counts(session)
+
+
 @router.get("/quota")
 async def quota_board(
     request: Request,
@@ -220,6 +231,7 @@ async def export_resources(
         default=None,
         pattern="^(normal|sensitive|unknown)$",
     ),
+    include_sensitive: bool = Query(default=True),
     sort: str = Query(default="activity"),
     session: AsyncSession = Depends(session_dependency),
 ) -> Response:
@@ -241,6 +253,7 @@ async def export_resources(
         status=status,
         source_site=source_site,
         content_rating=content_rating,
+        include_sensitive=include_sensitive,
         sort=sort,
         limit=5000,
         offset=0,
@@ -457,6 +470,46 @@ async def collect_once(
         with contextlib.suppress(Exception):
             await client.disconnect()
     return {"account": account.name if account else None, **result}
+
+
+@router.post("/discover-online")
+async def discover_online(
+    payload: OnlineSearchRequest,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """在线补搜（F-R19）：本地结果已经先渲染，这一步只追加新发现的。
+
+    单渠道失败不影响其它渠道；Telegram 那一路没有可用账号时其余渠道照常返回。
+    """
+    config = _config(request)
+    fetcher = _directory_fetcher(request)
+    account: Any = None
+    client: Any = None
+    try:
+        with contextlib.suppress(Exception):
+            account, client = await _open_client(
+                session,
+                config,
+                account_id=payload.account_id,
+                client_factory=_client_factory(request),
+            )
+        return await resource_discover_service.search_online(
+            session,
+            config,
+            client,
+            keywords=payload.keywords,
+            sites=payload.sites,
+            limit=payload.limit,
+            account_id=account.id if account else None,
+            directory_fetcher=fetcher,
+        )
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+        with contextlib.suppress(Exception):
+            await fetcher.aclose()
 
 
 @router.post("/import", status_code=201)

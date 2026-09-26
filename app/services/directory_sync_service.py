@@ -38,6 +38,7 @@ from app.core.directory_sites import (
     tgme_page_url,
 )
 from app.core.errors import ValidationFailedError
+from app.core.resource_probe import detect_content_rating
 from app.db.base import as_utc, utc_now
 from app.db.models import (
     DISCOVER_DIRECTORY,
@@ -222,7 +223,7 @@ async def sync_once(
             # 空页 = 这个范围到底了
             break
 
-        added = await _store_entries(
+        added = await store_entries(
             session,
             entries,
             source=source,
@@ -251,7 +252,7 @@ async def sync_once(
     }
 
 
-async def _store_entries(
+async def store_entries(
     session: AsyncSession,
     entries: list[DirectoryEntry],
     *,
@@ -259,7 +260,7 @@ async def _store_entries(
     scope: str,
     page: int,
 ) -> int:
-    """把一页条目写进候选池，返回新增条数。"""
+    """把一页条目写进候选池，返回新增条数（在线补搜也用它）。"""
     label = SITE_LABELS.get(source, source)
     discovered_from = f"{label}：{scope} 第 {page} 页"
     created = 0
@@ -281,6 +282,8 @@ async def _store_entries(
                 language=entry.language,
                 directory_rank=entry.rank,
                 directory_member_count=entry.member_count,
+                # 入库时的粗判：只看标题；探测后按采样消息复判（F-R22）
+                content_rating=detect_content_rating(entry.title),
             ),
             discovered_by=DISCOVER_DIRECTORY,
             discovered_from=discovered_from[:255],

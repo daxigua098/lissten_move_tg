@@ -29,6 +29,8 @@ from app.db.models import (
     CONTENT_RATINGS,
     PROBE_FAILED,
     PROBE_OK,
+    RATING_SENSITIVE,
+    RATING_UNKNOWN,
     RESOURCE_ADOPTED,
     RESOURCE_CANDIDATE,
     RESOURCE_PROBED,
@@ -67,6 +69,7 @@ class ResourceRef:
     language: str | None = None
     directory_rank: int | None = None
     directory_member_count: int | None = None
+    content_rating: str | None = None
 
 
 @dataclass(frozen=True)
@@ -255,6 +258,7 @@ async def upsert_resource(
             directory_rank=ref.directory_rank,
             directory_member_count=ref.directory_member_count,
             directory_synced_at=now if ref.source_site else None,
+            content_rating=ref.content_rating or RATING_UNKNOWN,
             first_seen_at=first_seen_at or now,
         )
         session.add(resource)
@@ -318,6 +322,14 @@ async def upsert_resource(
     # 目录给的语言只作提示：已经探测出语言（或人工锁定）就不覆盖
     if ref.language and not resource.language and "language" not in load_locked(resource):
         resource.language = ref.language
+        changed = True
+    # 分级只从 unknown 往上填：探测出的判定不会被目录或下一次发现的粗判覆盖
+    if (
+        ref.content_rating
+        and resource.content_rating == RATING_UNKNOWN
+        and "content_rating" not in load_locked(resource)
+    ):
+        resource.content_rating = ref.content_rating
         changed = True
 
     if changed:
@@ -384,6 +396,9 @@ async def apply_metrics(
         resource.last_active_at = metrics.last_active_at
         resource.is_index_group = metrics.is_index_group
         resource.index_score = metrics.index_score
+        # 内容分级（F-R22）：人工改过的分级不被探测覆盖
+        if "content_rating" not in locked and metrics.content_rating:
+            resource.content_rating = metrics.content_rating
         if sample_preview is not None:
             resource.sample_messages = dump_samples(sample_preview)
         if resource.status == RESOURCE_CANDIDATE:
@@ -583,6 +598,8 @@ def _filters(
     status: str | None = None,
     source_site: str | None = None,
     content_rating: str | None = None,
+    include_sensitive: bool = True,
+    due_refresh: bool = False,
 ) -> list[Any]:
     """把筛选条件翻成 SQL 条件列表（页面读库，不触发任何 Telegram 请求）。"""
     conditions: list[Any] = []
@@ -626,6 +643,17 @@ def _filters(
         conditions.append(TgResource.source_site == source_site)
     if content_rating:
         conditions.append(TgResource.content_rating == content_rating)
+    # 卡片墙默认藏敏感内容（F-R22）：显式筛分级时以调用方的意图为准
+    if not include_sensitive and not content_rating:
+        conditions.append(TgResource.content_rating != RATING_SENSITIVE)
+    if due_refresh:
+        moment = utc_now()
+        conditions.append(
+            or_(
+                TgResource.next_refresh_at.is_(None),
+                TgResource.next_refresh_at <= moment,
+            )
+        )
     if active_within_days:
         conditions.append(
             TgResource.last_active_at >= utc_now() - timedelta(days=int(active_within_days))
@@ -847,6 +875,103 @@ def serialize_probe_log(row: ResourceProbeLog) -> dict[str, Any]:
         "result": row.result,
         "error": row.error,
         "requests_used": row.requests_used,
+    }
+
+
+# ---------------------------------------------------------------- 卡片墙计数
+
+CHAT_TYPE_LABELS = {
+    "channel": "频道",
+    "supergroup": "超级群",
+    "group": "群组",
+}
+SOURCE_SITE_LABELS = {
+    "telegram": "Telegram 搜索",
+    "combot": "Combot 目录",
+    "tgme": "tg-me 列表",
+    "manual": "人工添加",
+}
+RATING_LABELS = {
+    "normal": "常规",
+    "sensitive": "敏感",
+    "unknown": "未判定",
+}
+
+
+async def _group_counts(
+    session: AsyncSession,
+    column: Any,
+    *,
+    limit: int | None = None,
+) -> list[tuple[str, int]]:
+    """按某一列分组计数，按数量倒序。"""
+    statement = (
+        select(column, func.count())
+        .select_from(TgResource)
+        .where(column.is_not(None))
+        .group_by(column)
+        .order_by(func.count().desc(), column.asc())
+    )
+    if limit is not None:
+        statement = statement.limit(limit)
+    rows = await session.execute(statement)
+    return [(str(value), int(count)) for value, count in rows if value]
+
+
+async def _count_where(session: AsyncSession, *conditions: Any) -> int:
+    total = await session.scalar(select(func.count()).select_from(TgResource).where(*conditions))
+    return int(total or 0)
+
+
+def _labeled(items: list[tuple[str, int]], labels: dict[str, str] | None = None) -> list[dict]:
+    return [
+        {"value": value, "label": (labels or {}).get(value, value), "count": count}
+        for value, count in items
+    ]
+
+
+async def counts(session: AsyncSession) -> dict[str, Any]:
+    """卡片墙的分类 chips 与快捷榜计数（纯读库，F-R23）。"""
+    categories: dict[str, int] = {}
+    for raw in await session.scalars(select(TgResource.categories)):
+        for item in _load_list(raw):
+            categories[item] = categories.get(item, 0) + 1
+    top_categories = sorted(categories.items(), key=lambda kv: (-kv[1], kv[0]))[:16]
+
+    moment = utc_now()
+    return {
+        "languages": _labeled(await _group_counts(session, TgResource.language, limit=12)),
+        "categories": _labeled(top_categories),
+        "chat_types": _labeled(
+            await _group_counts(session, TgResource.chat_type),
+            CHAT_TYPE_LABELS,
+        ),
+        "sources": _labeled(
+            await _group_counts(session, TgResource.source_site),
+            SOURCE_SITE_LABELS,
+        ),
+        "ratings": _labeled(
+            await _group_counts(session, TgResource.content_rating),
+            RATING_LABELS,
+        ),
+        "quick": {
+            "active": await _count_where(session, TgResource.activity_score.is_not(None)),
+            "potential": await _count_where(session, TgResource.lead_potential.is_not(None)),
+            "new": await _count_where(session, TgResource.status == RESOURCE_CANDIDATE),
+            "due": await _count_where(
+                session,
+                TgResource.is_blacklisted.is_(False),
+                or_(
+                    TgResource.next_refresh_at.is_(None),
+                    TgResource.next_refresh_at <= moment,
+                ),
+            ),
+            "adopted": await _count_where(session, TgResource.status == RESOURCE_ADOPTED),
+            "sensitive": await _count_where(
+                session,
+                TgResource.content_rating == RATING_SENSITIVE,
+            ),
+        },
     }
 
 

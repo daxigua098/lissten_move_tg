@@ -98,6 +98,15 @@ class DirectorySyncRequest(BaseModel):
     resume: bool = True
 
 
+class OnlineSearchRequest(BaseModel):
+    """搜索时的在线补搜（F-R19）：本地结果已经先渲染，这一步只追加。"""
+
+    keywords: list[str] = Field(min_length=1, max_length=10)
+    sites: list[str] = Field(default_factory=lambda: ["telegram", "combot", "tgme"])
+    limit: int = Field(default=20, ge=1, le=100)
+    account_id: int | None = None
+
+
 class HotwordImportRequest(BaseModel):
     """把热门词导入发现关键词库。"""
 

@@ -51,6 +51,61 @@ CONTACT_KEYWORDS = ("微信", "wechat", "whatsapp", "电报", "telegram", "tg", 
 PHONE_PATTERN = re.compile(r"(?<!\d)(?:\+?86[\s-]?)?1[3-9]\d{9}(?!\d)")
 INTL_PHONE_PATTERN = re.compile(r"(?<!\d)\+(\d{2,3})[\s-]?\d{6,12}(?!\d)")
 
+# ---------------------------------------------------------------- 内容分级
+
+# 敏感内容词表（F-R22）。两个来源都不算数：站点给的榜单位置、语言代码。
+# 判定只看群名 / 简介 / 采样消息里的实际用词。
+# 词表刻意保守：宁可把"擦边但正常"的群判成 normal，也不要一上来就藏一片。
+SENSITIVE_WORDS = (
+    # 成人
+    "成人",
+    "情色",
+    "色情",
+    "约炮",
+    "裸聊",
+    "福利姬",
+    "楼凤",
+    "全套",
+    "包夜",
+    "资源片",
+    "av资源",
+    "成人视频",
+    "18+",
+    "nsfw",
+    "porn",
+    "nude",
+    "escort",
+    # 赌博
+    "博彩",
+    "菠菜",
+    "赌博",
+    "赌场",
+    "彩票",
+    "时时彩",
+    "棋牌",
+    "六合彩",
+    "百家乐",
+    "返水",
+    "真人荷官",
+    "线上娱乐城",
+)
+
+
+def detect_content_rating(*texts: str | None) -> str:
+    """按词表粗判内容分级（F-R22）。
+
+    返回 ``sensitive`` / ``normal`` / ``unknown``：
+
+    - 有文本且命中敏感词 → ``sensitive``；
+    - 有足够文本但一个都没命中 → ``normal``；
+    - 没有可用文本（比如刚入库、只有标题）→ ``unknown``，留给探测复判。
+    """
+    body = " ".join(item for item in texts if item).strip()
+    if len(body) < 2:
+        return "unknown"
+    lowered = body.casefold()
+    return "sensitive" if any(word in lowered for word in SENSITIVE_WORDS) else "normal"
+
 
 def looks_like_ad(text: str | None) -> bool:
     """是不是一条纯广告。
@@ -220,6 +275,8 @@ class ProbeMetrics:
     index_score: int = 0
     is_index_group: bool = False
     index_reasons: tuple[str, ...] = field(default_factory=tuple)
+    # 内容分级（F-R22）：normal / sensitive / unknown
+    content_rating: str = "unknown"
 
 
 def _text_of(message: Any) -> str:
@@ -284,6 +341,7 @@ def compute_metrics(
             language=detect_language(title, about),
             categories=tuple(detect_categories(title, about)),
             country=detect_country(about),
+            content_rating=detect_content_rating(title, about),
         )
 
     texts = [_text_of(item) for item in samples]
@@ -353,6 +411,7 @@ def compute_metrics(
         index_score=index_score,
         is_index_group=index_score >= limits.index_feature_threshold,
         index_reasons=tuple(reasons),
+        content_rating=detect_content_rating(title, about, joined),
     )
 
 

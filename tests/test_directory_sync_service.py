@@ -9,7 +9,7 @@ from sqlalchemy import select
 from app.core.directory_sites import COMBOT, TGME
 from app.db.models import (
     DISCOVER_DIRECTORY,
-    RATING_UNKNOWN,
+    RATING_NORMAL,
     SYNC_FAILED,
     SYNC_OK,
     SYNC_PARTIAL,
@@ -83,7 +83,8 @@ async def test_combot_sync_stores_candidates_with_ids(db) -> None:
     assert first.discovered_by == DISCOVER_DIRECTORY
     assert first.discovered_from == "Combot 目录：zh 第 1 页"
     assert first.status == "candidate"
-    assert first.content_rating == RATING_UNKNOWN
+    # 入库时按标题粗判内容分级（F-R22）：这两个标题都不敏感
+    assert first.content_rating == RATING_NORMAL
     # 三方成员数单独存，且不冒充探测出来的成员数
     assert first.directory_member_count == 172156
     assert first.member_count is None

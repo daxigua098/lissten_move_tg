@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
@@ -492,6 +493,185 @@ async def _run_keyword_raw(
         discovered_from=f"临时搜索：{keyword}",
     )
     return len(profiles), created
+
+
+# ------------------------------------------------------------------ 在线补搜（F-R19）
+
+# 在线补搜支持的渠道
+ONLINE_SITES = ("telegram", "combot", "tgme")
+
+
+async def search_online(
+    session: AsyncSession,
+    config: AppConfig,
+    client: Any,
+    *,
+    keywords: list[str],
+    sites: Sequence[str] = ONLINE_SITES,
+    limit: int = 20,
+    account_id: int | None = None,
+    directory_fetcher: Any = None,
+) -> dict[str, Any]:
+    """搜索时的「在线补搜」：本地结果已经先渲染了，这一步只是追加。
+
+    三条硬规则（F-R19）：
+
+    1. **失败隔离**：某一路径出错只记在它自己那一条上，不影响其它路径；
+    2. **配额**：Telegram 搜索按关键词计入 ``searches``；
+    3. **限速**：Telegram 那一路沿用 F-R02 的搜索结果与 24h 去重规则。
+
+    combot 没有关键词接口（实测只有榜单与语言榜），所以它的"补搜"是
+    **在本地已同步的目录里按词匹配**，不回三方站出网——结果里标 ``status=local``。
+    """
+    cleaned = [item.strip() for item in keywords if item and item.strip()][:10]
+    if not cleaned:
+        raise ValidationFailedError("在线补搜至少要有一个关键词")
+    chosen = [item for item in sites if item in ONLINE_SITES]
+    if not chosen:
+        raise ValidationFailedError(f"补搜渠道必须是 {'/'.join(ONLINE_SITES)} 之一")
+
+    results: list[dict[str, Any]] = []
+    for site in chosen:
+        if site == "telegram":
+            results.append(
+                await _search_online_telegram(
+                    session,
+                    config,
+                    client,
+                    cleaned,
+                    limit=limit,
+                    account_id=account_id,
+                )
+            )
+        elif site == "combot":
+            results.append(await _search_online_combot(session, cleaned))
+        else:
+            results.append(
+                await _search_online_tgme(
+                    session,
+                    config,
+                    cleaned,
+                    limit=limit,
+                    fetcher=directory_fetcher,
+                )
+            )
+
+    return {
+        "keywords": cleaned,
+        "results": results,
+        "new_total": sum(int(item.get("new_resources") or 0) for item in results),
+    }
+
+
+async def _search_online_telegram(
+    session: AsyncSession,
+    config: AppConfig,
+    client: Any,
+    keywords: list[str],
+    *,
+    limit: int,
+    account_id: int | None,
+) -> dict[str, Any]:
+    """Telegram 侧：按词搜公开群。"""
+    hits = 0
+    created = 0
+    try:
+        for keyword in keywords:
+            found, added = await _run_keyword_raw(session, client, keyword, limit=limit)
+            hits += found
+            created += added
+            await resource_quota_service.bump(session, account_id, searches=1)
+    except Exception as exc:  # noqa: BLE001 - 单渠道失败不影响其它渠道
+        logger.warning("在线补搜（Telegram）失败：{}", exc)
+        return {
+            "site": "telegram",
+            "status": "error",
+            "hits": hits,
+            "new_resources": created,
+            "error": str(exc)[:200],
+        }
+    return {
+        "site": "telegram",
+        "status": "ok",
+        "hits": hits,
+        "new_resources": created,
+        "error": None,
+    }
+
+
+async def _search_online_combot(
+    session: AsyncSession,
+    keywords: list[str],
+) -> dict[str, Any]:
+    """combot 侧：只在本地已同步的目录里按词匹配（不出网）。"""
+    hits = 0
+    for keyword in keywords:
+        _rows, total = await resource_service.list_resources(
+            session,
+            keyword=keyword,
+            source_site="combot",
+            limit=1,
+            offset=0,
+        )
+        hits += total
+    return {
+        "site": "combot",
+        "status": "local",
+        "hits": hits,
+        "new_resources": 0,
+        "error": None,
+    }
+
+
+async def _search_online_tgme(
+    session: AsyncSession,
+    config: AppConfig,
+    keywords: list[str],
+    *,
+    limit: int,
+    fetcher: Any,
+) -> dict[str, Any]:
+    """tg-me 侧：抓每个词的第 1 页列表。"""
+    from app.services import directory_sync_service
+
+    if fetcher is None:
+        return {
+            "site": "tgme",
+            "status": "error",
+            "hits": 0,
+            "new_resources": 0,
+            "error": "没有可用的抓取器",
+        }
+    hits = 0
+    created = 0
+    try:
+        for keyword in keywords:
+            entries = await directory_sync_service.fetch_page(fetcher, "tgme", keyword, 1)
+            entries = entries[: max(1, limit)]
+            hits += len(entries)
+            created += await directory_sync_service.store_entries(
+                session,
+                entries,
+                source="tgme",
+                scope=keyword,
+                page=1,
+            )
+    except Exception as exc:  # noqa: BLE001 - 单渠道失败不影响其它渠道
+        logger.warning("在线补搜（tg-me）失败：{}", exc)
+        return {
+            "site": "tgme",
+            "status": "error",
+            "hits": hits,
+            "new_resources": created,
+            "error": str(exc)[:200],
+        }
+    return {
+        "site": "tgme",
+        "status": "ok",
+        "hits": hits,
+        "new_resources": created,
+        "error": None,
+    }
 
 
 def parse_flood_wait(exc: BaseException | str) -> int:

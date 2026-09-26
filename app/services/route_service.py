@@ -298,6 +298,7 @@ async def update_route(
     route_id: int,
     *,
     name: str | None = None,
+    target_chat_ids: list[int] | None = None,
     business_type: str | None = None,
     exec_account_id: int | None = None,
     notify_bot_id: int | None = None,
@@ -314,6 +315,11 @@ async def update_route(
     route = await get_route(session, route_id)
     if route is None:
         raise NotFoundError("线路不存在")
+
+    targets_to_sync: list[Chat] | None = None
+    if target_chat_ids is not None:
+        unique_target_ids = list(dict.fromkeys(target_chat_ids))
+        targets_to_sync = await _require_targets(session, unique_target_ids)
 
     next_type = business_type or route.business_type
     a_model = (
@@ -358,6 +364,9 @@ async def update_route(
         route.enabled = enabled
     route.a_config = dump_config(a_model)
     route.b_config = dump_config(b_model)
+
+    if targets_to_sync is not None:
+        await _replace_route_targets(session, route.id, targets_to_sync)
 
     await session.commit()
     await session.refresh(route)
@@ -550,6 +559,39 @@ async def delete_route_bundle(session: AsyncSession, route_id: int) -> dict[str,
         await session.delete(item)
     await session.commit()
     return {"deleted": len(rows)}
+
+
+async def _replace_route_targets(
+    session: AsyncSession,
+    route_id: int,
+    chats: list[Chat],
+) -> dict[str, int]:
+    """把一条线路的接收目标替换成给定集合，保留仍被选中目标的水位线。"""
+    wanted = {chat.id for chat in chats}
+    existing = await list_route_targets(session, route_id)
+    existing_ids = {row.target_chat_id for row in existing}
+    removed = 0
+    for row in existing:
+        if row.target_chat_id in wanted:
+            continue
+        await session.delete(row)
+        progress = await session.get(
+            RouteTargetProgress,
+            (route_id, row.target_chat_id),
+        )
+        if progress is not None:
+            await session.delete(progress)
+        removed += 1
+
+    added = 0
+    for chat in chats:
+        if chat.id in existing_ids:
+            continue
+        await _add_target_row(session, route_id, chat)
+        added += 1
+
+    await session.flush()
+    return {"added": added, "removed": removed, "total": len(wanted)}
 
 
 async def add_targets(

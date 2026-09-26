@@ -707,3 +707,96 @@ async def test_bundle_toggle_and_target_add_apply_to_every_source(
     assert removed.status_code == 200
     listing = (await chat_client.get("/api/routes", headers=_headers())).json()["items"][0]
     assert listing["target_count"] == 1
+
+
+async def test_update_route_replaces_receiver_targets_in_one_edit(
+    chat_client,
+    fake_account_client,
+) -> None:
+    """编辑线路时，接收目标应能像多选字段一样一次性改完整集合。"""
+    ids = await _prepare(chat_client, fake_account_client)
+    created = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "多目标编辑",
+            "source_chat_id": ids["source"],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    route_id = created.json()["id"]
+
+    expanded = await chat_client.patch(
+        f"/api/routes/{route_id}",
+        headers=_headers(),
+        json={"target_chat_ids": [ids["main"], ids["lead"]]},
+    )
+
+    assert expanded.status_code == 200
+    assert {item["chat_id"] for item in expanded.json()["targets"]} == {
+        ids["main"],
+        ids["lead"],
+    }
+
+    empty = await chat_client.patch(
+        f"/api/routes/{route_id}",
+        headers=_headers(),
+        json={"target_chat_ids": []},
+    )
+    assert empty.status_code == 422
+
+    narrowed = await chat_client.patch(
+        f"/api/routes/{route_id}",
+        headers=_headers(),
+        json={"target_chat_ids": [ids["lead"]]},
+    )
+
+    assert narrowed.status_code == 200
+    assert [item["chat_id"] for item in narrowed.json()["targets"]] == [ids["lead"]]
+
+
+async def test_update_route_targets_replaces_whole_bundle(
+    chat_client,
+    fake_account_client,
+) -> None:
+    """多源线路一次保存新目标集合时，组内每一行都要保持一致。"""
+    ids = await _prepare(chat_client, fake_account_client)
+    backup = make_entity(3005, "备用源频道", broadcast=True, username="src_backup")
+    fake_account_client.dialogs = [*fake_account_client.dialogs, backup]
+    fake_account_client.entities["src_backup"] = backup
+    await chat_client.post("/api/sources/sync", headers=_headers())
+    pool = (await chat_client.get("/api/sources/available", headers=_headers())).json()["items"]
+    backup_id = next(item["id"] for item in pool if item["title"] == "备用源频道")
+    await chat_client.post("/api/sources", headers=_headers(), json={"chat_ids": [backup_id]})
+
+    created = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "多源目标编辑",
+            "source_chat_ids": [ids["source"], backup_id],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    route_id = created.json()["id"]
+
+    replaced = await chat_client.patch(
+        f"/api/routes/{route_id}",
+        headers=_headers(),
+        json={"target_chat_ids": [ids["lead"]]},
+    )
+
+    assert replaced.status_code == 200
+    assert [item["chat_id"] for item in replaced.json()["targets"]] == [ids["lead"]]
+    from app.db.session import session_scope
+    from app.services import route_service
+
+    async with session_scope() as session:
+        rows, _total = await route_service.list_routes(session)
+        for row in rows:
+            targets = await route_service.list_route_targets(session, row.id)
+            assert [item.target_chat_id for item in targets] == [ids["lead"]]

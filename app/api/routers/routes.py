@@ -295,6 +295,7 @@ async def update_route(
     """更新线路配置；带 source_chat_ids 时会同步整条多源线路。"""
     fields = {
         "name": payload.name,
+        "target_chat_ids": payload.target_chat_ids,
         "business_type": payload.business_type,
         "exec_account_id": payload.exec_account_id,
         "notify_bot_id": payload.notify_bot_id,
@@ -316,8 +317,8 @@ async def update_route(
             payload.source_chat_ids,
         )
         siblings = await route_service.bundle_routes(session, route)
-    # 列表页的整组启停 / 编辑器改了配置：同组的其他行一起改（多源时它们是同一套规则）
-    if payload.source_chat_ids or payload.apply_to_bundle:
+    # 列表页的整组启停 / 编辑器改了源、目标或配置：同组其他行一起改
+    if payload.source_chat_ids or payload.target_chat_ids or payload.apply_to_bundle:
         for sibling in siblings:
             if sibling.id != route_id:
                 await route_service.update_route(session, sibling.id, **fields)

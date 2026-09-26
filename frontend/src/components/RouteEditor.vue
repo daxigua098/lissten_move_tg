@@ -36,10 +36,10 @@ function needsRestart() {
   return before !== after || original.businessType !== form.business_type;
 }
 const detailTargets = ref([]);
-const addingTargetIds = ref([]);
 const form = reactive({
   name: "",
   source_chat_ids: [],
+  target_chat_ids: [],
   business_type: "A",
   exec_account_id: null,
   notify_bot_id: null,
@@ -61,8 +61,53 @@ const isEdit = computed(() => Boolean(props.routeId));
 const targetRoleWarnings = computed(() =>
   collectRoleMismatches(
     form.business_type,
-    detailTargets.value.filter((item) => item.enabled !== false),
+    selectedTargets.value.filter((item) => item.enabled !== false),
   ),
+);
+/** 可选目标列表：以接收组页数据为准，并合并线路详情，防止历史数据暂时不在列表中。 */
+const targetChoices = computed(() => {
+  const choices = new Map();
+  for (const item of props.targets) {
+    choices.set(item.id, { ...item, chat_id: item.id });
+  }
+  for (const item of detailTargets.value) {
+    choices.set(item.chat_id, {
+      ...(choices.get(item.chat_id) || {}),
+      ...item,
+      id: item.chat_id,
+      chat_id: item.chat_id,
+    });
+  }
+  return [...choices.values()].sort((a, b) =>
+    (a.name || a.title || a.username || "").localeCompare(
+      b.name || b.title || b.username || "",
+      "zh-CN",
+    ),
+  );
+});
+/** 当前多选字段对应的目标详情；新目标在保存前也先显示出来。 */
+const selectedTargets = computed(() =>
+  form.target_chat_ids
+    .map((id) => {
+      const existing = detailTargets.value.find((item) => item.chat_id === id);
+      if (existing) return existing;
+      const option = targetChoices.value.find((item) => item.id === id);
+      if (!option) return null;
+      return {
+        chat_id: id,
+        name: option.name,
+        title: option.title,
+        username: option.username,
+        target_role: option.target_role,
+        target_role_label: option.target_role_label,
+        enabled: true,
+        can_post: option.can_post,
+        last_delivered_message_id: 0,
+        backfill_status: "idle",
+        is_new: true,
+      };
+    })
+    .filter(Boolean),
 );
 /** 选了挂广告但没选素材：后端会拦下，这里提前提示，别等点保存才报错。 */
 const adAssetMissing = computed(
@@ -91,7 +136,7 @@ const suggestedName = computed(() => {
   const first = picked[0].name || picked[0].title || picked[0].username || "";
   const sourceName = picked.length > 1 ? `${first} 等 ${picked.length} 个源` : first;
   if (!sourceName) return "";
-  const targetNames = detailTargets.value
+  const targetNames = selectedTargets.value
     .map((item) => item.name || item.title || item.username)
     .filter(Boolean);
   return targetNames.length ? `${sourceName} → ${targetNames.join("、")}` : sourceName;
@@ -158,6 +203,7 @@ function resetForm() {
   Object.assign(form, {
     name: "",
     source_chat_ids: props.sources[0] ? [props.sources[0].id] : [],
+    target_chat_ids: [],
     business_type: "A",
     exec_account_id: null,
     notify_bot_id: null,
@@ -188,6 +234,7 @@ function applyDetail(data) {
       : data.source?.chat_id
         ? [data.source.chat_id]
         : [],
+    target_chat_ids: (data.targets || []).map((item) => item.chat_id),
     business_type: data.business_type,
     exec_account_id: data.exec_account_id,
     notify_bot_id: data.notify_bot_id,
@@ -300,8 +347,8 @@ async function save() {
     );
     return;
   }
-  if (!detailTargets.value.length) {
-    ElMessage.warning("请先选择接收目标：在「接收目标」下面的下拉里选一个群，选中就会自动加进来");
+  if (!form.target_chat_ids.length) {
+    ElMessage.warning("请至少选择一个接收目标");
     return;
   }
   saving.value = true;
@@ -309,6 +356,7 @@ async function save() {
     const payload = {
       name,
       source_chat_ids: form.source_chat_ids,
+      target_chat_ids: form.target_chat_ids,
       business_type: form.business_type,
       exec_account_id: form.exec_account_id,
       notify_bot_id: form.notify_bot_id,
@@ -325,10 +373,7 @@ async function save() {
       await routesApi.update(props.routeId, payload);
       ElMessage.success(needsRestart() ? RESTART_HINT : "线路已保存（配置、目标、启停立即生效）");
     } else {
-      await routesApi.create({
-        ...payload,
-        target_chat_ids: detailTargets.value.map((item) => item.chat_id),
-      });
+      await routesApi.create(payload);
       ElMessage.success(`线路已创建；${RESTART_HINT}`);
     }
     emit("saved");
@@ -340,70 +385,12 @@ async function save() {
   }
 }
 
-function pushLocalTarget(targetId) {
-  const target = props.targets.find((item) => item.id === targetId);
-  if (!target) return false;
-  // 已在列表里的不重复添加
-  if (detailTargets.value.some((item) => item.chat_id === target.id)) return false;
-  detailTargets.value.push({
-    chat_id: target.id,
-    name: target.name,
-    title: target.title,
-    username: target.username,
-    target_role: target.target_role,
-    target_role_label: target.target_role_label,
-    enabled: true,
-    can_post: target.can_post,
-    last_delivered_message_id: 0,
-    backfill_status: "idle",
-  });
-  return true;
+function removeSelectedTarget(row) {
+  form.target_chat_ids = form.target_chat_ids.filter((id) => id !== row.chat_id);
 }
 
-async function addTargets() {
-  if (!addingTargetIds.value.length) {
-    ElMessage.warning("请选择要追加的接收目标");
-    return;
-  }
-  if (!isEdit.value) {
-    addingTargetIds.value.forEach(pushLocalTarget);
-    addingTargetIds.value = [];
-    return;
-  }
-  try {
-    const { data } = await routesApi.addTargets(props.routeId, addingTargetIds.value);
-    addingTargetIds.value = [];
-    await loadDetail();
-    const skipped = data.skipped?.length || 0;
-    ElMessage.success(
-      skipped
-        ? `已在列表里的 ${skipped} 个被跳过，新增 ${data.added.length} 个目标`
-        : `已加入 ${data.added.length} 个目标（只为新目标补齐历史）`,
-    );
-  } catch (error) {
-    ElMessage.error(error.message);
-  }
-}
-
-/** 下拉里选中即加入列表，不用再点「追加」——少这一步就不会漏。 */
-async function onPickTargets(ids) {
-  if (!ids?.length) return;
-  addingTargetIds.value = ids;
-  await addTargets();
-}
-
-async function removeTarget(row) {
-  if (!isEdit.value) {
-    detailTargets.value = detailTargets.value.filter((item) => item.chat_id !== row.chat_id);
-    return;
-  }
-  try {
-    await routesApi.removeTarget(props.routeId, row.chat_id);
-    await loadDetail();
-    ElMessage.success("已移除该接收目标");
-  } catch (error) {
-    ElMessage.error(error.message);
-  }
+function isExistingTarget(row) {
+  return detailTargets.value.some((item) => item.chat_id === row.chat_id);
 }
 
 async function toggleTarget(row) {
@@ -544,22 +531,53 @@ async function resetProgress(row) {
       </el-form>
 
       <el-divider content-position="left">接收目标</el-divider>
+      <div class="add-target target-editor">
+        <el-select
+          v-model="form.target_chat_ids"
+          multiple
+          collapse-tags
+          filterable
+          clearable
+          placeholder="可多选接收目标，保存后生效"
+          style="width: 100%"
+        >
+          <el-option
+            v-for="item in targetChoices"
+            :key="item.id"
+            :label="`${item.name || item.title || item.username}（${targetRoleFullLabel(item.target_role)}）`"
+            :value="item.id"
+          />
+        </el-select>
+      </div>
+      <p class="card-hint">
+        接收目标是可编辑的多选字段：选中多个后点保存。取消选中只会解除本线路的关联，
+        不会删除「接收组」页里的群；新加入的目标保存后只为它补齐历史消息。
+      </p>
       <div class="targets">
-        <div v-for="item in detailTargets" :key="item.chat_id" class="target-row">
+        <div v-for="item in selectedTargets" :key="item.chat_id" class="target-row">
           <span class="grow">
             {{ item.name || item.title || item.username }}
             <el-tag size="small" :type="targetRoleTagType(item.target_role)">
               {{ targetRoleShortLabel(item.target_role) }}
             </el-tag>
             <el-tag v-if="item.can_post === false" size="small" type="danger">无发帖权限</el-tag>
+            <el-tag v-if="!isExistingTarget(item)" size="small" type="info">保存后新增</el-tag>
           </span>
-          <span class="card-hint">水位线 {{ item.last_delivered_message_id }}</span>
-          <el-switch v-model="item.enabled" size="small" @change="() => toggleTarget(item)" />
-          <el-button size="small" link type="warning" @click="resetProgress(item)">重置进度</el-button>
-          <el-button size="small" link type="danger" @click="removeTarget(item)">移除</el-button>
+          <span v-if="isExistingTarget(item)" class="card-hint">
+            水位线 {{ item.last_delivered_message_id }}
+          </span>
+          <template v-if="isExistingTarget(item)">
+            <el-switch v-model="item.enabled" size="small" @change="() => toggleTarget(item)" />
+            <el-button size="small" link type="warning" @click="resetProgress(item)">
+              重置进度
+            </el-button>
+          </template>
+          <el-button size="small" link type="danger" @click="removeSelectedTarget(item)">
+            移除
+          </el-button>
         </div>
-        <div v-if="!detailTargets.length" class="card-hint">
-          还没有接收目标：用下面的下拉选一个群，选中就会自动加进来。
+        <div v-if="!selectedTargets.length" class="card-hint">
+          还没有接收目标：在上面的多选框中至少选择一个群或频道。
         </div>
       </div>
       <el-alert
@@ -572,28 +590,6 @@ async function resetProgress(row) {
       >
         <p v-for="item in targetRoleWarnings" :key="item.name">{{ item.name }}：{{ item.text }}</p>
       </el-alert>
-      <div class="add-target">
-        <el-select
-          v-model="addingTargetIds"
-          multiple
-          collapse-tags
-          placeholder="从接收组里选，选中即添加"
-          style="flex: 1"
-          @change="onPickTargets"
-        >
-          <el-option
-            v-for="item in targets"
-            :key="item.id"
-            :label="`${item.name || item.title || item.username}（${targetRoleFullLabel(item.target_role)}）`"
-            :value="item.id"
-          />
-        </el-select>
-      </div>
-      <p class="card-hint">
-        在上面下拉里<b>选中就会自动加入</b>，不用再点按钮；新增目标只会为它补齐历史消息，
-        已存在目标不会重复搬运。
-      </p>
-
       <el-form v-if="form.business_type === 'A'" label-position="top">
         <el-divider content-position="left">A 线：内容与净化</el-divider>
         <el-form-item label="搬运内容类型">

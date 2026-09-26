@@ -246,39 +246,8 @@ onMounted(load);
       :closable="false"
       show-icon
       title="接收组必须能发帖"
-      description="执行账号需要已加入该群/频道并有发言权限；权限预检会标记「无发帖权限」的目标，A 线投递前还会再校验一次。用途选「线索接收」的群接收 B 线的会员线索卡片。"
+      description="投递前会校验发言权限；列表里的开关是总开关，关掉即停用该群在所有线路上的投递。用途只是分类标签，不限制投递。"
     />
-
-    <el-card shadow="never" class="panel-gap">
-      <template #header>用途说明：「内容接收」和「线索接收」分别是什么</template>
-      <table class="role-table">
-        <thead>
-          <tr>
-            <th>用途</th>
-            <th>对应业务线</th>
-            <th>群里会出现什么</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="item in TARGET_ROLE_OPTIONS" :key="item.value">
-            <td class="role-cell">
-              <el-tag size="small" :type="item.tagType">{{ item.label }}</el-tag>
-              <span class="card-hint">{{ item.fullLabel }}</span>
-            </td>
-            <td>{{ item.value === "content" ? "A 线 · 搬运帖子" : "B 线 · 监听会员" }}</td>
-            <td>{{ item.hint }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <p class="card-hint role-note">
-        用途只是分类标签，不会限制投递：真正决定"发到哪个群"的是线路里勾选的接收目标。
-        同一个群今天当内容落点、明天又可以挂到 B 线，改这个下拉即可。
-      </p>
-      <p class="card-hint role-note">
-        列表里的开关是<b>总开关</b>：关掉会同时停用这个群在<b>所有线路</b>上的投递；
-        只想停某一条线路，去「线路管理」里关那条线路的目标开关。
-      </p>
-    </el-card>
   </div>
 </template>
 
@@ -344,67 +313,6 @@ onMounted(load);
 
 .empty {
   padding: 16px 4px;
-}
-
-.role-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.role-help {
-  font-size: 13px;
-  color: var(--tg-muted);
-  cursor: help;
-  border-bottom: 1px dashed currentColor;
-}
-
-.role-tip {
-  max-width: 300px;
-  line-height: 1.7;
-}
-
-.role-tip p {
-  margin: 0 0 6px;
-}
-
-.role-table th,
-.role-table td {
-  border-bottom: 1px solid var(--tg-border);
-  padding: 8px 10px;
-  text-align: left;
-  vertical-align: top;
-  line-height: 1.6;
-}
-
-.role-table th {
-  color: var(--tg-muted);
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.role-cell {
-  white-space: nowrap;
-}
-
-.role-cell .card-hint {
-  margin-left: 6px;
-}
-
-.role-note {
-  margin: 10px 0 0;
-  line-height: 1.7;
-}
-
-.arrows {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 8px;
-}
-
-.panel-gap {
-  margin-top: 12px;
 }
 
 @media (max-width: 980px) {

@@ -183,14 +183,6 @@ async function act(action) {
       </el-descriptions>
     </el-card>
 
-    <el-alert
-      class="panel"
-      type="info"
-      :closable="false"
-      show-icon
-      title="当前是一期基础工程（T1-01 / T1-02 / E2 登录与权限）。"
-      description="搬运运行时用 python main.py run 启动；启动后这里会显示心跳、队列长度与投递统计。会员线索与关键词词库属于二期范围。"
-    />
   </div>
 </template>
 

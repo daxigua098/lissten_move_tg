@@ -93,6 +93,26 @@ async def test_blacklisted_cannot_enqueue(db, probe_account) -> None:
         raise AssertionError("黑名单资源不该进加群队列")
 
 
+async def test_already_member_cannot_enqueue(
+    db,
+    fake_resource_client,
+    probe_account,
+) -> None:
+    """账号已经在群里（加群成功过）就不该再排队，否则卡片上会挂着假「待加入」。"""
+    fake_resource_client.add_chat(3007, "已在群", username="already_there")
+    resource = await _create(3007, "已在群")
+    task_id = await _enqueue(db, resource.id, probe_account)
+    result = await _run(db, fake_resource_client, task_id)
+    assert result["status"] == JOIN_SUCCESS
+
+    try:
+        await _enqueue(db, resource.id, probe_account)
+    except ConflictError as exc:
+        assert "已经在" in exc.detail
+    else:  # pragma: no cover
+        raise AssertionError("已在群里的资源不该再排加群")
+
+
 async def test_adopted_resource_can_still_queue_join(db, probe_account) -> None:
     """已采纳也能补排加群：采纳后才发现账号没进群，必须能救回来。
 

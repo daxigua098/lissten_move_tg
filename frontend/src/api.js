@@ -7,6 +7,11 @@ export const http = axios.create({
   timeout: 20000,
 });
 
+// 真正要访问 Telegram 的动作（加群 / 探测 / 导入 / 在线补搜）每次都要新建连接、
+// 解析实体，实测加盟一次约 30 秒——按默认 20 秒会在客户端先超时，
+// 而服务端其实已经成功了，用户看到的却是报错。
+export const TELEGRAM_TIMEOUT = 180000;
+
 http.interceptors.request.use((config) => {
   if (auth.token) {
     config.headers.Authorization = `Bearer ${auth.token}`;
@@ -72,10 +77,15 @@ export const accountsApi = {
   update: (id, payload) => http.patch(`/api/accounts/${id}`, payload),
   remove: (id) => http.delete(`/api/accounts/${id}`),
   loginStart: (id, forceSms = false) =>
-    http.post(`/api/accounts/${id}/login/start`, { force_sms: forceSms }),
-  loginVerify: (id, code) => http.post(`/api/accounts/${id}/login/verify`, { code }),
+    http.post(
+      `/api/accounts/${id}/login/start`,
+      { force_sms: forceSms },
+      { timeout: TELEGRAM_TIMEOUT },
+    ),
+  loginVerify: (id, code) =>
+    http.post(`/api/accounts/${id}/login/verify`, { code }, { timeout: TELEGRAM_TIMEOUT }),
   loginPassword: (id, password) =>
-    http.post(`/api/accounts/${id}/login/password`, { password }),
+    http.post(`/api/accounts/${id}/login/password`, { password }, { timeout: TELEGRAM_TIMEOUT }),
   loginCancel: (id) => http.post(`/api/accounts/${id}/login/cancel`),
   loginStatus: (id) => http.get(`/api/accounts/${id}/login/status`),
   refreshCredentials: (id) => http.post(`/api/accounts/${id}/credentials/refresh`),
@@ -190,15 +200,18 @@ export const resourcesApi = {
   overview: () => http.get("/api/resources/overview"),
   facets: () => http.get("/api/resources/facets"),
   counts: () => http.get("/api/resources/counts"),
-  quota: () => http.get("/api/resources/quota"),
   detail: (id) => http.get(`/api/resources/${id}`),
-  discoverOnline: (payload) => http.post("/api/resources/discover-online", payload),
-  import: (payload) => http.post("/api/resources/import", payload),
-  refresh: (payload) => http.post("/api/resources/refresh", payload),
-  refreshOne: (id, params) => http.post(`/api/resources/${id}/refresh`, null, { params }),
+  discoverOnline: (payload) =>
+    http.post("/api/resources/discover-online", payload, { timeout: TELEGRAM_TIMEOUT }),
+  import: (payload) => http.post("/api/resources/import", payload, { timeout: TELEGRAM_TIMEOUT }),
+  refresh: (payload) =>
+    http.post("/api/resources/refresh", payload, { timeout: TELEGRAM_TIMEOUT }),
+  refreshOne: (id, params) =>
+    http.post(`/api/resources/${id}/refresh`, null, { params, timeout: TELEGRAM_TIMEOUT }),
   update: (id, payload) => http.patch(`/api/resources/${id}`, payload),
   adopt: (id, payload) => http.post(`/api/resources/${id}/adopt`, payload),
-  join: (payload) => http.post("/api/resources/join", payload),
+  // 加盟是同步执行的：实测一次约 30 秒，必须给它更长的超时
+  join: (payload) => http.post("/api/resources/join", payload, { timeout: TELEGRAM_TIMEOUT }),
   directorySources: () => http.get("/api/resources/directory/sources"),
   directoryRuns: (params) => http.get("/api/resources/directory/runs", { params }),
   directorySync: (payload) => http.post("/api/resources/directory/sync", payload),

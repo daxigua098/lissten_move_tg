@@ -175,7 +175,6 @@ async def enqueue(
         raise ValidationFailedError(f"动作必须是 {'/'.join(JOIN_ACTIONS)} 之一")
     if resource.is_blacklisted and action == JOIN_ACTION_JOIN:
         raise ConflictError("该资源在黑名单里，不会加入")
-
     resolved_account = await resolve_account_id(session, account_id)
     existing = await session.scalar(
         select(ResourceJoinTask).where(
@@ -186,6 +185,25 @@ async def enqueue(
     )
     if existing is not None:
         return existing
+
+    if action == JOIN_ACTION_JOIN:
+        # 上一次加群成功过、之后也没退出 → 不必再排（探测能读到 ≠ 已经加入：
+        # 公开频道的资料未加入也能读到，所以这里只认加群记录本身）
+        last_join = await session.scalar(
+            select(ResourceJoinTask)
+            .where(
+                ResourceJoinTask.resource_id == resource.id,
+                ResourceJoinTask.action == JOIN_ACTION_JOIN,
+            )
+            .order_by(ResourceJoinTask.id.desc())
+            .limit(1)
+        )
+        if (
+            last_join is not None
+            and last_join.status == JOIN_SUCCESS
+            and resource.resource_state != STATE_LEFT
+        ):
+            raise ConflictError("账号已经在这个群 / 频道里了")
 
     slot = await next_slot(
         session,

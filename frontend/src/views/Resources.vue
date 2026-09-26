@@ -26,6 +26,8 @@ const onlineEnabled = ref(true);
 const onlineRunning = ref(false);
 const onlineResult = ref(null);
 const sensitiveVisible = ref(false);
+/** 正在执行「让账号加入」的资源 id：按钮转圈，避免连点。 */
+const joining = reactive(new Set());
 
 const filters = reactive({
   keyword: "",
@@ -402,6 +404,14 @@ function reportJoin(data) {
 
 /** 卡片/详情上的「让账号加入」：排进限速队列。 */
 async function enqueueJoinOne(row) {
+  if (joining.has(row.id)) return;
+  joining.add(row.id);
+  // 加盟要连 Telegram，一次大约 30 秒：先把等待说清楚，别让人以为卡死了
+  const tip = ElMessage({
+    message: `正在让账号加入「${row.name}」…通常需要 20~40 秒`,
+    type: "info",
+    duration: 0,
+  });
   try {
     const { data } = await resourcesApi.join({ ids: [row.id], execute_now: true });
     if (data.failures?.length) {
@@ -409,10 +419,14 @@ async function enqueueJoinOne(row) {
     } else {
       reportJoin(data);
     }
+  } catch (error) {
+    // 客户端超时不代表服务端没做：提示去刷新看状态，接着刷新列表
+    ElMessage.error(`请求没在客户端等到结果（${error.message}），请刷新看状态`);
+  } finally {
+    tip.close();
+    joining.delete(row.id);
     await load();
     if (drawerVisible.value && detail.value?.id === row.id) await openDetail(row);
-  } catch (error) {
-    ElMessage.error(error.message);
   }
 }
 
@@ -872,9 +886,10 @@ onMounted(async () => {
             size="small"
             link
             type="warning"
+            :loading="joining.has(row.id)"
             @click="enqueueJoinOne(row)"
           >
-            让账号加入
+            {{ joining.has(row.id) ? "加入中…" : "让账号加入" }}
           </el-button>
           <el-button size="small" link @click="toggleFavorite(row, !row.is_favorite)">
             {{ row.is_favorite ? "取消收藏" : "收藏" }}
@@ -1020,9 +1035,10 @@ onMounted(async () => {
                 size="small"
                 type="warning"
                 plain
+                :loading="joining.has(detail.id)"
                 @click="enqueueJoinOne(detail)"
               >
-                让账号加入
+                {{ joining.has(detail.id) ? "加入中…" : "让账号加入" }}
               </el-button>
               <el-button size="small" @click="toggleFavorite(detail, !detail.is_favorite)">
                 {{ detail.is_favorite ? "取消收藏" : "收藏" }}

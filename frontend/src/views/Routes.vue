@@ -77,7 +77,8 @@ function openEdit(row) {
 
 async function toggleEnabled(row) {
   try {
-    await routesApi.update(row.id, { enabled: row.enabled });
+    // 多源线路是「一个源一行」，启停要整条一起改
+    await routesApi.update(row.id, { enabled: row.enabled, apply_to_bundle: true });
     ElMessage.success(row.enabled ? "线路已启用" : "线路已停用");
   } catch (error) {
     ElMessage.error(error.message);
@@ -187,8 +188,15 @@ onMounted(load);
     <el-card shadow="never" class="panel-gap">
       <template #header>线路列表</template>
       <el-table :data="routes" size="small" border>
-        <el-table-column prop="id" label="ID" width="60" />
-        <el-table-column prop="name" label="线路名" min-width="200" />
+        <el-table-column prop="id" label="ID" width="70" />
+        <el-table-column label="线路名" min-width="200">
+          <template #default="{ row }">
+            <span>{{ row.name }}</span>
+            <el-tag v-if="row.source_count > 1" size="small" type="info" class="bundle-tag">
+              多源 · {{ row.source_count }}
+            </el-tag>
+          </template>
+        </el-table-column>
         <el-table-column label="类型" width="90">
           <template #default="{ row }">
             <el-tag :type="row.business_type === 'A' ? 'success' : 'warning'" size="small">
@@ -196,27 +204,35 @@ onMounted(load);
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="监听源" min-width="150">
+        <!-- 一条线路一行：多个监听源全部列在这一格里 -->
+        <el-table-column label="监听源" min-width="220">
           <template #default="{ row }">
-            <span>{{ row.source?.name || row.source?.title || "-" }}</span>
-            <el-tag
-              v-if="(row.source_chat_ids?.length || 1) > 1"
-              size="small"
-              type="info"
-              class="bundle-tag"
-            >
-              多源 · {{ row.source_chat_ids.length }}
-            </el-tag>
+            <span v-if="row.sources.length" class="chip-list">
+              <span v-for="item in row.sources" :key="item.chat_id" class="chip-item">
+                <span>{{ item.name }}</span>
+                <el-tag v-if="!item.enabled" size="small" type="info">已停</el-tag>
+              </span>
+            </span>
+            <span v-else class="card-hint">未配置</span>
           </template>
         </el-table-column>
-        <el-table-column label="接收目标" min-width="200">
+        <el-table-column label="接收目标" min-width="240">
           <template #default="{ row }">
-            <span v-if="row.targets.length" class="target-list">
-              <span v-for="item in row.targets" :key="item.chat_id" class="target-item">
-                {{ item.name || item.title || item.username }}
+            <span v-if="row.targets.length" class="chip-list">
+              <span v-for="item in row.targets" :key="item.chat_id" class="chip-item">
+                <span>{{ item.name || item.title || item.username }}</span>
                 <el-tag size="small" :type="targetRoleTagType(item.target_role)">
                   {{ targetRoleShortLabel(item.target_role) }}
                 </el-tag>
+                <!-- 只在部分监听源上生效的目标要标出来，否则看不出一致性 -->
+                <el-tag
+                  v-if="item.source_count < row.source_count"
+                  size="small"
+                  type="warning"
+                >
+                  仅 {{ item.source_count }}/{{ row.source_count }} 个源
+                </el-tag>
+                <el-tag v-if="!item.enabled" size="small" type="info">已停</el-tag>
               </span>
             </span>
             <span v-else class="card-hint">未配置</span>
@@ -232,7 +248,14 @@ onMounted(load);
         </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
-            <el-switch v-model="row.enabled" size="small" @change="() => toggleEnabled(row)" />
+            <el-switch
+              v-model="row.enabled"
+              size="small"
+              @change="() => toggleEnabled(row)"
+            />
+            <el-tag v-if="row.mixed_enabled" size="small" type="warning" class="bundle-tag">
+              部分停用
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right">
@@ -300,13 +323,13 @@ onMounted(load);
   line-height: 1.6;
 }
 
-.target-list {
+.chip-list {
   display: inline-flex;
   flex-wrap: wrap;
   gap: 6px 10px;
 }
 
-.target-item {
+.chip-item {
   display: inline-flex;
   align-items: center;
   gap: 4px;

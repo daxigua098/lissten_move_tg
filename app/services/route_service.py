@@ -63,6 +63,30 @@ async def list_routes(
     offset: int = 0,
 ) -> tuple[list[Route], int]:
     """分页查询线路。"""
+    conditions = _route_conditions(
+        business_type=business_type,
+        enabled=enabled,
+        source_chat_id=source_chat_id,
+        keyword=keyword,
+    )
+    statement = select(Route).order_by(Route.priority, Route.id)
+    count_statement = select(func.count()).select_from(Route)
+    for condition in conditions:
+        statement = statement.where(condition)
+        count_statement = count_statement.where(condition)
+    rows = list(await session.scalars(statement.limit(limit).offset(offset)))
+    total = int(await session.scalar(count_statement) or 0)
+    return rows, total
+
+
+def _route_conditions(
+    *,
+    business_type: str | None = None,
+    enabled: bool | None = None,
+    source_chat_id: int | None = None,
+    keyword: str | None = None,
+) -> list[Any]:
+    """把列表筛选翻成 SQL 条件。"""
     conditions = []
     if business_type:
         conditions.append(Route.business_type == business_type)
@@ -72,15 +96,59 @@ async def list_routes(
         conditions.append(Route.source_chat_id == source_chat_id)
     if keyword:
         conditions.append(Route.name.like(f"%{keyword}%"))
+    return conditions
 
+
+# 分组前的扫描上限：线路是几十条的量级，真到上千条说明该换成分页分组了
+MAX_GROUP_SCAN = 5000
+
+
+def group_routes(rows: list[Route]) -> list[list[Route]]:
+    """把线路行按「逻辑线路」聚起来（界面上的一条线路）。
+
+    多源线路是「一个源一行、共用 ``bundle_id``」（水位线按线路+目标记，
+    必须一行一个源），所以列表要按 ``bundle_id`` 合回去；没有 bundle 的行各自成组。
+    """
+    ordered: list[list[Route]] = []
+    index: dict[str, int] = {}
+    for row in rows:
+        key = row.bundle_id or f"route:{row.id}"
+        position = index.get(key)
+        if position is None:
+            index[key] = len(ordered)
+            ordered.append([row])
+        else:
+            ordered[position].append(row)
+    return ordered
+
+
+async def list_route_groups(
+    session: AsyncSession,
+    *,
+    business_type: str | None = None,
+    enabled: bool | None = None,
+    source_chat_id: int | None = None,
+    keyword: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[list[Route]], int]:
+    """按「逻辑线路」分页：多源线路聚成一条记录。
+
+    ``source_chat_id`` / ``enabled`` 在**分组后**判断，这样命中一条线路时
+    返回的是它完整的源与目标，而不是被筛剩下的那部分。
+    """
+    conditions = _route_conditions(business_type=business_type, keyword=keyword)
     statement = select(Route).order_by(Route.priority, Route.id)
-    count_statement = select(func.count()).select_from(Route)
     for condition in conditions:
         statement = statement.where(condition)
-        count_statement = count_statement.where(condition)
-    rows = list(await session.scalars(statement.limit(limit).offset(offset)))
-    total = int(await session.scalar(count_statement) or 0)
-    return rows, total
+    rows = list(await session.scalars(statement.limit(MAX_GROUP_SCAN)))
+    groups = group_routes(rows)
+    if source_chat_id is not None:
+        groups = [item for item in groups if any(r.source_chat_id == source_chat_id for r in item)]
+    if enabled is not None:
+        groups = [item for item in groups if all(r.enabled for r in item) is enabled]
+    total = len(groups)
+    return groups[offset : offset + limit], total
 
 
 async def get_route(session: AsyncSession, route_id: int) -> Route | None:

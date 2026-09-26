@@ -424,11 +424,20 @@ async def test_target_switch_disables_delivery_in_all_routes(
     assert detail["targets"][0]["enabled"] is False
 
 
-async def test_route_with_multiple_sources_keeps_one_route_per_source(
+async def _db_routes() -> tuple[list, int]:
+    """直接看库里的线路行（列表接口已经按线路分组，不能用来验证行数）。"""
+    from app.db.session import session_scope
+    from app.services import route_service
+
+    async with session_scope() as session:
+        return await route_service.list_routes(session)
+
+
+async def test_route_with_multiple_sources_shows_as_single_row(
     chat_client,
     fake_account_client,
 ) -> None:
-    """多选监听源：一个源一条线路（保证水位线准确），共用 bundle。"""
+    """多选监听源：库里仍是一个源一行，但列表按线路聚成一行。"""
     source_a = make_entity(3001, "素材源频道", broadcast=True, username="src_ch")
     source_b = make_entity(3003, "备用源群", participants_count=88)
     main = make_entity(3002, "我的主频道", broadcast=True, username="main_ch")
@@ -468,12 +477,26 @@ async def test_route_with_multiple_sources_keeps_one_route_per_source(
     assert body["created"] == 2
     assert len(body["source_chat_ids"]) == 2
 
+    # 库里依然是一个源一行 —— 水位线是按「线路 + 目标」记的，合并会串
+    rows, row_total = await _db_routes()
+    assert row_total == 2
+    assert {item.source_chat_id for item in rows} == {first, second}
+
+    # 但界面上看到的是一条线路，两个源都在同一格里
     listing = (await chat_client.get("/api/routes", headers=_headers())).json()
-    assert listing["total"] == 2
-    assert all(len(item["source_chat_ids"]) == 2 for item in listing["items"])
+    assert listing["total"] == 1
+    item = listing["items"][0]
+    assert item["name"] == "多源监听"
+    assert item["source_count"] == 2
+    assert {source["chat_id"] for source in item["sources"]} == {first, second}
+    assert item["target_count"] == 1
+    assert item["targets"][0]["source_count"] == 2
+    assert len(item["route_ids"]) == 2
+    assert item["bundle_size"] == 2
+    assert item["mixed_enabled"] is False
 
     # 取消其中一个源：对应的那一行要删掉
-    route_id = listing["items"][0]["id"]
+    route_id = item["id"]
     patched = await chat_client.patch(
         f"/api/routes/{route_id}",
         headers=_headers(),
@@ -483,6 +506,9 @@ async def test_route_with_multiple_sources_keeps_one_route_per_source(
     after = (await chat_client.get("/api/routes", headers=_headers())).json()
     assert after["total"] == 1
     assert after["items"][0]["source_chat_ids"] == [first]
+    assert after["items"][0]["source_count"] == 1
+    _rows, after_row_total = await _db_routes()
+    assert after_row_total == 1
 
     # 删除整条线路
     removed = await chat_client.delete(f"/api/routes/{route_id}", headers=_headers())
@@ -584,7 +610,100 @@ async def test_add_second_source_to_single_route_joins_same_bundle(
     assert patched.status_code == 200
     assert sorted(patched.json()["source_chat_ids"]) == sorted([first, second])
     listing = (await chat_client.get("/api/routes", headers=_headers())).json()
+    # 两行共用同一个 bundle：界面上就是一条线路、两个源
+    assert listing["total"] == 1
+    item = listing["items"][0]
+    assert item["bundle_id"] is not None
+    assert item["bundle_size"] == 2
+    assert {source["chat_id"] for source in item["sources"]} == {first, second}
+
+
+async def test_grouped_list_keeps_different_routes_apart(
+    chat_client,
+    fake_account_client,
+) -> None:
+    """不同名称的线路不能被合并成一行。"""
+    ids = await _prepare(chat_client, fake_account_client)
+    for name, target_key in (("线路甲", "main"), ("线路乙", "lead")):
+        created = await chat_client.post(
+            "/api/routes",
+            headers=_headers(),
+            json={
+                "name": name,
+                "source_chat_id": ids["source"],
+                "business_type": "A",
+                "target_chat_ids": [ids[target_key]],
+                "a_config": {"ad_policy": "none"},
+            },
+        )
+        assert created.status_code == 201
+
+    listing = (await chat_client.get("/api/routes", headers=_headers())).json()
+
     assert listing["total"] == 2
-    # 两行必须共用同一个 bundle，界面上才算一条线路
-    bundles = {item["bundle_id"] for item in listing["items"]}
-    assert len(bundles) == 1 and None not in bundles
+    assert sorted(item["name"] for item in listing["items"]) == ["线路乙", "线路甲"]
+    assert all(item["source_count"] == 1 for item in listing["items"])
+
+
+async def test_bundle_toggle_and_target_add_apply_to_every_source(
+    chat_client,
+    fake_account_client,
+) -> None:
+    """列表页按线路操作：启停与接收目标都要落到这一组的所有行上。"""
+    ids = await _prepare(chat_client, fake_account_client)
+    source_b = make_entity(3005, "备用源频道", broadcast=True, username="src_backup")
+    fake_account_client.dialogs = [*fake_account_client.dialogs, source_b]
+    fake_account_client.entities["src_backup"] = source_b
+    await chat_client.post("/api/sources/sync", headers=_headers())
+    await chat_client.post("/api/sources", headers=_headers(), json={"chat_ids": [ids["source"]]})
+    pool = (await chat_client.get("/api/sources/available", headers=_headers())).json()["items"]
+    backup_id = next(item["id"] for item in pool if item["title"] == "备用源频道")
+    await chat_client.post("/api/sources", headers=_headers(), json={"chat_ids": [backup_id]})
+
+    created = await chat_client.post(
+        "/api/routes",
+        headers=_headers(),
+        json={
+            "name": "双源线路",
+            "source_chat_ids": [ids["source"], backup_id],
+            "business_type": "A",
+            "target_chat_ids": [ids["main"]],
+            "a_config": {"ad_policy": "none"},
+        },
+    )
+    route_id = created.json()["id"]
+
+    # 整条线路停用：两行都要停
+    toggled = await chat_client.patch(
+        f"/api/routes/{route_id}",
+        headers=_headers(),
+        json={"enabled": False, "apply_to_bundle": True},
+    )
+    assert toggled.status_code == 200
+    rows, _total = await _db_routes()
+    assert [item.enabled for item in rows] == [False, False]
+    listing = (await chat_client.get("/api/routes", headers=_headers())).json()["items"][0]
+    assert listing["enabled"] is False
+    assert listing["mixed_enabled"] is False
+
+    # 加一个接收目标：一组里的每一行都要加上
+    added = await chat_client.post(
+        f"/api/routes/{route_id}/targets",
+        headers=_headers(),
+        json={"chat_ids": [ids["lead"]]},
+    )
+    assert added.status_code == 201
+    assert added.json()["added"] == [ids["lead"]]
+    listing = (await chat_client.get("/api/routes", headers=_headers())).json()["items"][0]
+    assert listing["target_count"] == 2
+    # 两个源都挂上了这条目标，才不会出现「只对其中一个源生效」
+    assert all(item["source_count"] == listing["source_count"] for item in listing["targets"])
+
+    # 移除目标也是整条移除
+    removed = await chat_client.delete(
+        f"/api/routes/{route_id}/targets/{ids['lead']}",
+        headers=_headers(),
+    )
+    assert removed.status_code == 200
+    listing = (await chat_client.get("/api/routes", headers=_headers())).json()["items"][0]
+    assert listing["target_count"] == 1

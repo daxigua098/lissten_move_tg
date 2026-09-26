@@ -109,6 +109,86 @@ async def serialize_route(session: AsyncSession, route: Route) -> dict[str, Any]
     }
 
 
+async def serialize_route_group(session: AsyncSession, routes: list[Route]) -> dict[str, Any]:
+    """一条「逻辑线路」：多源线路的所有行聚成一条记录。
+
+    代表行（第一条）提供配置与 id —— 编辑 / 删除 / 启停都按**整条线路**处理；
+    监听源与接收目标在这里汇总：源按行列出，目标按 chat_id 去重。
+    """
+    payload = await serialize_route(session, routes[0])
+    sources: list[dict[str, Any]] = []
+    targets: dict[int, dict[str, Any]] = {}
+    warnings: list[str] = []
+
+    for route in routes:
+        source = await chat_service.get_chat(session, route.source_chat_id)
+        if source is not None:
+            sources.append(
+                {
+                    "chat_id": source.id,
+                    "name": (
+                        source.display_name or source.title or source.username or f"#{source.tg_id}"
+                    ),
+                    "username": source.username,
+                    "chat_type": source.chat_type,
+                    "enabled": route.enabled,
+                }
+            )
+        progress = {
+            item.target_chat_id: item
+            for item in await route_service.list_progress(session, route.id)
+        }
+        for row in await route_service.list_route_targets(session, route.id):
+            chat = await chat_service.get_chat(session, row.target_chat_id)
+            if chat is None:
+                continue
+            item = targets.get(row.target_chat_id)
+            if item is None:
+                row_progress = progress.get(row.target_chat_id)
+                if chat.can_post is False:
+                    warnings.append(f"接收目标「{chat.title or chat.tg_id}」没有发帖权限")
+                item = {
+                    "chat_id": chat.id,
+                    "title": chat.title,
+                    "display_name": chat.display_name,
+                    "name": chat.display_name or chat.title or chat.username or f"#{chat.tg_id}",
+                    "username": chat.username,
+                    "chat_type": chat.chat_type,
+                    "is_private": chat.is_private,
+                    "can_post": chat.can_post,
+                    "target_role": row.target_role,
+                    "target_role_label": TARGET_ROLE_LABEL.get(row.target_role, row.target_role),
+                    "enabled": row.enabled,
+                    # 这条目标挂在了几个源上；小于线路源数说明只在部分源上生效
+                    "source_count": 1,
+                    # 水位线是按「源 + 目标」记的，这里给代表行的值（列表不展示，编辑器按单行读）
+                    "last_delivered_message_id": (
+                        row_progress.last_delivered_message_id if row_progress else 0
+                    ),
+                    "backfill_status": (row_progress.backfill_status if row_progress else "idle"),
+                }
+                targets[row.target_chat_id] = item
+            else:
+                item["enabled"] = bool(item["enabled"] and row.enabled)
+                item["source_count"] += 1
+
+    enabled_flags = [bool(route.enabled) for route in routes]
+    payload.update(
+        {
+            "route_ids": [route.id for route in routes],
+            "bundle_size": len(routes),
+            "sources": sources,
+            "source_count": len(sources),
+            "targets": list(targets.values()),
+            "target_count": len(targets),
+            "enabled": all(enabled_flags),
+            "mixed_enabled": any(enabled_flags) and not all(enabled_flags),
+            "warnings": list(dict.fromkeys(warnings)),
+        }
+    )
+    return payload
+
+
 @router.get("")
 async def list_routes(
     business_type: str | None = Query(default=None),
@@ -119,8 +199,8 @@ async def list_routes(
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """线路列表。"""
-    rows, total = await route_service.list_routes(
+    """线路列表：按「逻辑线路」分组，多源线路只占一行。"""
+    groups, total = await route_service.list_route_groups(
         session,
         business_type=business_type,
         enabled=enabled,
@@ -130,7 +210,7 @@ async def list_routes(
         offset=offset,
     )
     return {
-        "items": [await serialize_route(session, row) for row in rows],
+        "items": [await serialize_route_group(session, group) for group in groups],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -228,14 +308,17 @@ async def update_route(
         "b_config": payload.b_config,
     }
     route = await route_service.update_route(session, route_id, **fields)
+    siblings = await route_service.bundle_routes(session, route)
     if payload.source_chat_ids:
         await route_service.sync_route_bundle_sources(
             session,
             route,
             payload.source_chat_ids,
         )
-        # 配置同步到同组的其他线路（多源时它们是同一套规则）
-        for sibling in await route_service.bundle_routes(session, route):
+        siblings = await route_service.bundle_routes(session, route)
+    # 列表页的整组启停 / 编辑器改了配置：同组的其他行一起改（多源时它们是同一套规则）
+    if payload.source_chat_ids or payload.apply_to_bundle:
+        for sibling in siblings:
             if sibling.id != route_id:
                 await route_service.update_route(session, sibling.id, **fields)
     route = await route_service.get_route(session, route_id)
@@ -262,11 +345,19 @@ async def add_targets(
     payload: RouteTargetAddRequest,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """给线路追加接收目标。"""
-    added, skipped = await route_service.add_targets(session, route_id, payload.chat_ids)
+    """给线路追加接收目标（多源线路：整条一起加，避免只对部分源生效）。"""
+    route = await route_service.get_route(session, route_id)
+    if route is None:
+        raise NotFoundError("线路不存在")
+    added: list[Any] = []
+    skipped: list[Any] = []
+    for item in await route_service.bundle_routes(session, route):
+        rows, missed = await route_service.add_targets(session, item.id, payload.chat_ids)
+        added.extend(rows)
+        skipped.extend(missed)
     return {
-        "added": [item.target_chat_id for item in added],
-        "skipped": skipped,
+        "added": list(dict.fromkeys(item.target_chat_id for item in added)),
+        "skipped": list(dict.fromkeys(skipped)),
     }
 
 
@@ -277,14 +368,13 @@ async def set_target_enabled(
     payload: EnabledUpdate,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """单个接收目标的启停。"""
-    row = await route_service.set_target_enabled(
-        session,
-        route_id,
-        chat_id,
-        payload.enabled,
-    )
-    return {"chat_id": row.target_chat_id, "enabled": row.enabled}
+    """接收目标的启停（多源线路：整条一起改）。"""
+    route = await route_service.get_route(session, route_id)
+    if route is None:
+        raise NotFoundError("线路不存在")
+    for item in await route_service.bundle_routes(session, route):
+        await route_service.set_target_enabled(session, item.id, chat_id, payload.enabled)
+    return {"chat_id": chat_id, "enabled": payload.enabled}
 
 
 @router.delete("/{route_id}/targets/{chat_id}")
@@ -293,8 +383,12 @@ async def remove_target(
     chat_id: int,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """移除线路的接收目标。"""
-    await route_service.remove_target(session, route_id, chat_id)
+    """移除线路的接收目标（多源线路：整条一起移除）。"""
+    route = await route_service.get_route(session, route_id)
+    if route is None:
+        raise NotFoundError("线路不存在")
+    for item in await route_service.bundle_routes(session, route):
+        await route_service.remove_target(session, item.id, chat_id)
     return {"route_id": route_id, "chat_id": chat_id, "removed": True}
 
 
@@ -326,16 +420,21 @@ async def reset_progress(
     payload: ResetProgressRequest,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """重置某个目标的搬运进度（需输入 RESET 确认）。"""
-    progress = await route_service.reset_target_progress(
-        session,
-        route_id,
-        chat_id,
-        confirm=payload.confirm,
-    )
+    """重置某个目标的搬运进度（需输入 RESET 确认；多源线路整条一起重置）。"""
+    route = await route_service.get_route(session, route_id)
+    if route is None:
+        raise NotFoundError("线路不存在")
+    progress = None
+    for item in await route_service.bundle_routes(session, route):
+        progress = await route_service.reset_target_progress(
+            session,
+            item.id,
+            chat_id,
+            confirm=payload.confirm,
+        )
     return {
-        "route_id": progress.route_id,
-        "target_chat_id": progress.target_chat_id,
-        "last_delivered_message_id": progress.last_delivered_message_id,
+        "route_id": route_id,
+        "target_chat_id": chat_id,
+        "last_delivered_message_id": progress.last_delivered_message_id if progress else 0,
         "reset": True,
     }

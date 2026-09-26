@@ -50,6 +50,8 @@ class RouteUpdateRequest(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=128)
     source_chat_ids: list[int] | None = None
+    # 列表页按「线路」操作时置 true：同一组的其他行一起改（多源线路共用一套配置）
+    apply_to_bundle: bool = False
     business_type: BusinessLiteral | None = None
     exec_account_id: int | None = None
     notify_bot_id: int | None = None

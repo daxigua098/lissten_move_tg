@@ -353,6 +353,51 @@ async def test_resource_exposes_public_link_and_join_state(
     assert detail.json()["link"] == "https://t.me/public_group"
 
 
+async def test_join_force_retries_during_backoff(
+    resource_api_client,
+    fake_resource_client,
+) -> None:
+    """失败进退避后，用户点「立即重试」要能马上再试一次。"""
+    headers = await _token(resource_api_client)
+    await _seed_resource(fake_resource_client, tg_id=4501, username="retry_me")
+    await resource_api_client.post(
+        "/api/resources/import",
+        headers=headers,
+        json={"inputs": ["https://t.me/retry_me"]},
+    )
+    resource_id = (await resource_api_client.get("/api/resources", headers=headers)).json()[
+        "items"
+    ][0]["id"]
+
+    # 第一次加群失败 → 任务回到 pending 并退避
+    fake_resource_client.join_errors[4501] = RuntimeError("boom")
+    failed = await resource_api_client.post(
+        "/api/resources/join",
+        headers=headers,
+        json={"ids": [resource_id], "execute_now": True},
+    )
+    assert failed.status_code == 201
+    assert failed.json()["executed"][0]["status"] == "pending"
+
+    # 不点重试：退避没到，不会再执行
+    waited = await resource_api_client.post(
+        "/api/resources/join",
+        headers=headers,
+        json={"ids": [resource_id], "execute_now": True},
+    )
+    assert waited.json()["executed"] == []
+
+    # 点「立即重试」：忽略退避，马上再跑一次（这次让它成功）
+    fake_resource_client.join_errors.clear()
+    retried = await resource_api_client.post(
+        "/api/resources/join",
+        headers=headers,
+        json={"ids": [resource_id], "execute_now": True, "force": True},
+    )
+    assert retried.json()["executed"][0]["status"] == "success"
+    assert 4501 in fake_resource_client.joined
+
+
 async def test_overview_reports_runtime_state(resource_api_client) -> None:
     """概览要说明运行时到底在不在跑——它停了加群与探测都不会执行。"""
     headers = await _token(resource_api_client)

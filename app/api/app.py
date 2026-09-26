@@ -35,6 +35,7 @@ from app.api.routers import (
     uploads,
     users,
 )
+from app.core.account_client_pool import close_account_clients
 from app.core.config import AppConfig, load_config
 from app.core.demo_client import demo_account_client_factory, demo_bot_client_factory
 from app.core.paths import ensure_dir
@@ -65,6 +66,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _warn_if_no_super_admin()
         yield
     finally:
+        # 池化过执行账号连接，退出前要断开
+        await close_account_clients()
         await dispose_database()
 
 

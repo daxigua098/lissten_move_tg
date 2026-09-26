@@ -29,7 +29,7 @@ from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status
 from app.core.telegram_client import ChatProfile
 from app.db.base import utc_now
-from app.db.models import ROLE_SUB_ADMIN
+from app.db.models import JOIN_PENDING, ROLE_SUB_ADMIN
 from app.services import (
     chat_service,
     chat_sync_service,
@@ -358,30 +358,24 @@ async def discover_online(
     """
     config = _config(request)
     fetcher = _directory_fetcher(request)
-    account: Any = None
-    client: Any = None
     try:
-        with contextlib.suppress(Exception):
-            account, client = await _open_client(
-                session,
-                config,
-                account_id=payload.account_id,
-                client_factory=_client_factory(request),
-            )
-        return await resource_discover_service.search_online(
+        async with chat_sync_service.account_client_optional(
             session,
             config,
-            client,
-            keywords=payload.keywords,
-            sites=payload.sites,
-            limit=payload.limit,
-            account_id=account.id if account else None,
-            directory_fetcher=fetcher,
-        )
+            account_id=payload.account_id,
+            client_factory=_client_factory(request),
+        ) as (account, client):
+            return await resource_discover_service.search_online(
+                session,
+                config,
+                client,
+                keywords=payload.keywords,
+                sites=payload.sites,
+                limit=payload.limit,
+                account_id=account.id if account else None,
+                directory_fetcher=fetcher,
+            )
     finally:
-        if client is not None:
-            with contextlib.suppress(Exception):
-                await client.disconnect()
         with contextlib.suppress(Exception):
             await fetcher.aclose()
 
@@ -394,13 +388,12 @@ async def import_resources(
 ) -> dict[str, Any]:
     """手动添加（F-R11）：粘贴链接 / 用户名 / ID，入库后立即探测。"""
     config = _config(request)
-    account, client = await _open_client(
+    async with chat_sync_service.account_client(
         session,
         config,
         account_id=payload.account_id,
         client_factory=_client_factory(request),
-    )
-    try:
+    ) as (account, client):
         return await resource_probe_service.import_resources(
             session,
             config,
@@ -410,9 +403,6 @@ async def import_resources(
             account_id=account.id if account else None,
             probe=payload.probe,
         )
-    finally:
-        with contextlib.suppress(Exception):
-            await client.disconnect()
 
 
 @router.post("/refresh")
@@ -430,13 +420,12 @@ async def refresh_resources(
             raise NotFoundError(f"资源 {resource_id} 不存在")
         resources.append(resource)
 
-    account, client = await _open_client(
+    async with chat_sync_service.account_client(
         session,
         config,
         account_id=payload.account_id,
         client_factory=_client_factory(request),
-    )
-    try:
+    ) as (account, client):
         result = await resource_probe_service.probe_many(
             session,
             config,
@@ -445,9 +434,6 @@ async def refresh_resources(
             account_id=account.id if account else None,
             sample_depth=payload.sample_depth,
         )
-    finally:
-        with contextlib.suppress(Exception):
-            await client.disconnect()
     return {"account": account.name if account else None, **result}
 
 
@@ -508,34 +494,33 @@ async def _run_queued_now(
     result: dict[str, Any],
 ) -> None:
     """把到点的队列任务立刻跑掉（限速已经体现在 scheduled_at 上）。"""
+    actor = str(identity.get("username") or "api")
+    moment = utc_now()
     try:
-        account, client = await _open_client(
+        async with chat_sync_service.account_client(
             session,
             config,
             account_id=payload.account_id,
             client_factory=_client_factory(request),
-        )
+        ) as (account, client):
+            for task in tasks:
+                # force：用户点了「立即重试」，把退避中的任务拉回现在执行
+                if payload.force and task.status == JOIN_PENDING:
+                    task.scheduled_at = moment
+                    await session.commit()
+                if not resource_join_service.is_due(task, now=moment):
+                    continue  # 超出限速：留在队列里
+                outcome = await resource_join_service.run_task(
+                    session,
+                    config,
+                    client,
+                    task,
+                    actor=actor,
+                )
+                result["executed"].append({"resource_id": task.resource_id, **outcome})
+            result["account"] = account.name if account else None
     except Exception as exc:  # noqa: BLE001 - 没有可用账号时保持排队
         result["note"] = f"已排队，但立刻执行没成功：{str(exc)[:120]}"
-        return
-    actor = str(identity.get("username") or "api")
-    moment = utc_now()
-    try:
-        for task in tasks:
-            if not resource_join_service.is_due(task, now=moment):
-                continue  # 超出限速：留在队列里
-            outcome = await resource_join_service.run_task(
-                session,
-                config,
-                client,
-                task,
-                actor=actor,
-            )
-            result["executed"].append({"resource_id": task.resource_id, **outcome})
-        result["account"] = account.name if account else None
-    finally:
-        with contextlib.suppress(Exception):
-            await client.disconnect()
 
 
 # ------------------------------------------------------------------ 单条资源
@@ -568,13 +553,12 @@ async def refresh_one(
     """刷新单条资源。"""
     config = _config(request)
     resource = await resource_service.require_resource(session, resource_id)
-    account, client = await _open_client(
+    async with chat_sync_service.account_client(
         session,
         config,
         account_id=account_id,
         client_factory=_client_factory(request),
-    )
-    try:
+    ) as (account, client):
         outcome = await resource_probe_service.probe_resource(
             session,
             config,
@@ -583,9 +567,6 @@ async def refresh_one(
             account_id=account.id if account else None,
             sample_depth=sample_depth,
         )
-    finally:
-        with contextlib.suppress(Exception):
-            await client.disconnect()
     return {
         "id": resource_id,
         "result": outcome.result,
@@ -708,19 +689,3 @@ async def _ensure_source_chat(session: AsyncSession, resource: Any) -> Any:
     )
     chat = await chat_service.upsert_chat_from_profile(session, profile, joined=True)
     return await chat_service.set_source(session, chat, enabled=True)
-
-
-async def _open_client(
-    session: AsyncSession,
-    config: AppConfig,
-    *,
-    account_id: int | None,
-    client_factory: Any,
-) -> tuple[Any, Any]:
-    """取执行账号并打开客户端。"""
-    return await chat_sync_service.open_account_client(
-        session,
-        config,
-        account_id=account_id,
-        client_factory=client_factory,
-    )

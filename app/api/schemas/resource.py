@@ -48,6 +48,8 @@ class ResourceJoinRequest(BaseModel):
     action: str = Field(default="join", pattern="^(join|leave)$")
     # 点了就立刻执行（而不是只排队等运行时）；超出限速的部分仍然排队
     execute_now: bool = True
+    # 失败退避里的任务也立刻重试（用户显式点了「立即重试」）
+    force: bool = False
 
 
 class ResourceAdoptRequest(BaseModel):

@@ -138,6 +138,18 @@ function silentRisk(row) {
   return row.status === "adopted" && !isJoined(row);
 }
 
+/** 队列里的任务还没到点（失败后的退避）：这时候按钮应该是「立即重试」。 */
+function joinDeferred(row) {
+  const scheduled = row.join?.scheduled_at;
+  if (row.join?.status !== "pending" || !scheduled) return false;
+  return new Date(scheduled).getTime() > Date.now() + 1000;
+}
+
+function joinButtonLabel(row) {
+  if (joining.has(row.id)) return "加入中…";
+  return joinDeferred(row) ? "立即重试" : "让账号加入";
+}
+
 function fmtCount(value) {
   if (value === null || value === undefined) return "-";
   if (value >= 10000) return `${(value / 10000).toFixed(1)} 万`;
@@ -383,7 +395,7 @@ function reportJoin(data) {
     ElMessage.info(`${approval.length} 个需要管理员审批，已记为待审批`);
   }
   if (failed.length) {
-    ElMessage.error(`加入失败：${failed[0].error || "原因未知"}`);
+    ElMessage.error(`加入失败：${failed[0].error || "原因未知"}（可以点「立即重试」）`);
   }
 
   const queuedCount = (data.queued?.length || 0) - executed.length;
@@ -403,17 +415,17 @@ function reportJoin(data) {
 }
 
 /** 卡片/详情上的「让账号加入」：排进限速队列。 */
-async function enqueueJoinOne(row) {
+async function enqueueJoinOne(row, force = false) {
   if (joining.has(row.id)) return;
   joining.add(row.id);
   // 加盟要连 Telegram，一次大约 30 秒：先把等待说清楚，别让人以为卡死了
   const tip = ElMessage({
-    message: `正在让账号加入「${row.name}」…通常需要 20~40 秒`,
+    message: `${force ? "正在重试加入" : "正在让账号加入"}「${row.name}」…通常需要 20~40 秒`,
     type: "info",
     duration: 0,
   });
   try {
-    const { data } = await resourcesApi.join({ ids: [row.id], execute_now: true });
+    const { data } = await resourcesApi.join({ ids: [row.id], execute_now: true, force });
     if (data.failures?.length) {
       ElMessage.error(data.failures[0].reason);
     } else {
@@ -887,9 +899,9 @@ onMounted(async () => {
             link
             type="warning"
             :loading="joining.has(row.id)"
-            @click="enqueueJoinOne(row)"
+            @click="enqueueJoinOne(row, joinDeferred(row))"
           >
-            {{ joining.has(row.id) ? "加入中…" : "让账号加入" }}
+            {{ joinButtonLabel(row) }}
           </el-button>
           <el-button size="small" link @click="toggleFavorite(row, !row.is_favorite)">
             {{ row.is_favorite ? "取消收藏" : "收藏" }}
@@ -1036,9 +1048,9 @@ onMounted(async () => {
                 type="warning"
                 plain
                 :loading="joining.has(detail.id)"
-                @click="enqueueJoinOne(detail)"
+                @click="enqueueJoinOne(detail, joinDeferred(detail))"
               >
-                {{ joining.has(detail.id) ? "加入中…" : "让账号加入" }}
+                {{ joinButtonLabel(detail) }}
               </el-button>
               <el-button size="small" @click="toggleFavorite(detail, !detail.is_favorite)">
                 {{ detail.is_favorite ? "取消收藏" : "收藏" }}

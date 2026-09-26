@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.account_client_pool import POOL, USE_POOL
 from app.core.config import AppConfig
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.source_resolver import ResolvedTarget, resolve_target
@@ -63,23 +66,85 @@ async def _default_client_factory(
     )
 
 
-async def open_account_client(
+@asynccontextmanager
+async def account_client(
     session: AsyncSession,
     config: AppConfig,
     *,
     account_id: int | None = None,
     client_factory: Any = None,
-) -> tuple[TgAccount, Any]:
-    """取执行账号并打开客户端（群同步与资源发现共用）。
+) -> AsyncIterator[tuple[TgAccount, Any]]:
+    """借一条执行账号连接。
 
-    调用方负责在结束时 ``await client.disconnect()``。
+    - 生产（没注入 factory）：从连接池取，退出时**不**断开，下次直接复用——
+      交互动作（加盟 / 刷新 / 同步群组池）不用每次等 8 秒握手。
+    - 测试（注入 factory）：照旧新建、用完断开，替身不进池。
     """
-    return await _open_client(
-        config,
-        session,
-        account_id=account_id,
-        client_factory=client_factory,
+    account = (
+        await tg_account_service.get_account(session, account_id)
+        if account_id is not None
+        else await tg_account_service.get_default_account(session)
     )
+    if account is None:
+        raise NotFoundError("还没有可用的执行账号，请先在「执行账号池」登记并登录")
+
+    pooled = client_factory is None and USE_POOL
+    if pooled:
+
+        async def opener() -> Any:
+            _row, client = await _open_client(
+                config,
+                session,
+                account_id=account.id,
+                client_factory=None,
+            )
+            return client
+
+        client = await POOL.get(account.id, opener)
+    else:
+        _row, client = await _open_client(
+            config,
+            session,
+            account_id=account.id,
+            client_factory=client_factory,
+        )
+    try:
+        yield account, client
+    finally:
+        if not pooled:
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+
+
+@asynccontextmanager
+async def account_client_optional(
+    session: AsyncSession,
+    config: AppConfig,
+    *,
+    account_id: int | None = None,
+    client_factory: Any = None,
+) -> AsyncIterator[tuple[TgAccount | None, Any]]:
+    """拿不到可用账号时给 ``(None, None)``，由调用方决定怎么降级。
+
+    用在「Telegram 只是其中一条渠道」的场景（在线补搜）：没有账号时
+    其它渠道照常出结果，而不是整条请求失败。
+    """
+    try:
+        lease = account_client(
+            session,
+            config,
+            account_id=account_id,
+            client_factory=client_factory,
+        )
+        account, client = await lease.__aenter__()
+    except Exception:  # noqa: BLE001 - 没账号 / 连不上都降级
+        yield None, None
+        return
+    try:
+        yield account, client
+    finally:
+        with contextlib.suppress(Exception):
+            await lease.__aexit__(None, None, None)
 
 
 async def sync_dialogs(
@@ -91,18 +156,14 @@ async def sync_dialogs(
     limit: int = 500,
 ) -> dict[str, Any]:
     """把执行账号已加入的群组/频道同步到本地群组池。"""
-    account, client = await _open_client(
-        config,
+    async with account_client(
         session,
+        config,
         account_id=account_id,
         client_factory=client_factory,
-    )
-    try:
+    ) as (account, client):
         migrations = await fetch_migrations(client, limit=limit)
         profiles = await fetch_dialogs(client, limit=limit)
-    finally:
-        with contextlib.suppress(Exception):
-            await client.disconnect()
 
     created = 0
     updated = 0
@@ -156,17 +217,13 @@ async def ensure_chat_from_input(
     if target.kind == "invite" and not join:
         raise ValidationFailedError("私有邀请链接需要勾选「允许执行账号加入」，否则无法识别该群组")
 
-    account, client = await _open_client(
-        config,
+    async with account_client(
         session,
+        config,
         account_id=account_id,
         client_factory=client_factory,
-    )
-    try:
+    ) as (account, client):
         profile = await _profile_for_target(client, target, join=join)
-    finally:
-        with contextlib.suppress(Exception):
-            await client.disconnect()
 
     if profile.tg_id <= 0:
         raise ValidationFailedError(f"无法解析该链接对应的群组：{raw_input}")
@@ -199,28 +256,23 @@ async def check_targets_access(
     if not chats:
         return {}
     try:
-        _account, client = await _open_client(
-            config,
+        async with account_client(
             session,
+            config,
             account_id=account_id,
             client_factory=client_factory,
-        )
+        ) as (_account, client):
+            results: dict[int, bool | None] = {}
+            for chat in chats:
+                results[chat.id] = await check_can_post(client, chat.tg_id)
+            return results
     except Exception:  # noqa: BLE001 - 预检失败不阻断添加流程
         return {chat.id: None for chat in chats}
 
-    results: dict[int, bool | None] = {}
-    try:
-        for chat in chats:
-            results[chat.id] = await check_can_post(client, chat.tg_id)
-    finally:
-        with contextlib.suppress(Exception):
-            await client.disconnect()
-    return results
-
 
 __all__ = [
+    "account_client",
     "check_targets_access",
     "ensure_chat_from_input",
-    "open_account_client",
     "sync_dialogs",
 ]

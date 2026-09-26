@@ -13,6 +13,7 @@ from typing import Any
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.account_client_pool import drop_account_client
 from app.core.config import AppConfig
 from app.core.errors import ValidationFailedError
 from app.core.paths import ensure_dir
@@ -192,6 +193,8 @@ async def _finish(
             await item.client.disconnect()
 
     await tg_account_service.mark_login_success(session, account, profile=profile)
+    # 重新登录后 session 文件是新的：池里那条旧连接必须丢掉
+    await drop_account_client(account.id)
     logger.info("账号 {} 登录成功（@{}）", account.name, profile.username or "-")
     return {
         "status": "active",

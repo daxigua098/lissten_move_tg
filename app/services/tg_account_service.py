@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.account_client_pool import drop_account_client
 from app.core.config import (
     TELEGRAM_API_HASH_PATTERN,
     TELEGRAM_API_ID_MAX,
@@ -200,6 +201,9 @@ async def update_account(
 
     await session.commit()
     await session.refresh(account)
+    if phone is not None or api_id is not None or api_hash is not None:
+        # 凭据变了：池里那条旧连接作废
+        await drop_account_client(account.id)
     return account
 
 
@@ -210,6 +214,8 @@ async def delete_account(session: AsyncSession, account_id: int) -> TgAccount:
         raise NotFoundError("执行账号不存在")
     await session.delete(account)
     await session.commit()
+    # 连接池里那条连着旧凭据的连接必须丢掉，否则会拿着已删账号的 session 干活
+    await drop_account_client(account_id)
     return account
 
 

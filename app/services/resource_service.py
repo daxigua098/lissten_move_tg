@@ -859,6 +859,34 @@ async def due_for_refresh(session: AsyncSession, *, limit: int = 20) -> list[TgR
     return list(rows)
 
 
+async def next_probe_candidates(
+    session: AsyncSession,
+    *,
+    limit: int = 5,
+) -> list[TgResource]:
+    """探测队列：没探过的候选 + 到点该刷新的资源，按排队时间先到先做。
+
+    队列顺序就是 ``next_refresh_at`` 升序——新候选入库时排"现在"（立刻可做），
+    探测完再排到 "现在 + 分层刷新间隔"。来自索引型群的链接入库时排队时间会
+    提前一点（见 ``resource_probe_service.absorb_links``），所以优先被探测。
+    """
+    moment = utc_now()
+    rows = await session.scalars(
+        select(TgResource)
+        .where(
+            TgResource.is_blacklisted.is_(False),
+            or_(
+                TgResource.last_probed_at.is_(None),
+                TgResource.next_refresh_at.is_(None),
+                TgResource.next_refresh_at <= moment,
+            ),
+        )
+        .order_by(TgResource.next_refresh_at.asc().nulls_first(), TgResource.id.asc())
+        .limit(limit)
+    )
+    return list(rows)
+
+
 def ensure_probeable(resource: TgResource) -> None:
     """探测前置校验：黑名单资源不探测。"""
     if resource.is_blacklisted:

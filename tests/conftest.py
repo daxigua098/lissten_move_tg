@@ -6,6 +6,7 @@ import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -105,6 +106,204 @@ async def client(api_config) -> AsyncIterator[AsyncClient]:
             yield http_client
     finally:
         await dispose_database()
+
+
+def resource_message(
+    message_id: int,
+    text: str = "",
+    *,
+    sender_id: int = 555,
+    is_bot: bool = False,
+    date=None,
+):
+    """构造一条能被 message_view_from_telethon 适配的消息替身。"""
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        id=message_id,
+        message=text,
+        action=None,
+        photo=None,
+        video=None,
+        document=None,
+        poll=None,
+        media=None,
+        pinned=False,
+        grouped_id=None,
+        post=False,
+        sender_id=sender_id,
+        sender=SimpleNamespace(username=f"user{sender_id}", bot=is_bot),
+        fwd_from=None,
+        date=date or datetime(2026, 9, 25, 10, 0, tzinfo=UTC),
+    )
+
+
+class FakeResourceClient:
+    """资源发现用的 Telethon 替身：搜索、拉资料、采样、加退群。"""
+
+    def __init__(self) -> None:
+        from types import SimpleNamespace
+
+        self.SimpleNamespace = SimpleNamespace
+        self.entities: dict[object, object] = {}
+        self.full_channels: dict[int, object] = {}
+        self.histories: dict[int, list] = {}
+        self.search_results: dict[str, list] = {}
+        self.global_results: dict[str, list] = {}
+        self.search_errors: dict[str, Exception] = {}
+        self.full_errors: dict[int, Exception] = {}
+        self.join_errors: dict[int, Exception] = {}
+        self.joined: list[Any] = []
+        self.left: list[Any] = []
+        self.searches: list[str] = []
+        self.imported_invite = None
+
+    # --- 注册数据 ---------------------------------------------------
+
+    def add_chat(
+        self,
+        tg_id: int,
+        title: str,
+        *,
+        username: str | None = None,
+        about: str | None = None,
+        member_count: int | None = None,
+        broadcast: bool = False,
+        megagroup: bool = True,
+    ):
+        """登记一个群/频道实体。"""
+        entity = make_entity(
+            tg_id,
+            title,
+            broadcast=broadcast,
+            megagroup=megagroup,
+            username=username,
+            participants_count=member_count,
+        )
+        self.entities[tg_id] = entity
+        if username:
+            self.entities[username] = entity
+            self.entities[f"@{username}"] = entity
+        self.full_channels[tg_id] = self.SimpleNamespace(
+            about=about,
+            participants_count=member_count,
+        )
+        return entity
+
+    def add_history(self, tg_id: int, messages: list) -> None:
+        """登记某个群的采样消息。"""
+        self.histories[tg_id] = list(messages)
+
+    def add_search(self, keyword: str, entities: list) -> None:
+        """登记关键词搜索结果。"""
+        self.search_results[keyword] = list(entities)
+
+    def add_global(self, query: str, messages: list) -> None:
+        """登记句式搜索结果。"""
+        self.global_results[query] = list(messages)
+
+    # --- Telethon 接口替身 -------------------------------------------
+
+    async def get_entity(self, identifier):
+        key = identifier.lstrip("@") if isinstance(identifier, str) else identifier
+        if key in self.entities:
+            return self.entities[key]
+        if isinstance(key, str):
+            for candidate, entity in self.entities.items():
+                if isinstance(candidate, str) and candidate.lstrip("@") == key:
+                    return entity
+        raise ValueError(f"找不到实体：{identifier}")
+
+    async def iter_dialogs(self, limit: int | None = None):
+        seen: set[int] = set()
+        count = 0
+        for key, entity in self.entities.items():
+            if not isinstance(key, int) or key in seen:
+                continue
+            seen.add(key)
+            if limit is not None and count >= limit:
+                break
+            count += 1
+            yield self.SimpleNamespace(entity=entity)
+
+    async def get_messages(self, entity, *, ids=None, min_id=0, limit=None, reverse=False):
+        tg_id = getattr(entity, "id", entity)
+        rows = list(self.histories.get(int(tg_id), []))
+        if limit:
+            rows = rows[: int(limit)]
+        return rows
+
+    async def __call__(self, request):
+        name = type(request).__name__
+        if name == "SearchRequest":
+            keyword = getattr(request, "q", "")
+            self.searches.append(keyword)
+            error = self.search_errors.get(keyword)
+            if error is not None:
+                raise error
+            return self.SimpleNamespace(chats=list(self.search_results.get(keyword, [])))
+        if name == "SearchGlobalRequest":
+            query = getattr(request, "q", "")
+            self.searches.append(query)
+            error = self.search_errors.get(query)
+            if error is not None:
+                raise error
+            return self.SimpleNamespace(messages=list(self.global_results.get(query, [])))
+        if name in {"GetFullChannelRequest", "GetFullChatRequest"}:
+            entity = getattr(request, "channel", None) or getattr(request, "chat_id", None)
+            tg_id = int(getattr(entity, "id", entity))
+            error = self.full_errors.get(tg_id)
+            if error is not None:
+                raise error
+            full = self.full_channels.get(tg_id)
+            if full is None:
+                raise ValueError(f"没有登记 {tg_id} 的完整资料")
+            return self.SimpleNamespace(full_chat=full)
+        if name == "JoinChannelRequest":
+            entity = getattr(request, "channel", None)
+            tg_id = int(getattr(entity, "id", entity))
+            error = self.join_errors.get(tg_id)
+            if error is not None:
+                raise error
+            self.joined.append(tg_id)
+            return self.SimpleNamespace(updates=[])
+        if name == "LeaveChannelRequest":
+            entity = getattr(request, "channel", None)
+            tg_id = int(getattr(entity, "id", entity))
+            self.left.append(tg_id)
+            return self.SimpleNamespace(updates=[])
+        if name == "ImportChatInviteRequest":
+            if self.imported_invite is None:
+                return self.SimpleNamespace(chats=[])
+            self.joined.append(self.imported_invite)
+            return self.SimpleNamespace(chats=[self.imported_invite])
+        raise AssertionError(f"未预期的请求：{name}")
+
+
+@pytest.fixture
+def fake_resource_client() -> FakeResourceClient:
+    """资源发现替身客户端。"""
+    return FakeResourceClient()
+
+
+@pytest.fixture
+async def probe_account(db) -> int:
+    """一个可用的执行账号 ID（资源配额与加群队列的外键指向它）。"""
+    from app.db.session import session_scope
+    from app.services import tg_account_service
+
+    async with session_scope() as session:
+        account = await tg_account_service.create_account(
+            session,
+            db,
+            name="采集号",
+            phone="+8613800001111",
+            api_id=123456,
+            api_hash="abcdef0123456789abcdef0123456789",
+            is_default=True,
+        )
+        return account.id
 
 
 async def _create_admin(

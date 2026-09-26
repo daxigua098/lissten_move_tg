@@ -51,6 +51,19 @@ class ChatProfile:
     member_count: int | None = None
 
 
+@dataclass(frozen=True)
+class ChatFullInfo:
+    """群 / 频道的完整资料（探测用）。"""
+
+    about: str | None = None
+    member_count: int | None = None
+    member_count_approx: bool = False
+
+
+# Telegram 在成员数超过这个量级后只给近似值（官方未公开阈值，取常见口径）
+APPROX_MEMBER_THRESHOLD = 5000
+
+
 def session_file_path(config: AppConfig, session_name: str) -> Path:
     """执行账号的 session 文件路径（Telethon 会自行补 .session 后缀）。"""
     name = (session_name or "").strip() or "default"
@@ -513,3 +526,151 @@ async def fetch_chat_profile(client: Any, target: ResolvedTarget) -> ChatProfile
         is_private=not bool(getattr(entity, "username", None)),
         member_count=getattr(entity, "participants_count", None),
     )
+
+
+# ------------------------------------------------------------------ 资源发现
+
+
+async def fetch_chat_full(client: Any, tg_id: int) -> ChatFullInfo:
+    """读取群 / 频道的简介与成员数（F-R06）。
+
+    频道与超级群走 ``channels.getFullChannel``，基础群走 ``messages.getFullChat``；
+    两者都失败时退回实体自带的字段，保证探测不会整体失败。
+    """
+    entity = await resolve_entity(client, tg_id)
+    member_count = getattr(entity, "participants_count", None)
+    about: str | None = None
+
+    try:
+        from telethon.tl import functions
+
+        if getattr(entity, "broadcast", False) or getattr(entity, "megagroup", False):
+            result = await client(functions.channels.GetFullChannelRequest(channel=entity))
+        else:
+            result = await client(functions.messages.GetFullChatRequest(chat_id=entity.id))
+        full = getattr(result, "full_chat", None)
+        about = getattr(full, "about", None)
+        count = getattr(full, "participants_count", None)
+        if count is not None:
+            member_count = int(count)
+    except Exception:  # noqa: BLE001 - 拿不到简介不算探测失败
+        pass
+
+    if member_count is None:
+        return ChatFullInfo(about=about)
+    return ChatFullInfo(
+        about=about,
+        member_count=int(member_count),
+        member_count_approx=int(member_count) >= APPROX_MEMBER_THRESHOLD,
+    )
+
+
+async def sample_chat_messages(
+    client: Any,
+    tg_id: int,
+    *,
+    limit: int = 100,
+) -> list[MessageView]:
+    """采样最近若干条消息（F-R06 的指标原料）。"""
+    entity = await resolve_entity(client, tg_id)
+    messages = await client.get_messages(entity, limit=int(limit))
+    if messages is None:
+        return []
+    if not isinstance(messages, list):
+        messages = [messages]
+    return [message_view_from_telethon(item) for item in messages if item is not None]
+
+
+async def search_public_chats(
+    client: Any,
+    keyword: str,
+    *,
+    limit: int = 20,
+) -> list[ChatProfile]:
+    """按关键词搜索公开群 / 频道（F-R02 的 ``contacts.Search``）。
+
+    搜索结果里会混进用户，用"有没有 title"把它们滤掉——群和频道一定有 title。
+    """
+    from telethon.tl import functions
+
+    result = await client(functions.contacts.SearchRequest(q=keyword, limit=int(limit)))
+    chats = getattr(result, "chats", None) or []
+    return [
+        profile_from_entity(item)
+        for item in chats
+        if getattr(item, "title", None) and getattr(item, "id", None)
+    ]
+
+
+async def search_global_messages(
+    client: Any,
+    query: str,
+    *,
+    limit: int = 20,
+) -> list[Any]:
+    """全局消息搜索（F-R05 句式搜索）。"""
+    from telethon.tl import functions, types
+
+    request = functions.messages.SearchGlobalRequest(
+        q=query,
+        filter=types.InputMessagesFilterEmpty(),
+        min_date=None,
+        max_date=None,
+        offset_rate=0,
+        offset_peer=types.InputPeerEmpty(),
+        offset_id=0,
+        limit=int(limit),
+    )
+    result = await client(request)
+    messages = getattr(result, "messages", None) or []
+    return [item for item in messages if getattr(item, "message", None)]
+
+
+async def join_chat(client: Any, entity: Any) -> Any:
+    """加入公开群 / 频道（用 @username 或数字 ID 解析出的实体）。"""
+    from telethon.tl import functions
+
+    return await client(functions.channels.JoinChannelRequest(channel=entity))
+
+
+async def leave_chat(client: Any, entity: Any) -> Any:
+    """退出群 / 频道。"""
+    from telethon.tl import functions
+
+    return await client(functions.channels.LeaveChannelRequest(channel=entity))
+
+
+# 加群失败分类（F-R12）：把 Telegram 的报错原文收敛成几类，界面好展示也好统计
+JOIN_ERROR_RULES: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("invite_hash_expired", "expired", "invitehash"), "invite_invalid", "邀请链接已失效"),
+    (
+        ("invite_request_sent", "request_sent", "admin approval", "approval"),
+        "approval_required",
+        "需要管理员审批",
+    ),
+    (
+        ("user_already_participant", "already participant", "already_participant"),
+        "already_member",
+        "已在群内",
+    ),
+    (("users_too_much", "too many", "chat_full", "participants too much"), "full", "群已满员"),
+    (("flood_wait", "flood", "peer_flood", "too many requests"), "restricted", "被限流，需要等待"),
+    (("chat_write_forbidden", "banned", "kicked", "user_banned"), "restricted", "被限制加入"),
+    (
+        ("channel_private", "private", "chat_admin_required"),
+        "restricted",
+        "需要管理员权限或群已转私密",
+    ),
+)
+
+
+def classify_join_error(exc: BaseException | str) -> tuple[str, str]:
+    """把加群异常翻成 ``(分类, 中文说明)``。
+
+    返回 ``("already_member", ...)`` 表示"其实已经进去了"，调用方按成功处理。
+    """
+    text = str(exc).lower()
+    for needles, category, label in JOIN_ERROR_RULES:
+        if any(needle in text for needle in needles):
+            return category, label
+    return "unknown", str(exc)[:200] or "未知错误"

@@ -184,3 +184,40 @@ export const hotKeywordsApi = {
   stats: () => http.get("/api/hot-keywords/stats"),
   promote: (payload) => http.post("/api/hot-keywords/promote", payload),
 };
+
+export const resourcesApi = {
+  list: (params) => http.get("/api/resources", { params }),
+  overview: () => http.get("/api/resources/overview"),
+  facets: () => http.get("/api/resources/facets"),
+  quota: () => http.get("/api/resources/quota"),
+  detail: (id) => http.get(`/api/resources/${id}`),
+  collect: (payload) => http.post("/api/resources/collect", payload),
+  import: (payload) => http.post("/api/resources/import", payload),
+  refresh: (payload) => http.post("/api/resources/refresh", payload),
+  refreshOne: (id, params) => http.post(`/api/resources/${id}/refresh`, null, { params }),
+  update: (id, payload) => http.patch(`/api/resources/${id}`, payload),
+  adopt: (id, payload) => http.post(`/api/resources/${id}/adopt`, payload),
+  join: (payload) => http.post("/api/resources/join", payload),
+  discoverTasks: (params) => http.get("/api/resources/discover-tasks", { params }),
+  createDiscoverTask: (payload) => http.post("/api/resources/discover-tasks", payload),
+  updateDiscoverTask: (id, payload) =>
+    http.patch(`/api/resources/discover-tasks/${id}`, payload),
+  removeDiscoverTask: (id) => http.delete(`/api/resources/discover-tasks/${id}`),
+  importHotwords: (payload) => http.post("/api/resources/discover-tasks/import-hotwords", payload),
+  phrasePresets: () => http.post("/api/resources/discover-tasks/phrase-presets"),
+  joinTasks: (params) => http.get("/api/resources/join-tasks", { params }),
+  retryJoinTask: (id) => http.post(`/api/resources/join-tasks/${id}/retry`),
+  cancelJoinTask: (id) => http.post(`/api/resources/join-tasks/${id}/cancel`),
+  exportUrl: (params) => {
+    const query = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      if (Array.isArray(value)) {
+        value.forEach((item) => query.append(key, item));
+      } else {
+        query.append(key, value);
+      }
+    });
+    return `/api/resources/export.csv?${query.toString()}`;
+  },
+};

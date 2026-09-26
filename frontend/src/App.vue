@@ -60,6 +60,7 @@ function logoutAll() {
         <el-menu-item index="/">运行总览</el-menu-item>
         <el-menu-item v-if="canOperate" index="/config">线路配置</el-menu-item>
         <el-menu-item v-if="canOperate" index="/library">词库</el-menu-item>
+        <el-menu-item v-if="canOperate" index="/resources">资源发现</el-menu-item>
         <el-menu-item v-if="canOperate" index="/leads">线索池</el-menu-item>
         <el-menu-item v-if="auth.isSuperAdmin" index="/ops">账号与机器人</el-menu-item>
         <el-menu-item v-if="canOperate" index="/system">系统管理</el-menu-item>

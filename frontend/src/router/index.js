@@ -8,6 +8,7 @@ import Leads from "../views/Leads.vue";
 import Login from "../views/Login.vue";
 import OpsTabs from "../views/OpsTabs.vue";
 import OverviewTabs from "../views/OverviewTabs.vue";
+import ResourceTabs from "../views/ResourceTabs.vue";
 import SystemTabs from "../views/SystemTabs.vue";
 
 const ROLE_RANK = { viewer: 1, sub_admin: 2, super_admin: 3 };
@@ -20,6 +21,7 @@ const routes = [
   { path: "/config", name: "config", component: ConfigTabs, meta: { role: "sub_admin" } },
   { path: "/library", name: "library", component: LibraryTabs, meta: { role: "sub_admin" } },
   { path: "/leads", name: "leads", component: Leads, meta: { role: "sub_admin" } },
+  { path: "/resources", name: "resources", component: ResourceTabs, meta: { role: "sub_admin" } },
   { path: "/ops", name: "ops", component: OpsTabs, meta: { role: "super_admin" } },
   { path: "/system", name: "system", component: SystemTabs, meta: { role: "sub_admin" } },
   // 旧地址保留重定向，收藏夹与脚本不受影响
@@ -33,6 +35,10 @@ const routes = [
     redirect: { path: "/library", query: { tab: "keywords" } },
   },
   { path: "/hot-keywords", redirect: { path: "/library", query: { tab: "hot" } } },
+  {
+    path: "/resource-discovery",
+    redirect: { path: "/resources", query: { tab: "library" } },
+  },
   { path: "/jobs", redirect: { path: "/", query: { tab: "jobs" } } },
   { path: "/accounts", redirect: { path: "/ops", query: { tab: "accounts" } } },
   { path: "/bots", redirect: { path: "/ops", query: { tab: "bots" } } },

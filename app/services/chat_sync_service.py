@@ -63,6 +63,25 @@ async def _default_client_factory(
     )
 
 
+async def open_account_client(
+    session: AsyncSession,
+    config: AppConfig,
+    *,
+    account_id: int | None = None,
+    client_factory: Any = None,
+) -> tuple[TgAccount, Any]:
+    """取执行账号并打开客户端（群同步与资源发现共用）。
+
+    调用方负责在结束时 ``await client.disconnect()``。
+    """
+    return await _open_client(
+        config,
+        session,
+        account_id=account_id,
+        client_factory=client_factory,
+    )
+
+
 async def sync_dialogs(
     session: AsyncSession,
     config: AppConfig,
@@ -199,4 +218,9 @@ async def check_targets_access(
     return results
 
 
-__all__ = ["check_targets_access", "ensure_chat_from_input", "sync_dialogs"]
+__all__ = [
+    "check_targets_access",
+    "ensure_chat_from_input",
+    "open_account_client",
+    "sync_dialogs",
+]

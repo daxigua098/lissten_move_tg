@@ -43,6 +43,7 @@ def upgrade() -> None:
         sa.Column("language", sa.String(length=16), nullable=True),
         sa.Column("country", sa.String(length=8), nullable=True),
         sa.Column("categories", sa.Text(), nullable=False),
+        sa.Column("sample_messages", sa.Text(), nullable=False),
         sa.Column("is_index_group", sa.Boolean(), nullable=False),
         sa.Column("index_score", sa.Integer(), nullable=True),
         sa.Column("manual_locked", sa.Text(), nullable=False),

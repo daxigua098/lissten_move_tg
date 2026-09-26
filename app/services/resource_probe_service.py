@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from loguru import logger
@@ -238,6 +239,7 @@ async def probe_resource(
         about=full.about,
         member_count=full.member_count,
         member_count_approx=full.member_count_approx,
+        sample_preview=build_sample_preview(samples, entries),
     )
     # 探测成功说明这个资源现在读得到
     updated.resource_state = STATE_ACTIVE
@@ -374,3 +376,131 @@ def _state_from_error(exc: BaseException) -> str | None:
 
 def _short_error(exc: BaseException) -> str:
     return (str(exc) or exc.__class__.__name__)[:200]
+
+
+SAMPLE_PREVIEW_LIMIT = 20
+SAMPLE_TEXT_LIMIT = 500
+
+
+def build_sample_preview(
+    samples: list[Any],
+    entries: list[Any],
+    *,
+    limit: int = SAMPLE_PREVIEW_LIMIT,
+) -> list[dict[str, Any]]:
+    """把采样消息整理成详情页要展示的样子（含是否机器人、命中词）。
+
+    只存最近 limit 条：详情抽屉要能"看一眼这个群在聊什么、有没有命中词"，
+    但没必要把 100 条采样全塞进库里。
+    """
+    from app.core.keyword_matcher import match_text
+
+    preview: list[dict[str, Any]] = []
+    for item in list(samples)[:limit]:
+        text = str(getattr(item, "text", "") or "")
+        moment = getattr(item, "date", None)
+        hits = match_text(text, entries)[:3] if entries and text else []
+        preview.append(
+            {
+                "message_id": getattr(item, "message_id", None),
+                "sender_id": getattr(item, "sender_id", None),
+                "sender_username": getattr(item, "sender_username", None),
+                "is_bot": bool(getattr(item, "sender_is_bot", False)),
+                "date": moment.isoformat() if isinstance(moment, datetime) else None,
+                "text": text[:SAMPLE_TEXT_LIMIT],
+                "hits": [hit.keyword for hit in hits],
+            }
+        )
+    return preview
+
+
+async def import_resources(
+    session: AsyncSession,
+    config: AppConfig,
+    client: Any,
+    inputs: Sequence[str],
+    *,
+    join: bool = False,
+    account_id: int | None = None,
+    probe: bool = True,
+) -> dict[str, Any]:
+    """F-R11 手动添加：粘贴链接 / 用户名 / 数字 ID，可批量。
+
+    逐条处理、逐条反馈失败原因——一条写错不该让整批失败。
+    """
+    from app.core.source_resolver import resolve_target
+    from app.core.telegram_client import fetch_chat_profile
+    from app.core.telegram_client import join_invite as _join_by_invite
+
+    added: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+
+    for raw in inputs:
+        text = (raw or "").strip()
+        if not text:
+            continue
+        try:
+            target = resolve_target(text)
+        except ValueError as exc:
+            failures.append({"input": text, "reason": str(exc)})
+            continue
+        if target.kind == "phone":
+            failures.append({"input": text, "reason": "这里需要群组或频道，不是手机号"})
+            continue
+        if target.kind == "invite" and not join:
+            failures.append({"input": text, "reason": "私有邀请链接需要勾选「允许加入」才能识别"})
+            continue
+
+        try:
+            profile = (
+                await _join_by_invite(client, target.value)
+                if target.kind == "invite"
+                else await fetch_chat_profile(client, target)
+            )
+        except Exception as exc:  # noqa: BLE001 - 单条失败不影响其他条
+            failures.append({"input": text, "reason": _short_error(exc)})
+            continue
+        if not profile.tg_id:
+            failures.append({"input": text, "reason": "解析不到群/频道 ID"})
+            continue
+
+        outcome = await resource_service.upsert_resource(
+            session,
+            ResourceRef(
+                tg_id=int(profile.tg_id),
+                title=profile.title or text,
+                username=profile.username,
+                invite_link=f"https://t.me/+{target.value}" if target.kind == "invite" else None,
+                chat_type=profile.chat_type,
+                member_count=profile.member_count,
+                member_count_approx=bool(profile.member_count and profile.member_count >= 5000),
+                source_url=text,
+            ),
+            discovered_by="manual",
+            discovered_from="手动添加",
+        )
+        if outcome.resource is None:
+            failures.append({"input": text, "reason": "该资源在黑名单里"})
+            continue
+
+        item = {
+            "input": text,
+            "id": outcome.resource.id,
+            "title": outcome.resource.title,
+            "created": outcome.created,
+            "probed": False,
+        }
+        if probe:
+            probe_outcome = await probe_resource(
+                session,
+                config,
+                client,
+                outcome.resource,
+                account_id=account_id,
+            )
+            item["probed"] = probe_outcome.result == PROBE_OK
+            if probe_outcome.result != PROBE_OK:
+                failures.append({"input": text, "reason": probe_outcome.error or "探测失败"})
+        added.append(item)
+
+    return {"added": added, "failures": failures}

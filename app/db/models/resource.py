@@ -125,6 +125,10 @@ class TgResource(TimestampMixin, Base):
     language: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     country: Mapped[str | None] = mapped_column(String(8), nullable=True)
     categories: Mapped[str] = mapped_column(Text, default="[]")
+    # 最近一次探测的样本消息预览（JSON，最多 20 条）。
+    # 存下来的原因：P-R02 的详情抽屉要展示样本消息，而验收标准 1 要求
+    # "打开资源页不产生任何 Telegram 请求"——样本只能在探测时顺带落库。
+    sample_messages: Mapped[str] = mapped_column(Text, default="[]")
     is_index_group: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     index_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 人工修正过的字段 JSON 数组（刷新时跳过，不被机器值覆盖）

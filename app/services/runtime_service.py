@@ -49,8 +49,15 @@ from app.services import (
     hot_keyword_service,
     keyword_service,
     lead_service,
+    resource_discover_service,
+    resource_join_service,
+    resource_probe_service,
+    resource_service,
     tg_account_service,
 )
+
+# 资源发现的节奏：加群 / 搜索属于会被风控的动作，别跟着投递循环每 2 秒跑一次
+RESOURCE_TICK_SECONDS = 30.0
 
 
 class RuntimeService:
@@ -76,6 +83,8 @@ class RuntimeService:
         # 管理员 ID 缓存：跳过管理员这条规则不该每条消息都去查一次群成员
         self._admin_cache: dict[int, set[int]] = {}
         self._last_purge_at = float("-inf")
+        # 资源发现（加群 / 搜索 / 探测）上次执行的时间
+        self._last_resource_tick = float("-inf")
         # 本次启动注册了哪些线路（写进心跳，界面上用来发现"改了但没重启"）
         self._registered: dict[str, Any] = {}
         # 机器人（Bot API）客户端缓存：sender_mode=bot 的线路用它们发言
@@ -337,6 +346,8 @@ class RuntimeService:
         async with session_scope() as session:
             # 热门词采集一条消息只做一次（同一条消息不因多条线路重复计数）
             collected = False
+            # 链接滚雪球同样一条消息只做一次
+            link_absorbed = False
             for route in routes:
                 fresh = await session.get(Route, route.id)
                 if fresh is None or not fresh.enabled:
@@ -382,6 +393,22 @@ class RuntimeService:
                 if is_excluded(text, exclude_words):
                     logger.debug("被排除词挡住：{}", text[:30])
                     continue
+                # F-R03 链接滚雪球：监听中的实时消息里贴的群链接，顺手收进候选池
+                # （只做一次，同一条消息不因多条线路重复入库）
+                if not link_absorbed:
+                    link_absorbed = True
+                    await resource_probe_service.absorb_links(
+                        session,
+                        self.config,
+                        text=text,
+                        source_title=(
+                            source_chat.display_name
+                            or source_chat.title
+                            or source_chat.username
+                            or ""
+                        ),
+                        discovered_by="link",
+                    )
                 # 热门词采集：只做一次（同一条消息不因多条线路重复计数）
                 if not collected:
                     collected = True
@@ -614,12 +641,74 @@ class RuntimeService:
                 logger.exception("投递循环异常：{}", exc)
                 delivered = 0
 
+            if now - self._last_resource_tick >= RESOURCE_TICK_SECONDS:
+                self._last_resource_tick = now
+                try:
+                    await self._resource_tick(client)
+                except Exception as exc:  # noqa: BLE001 - 资源发现失败不影响搬运
+                    logger.warning("资源发现循环异常：{}", exc)
+
             now = asyncio.get_running_loop().time()
             if now - last_heartbeat >= self.heartbeat_seconds or delivered == 0:
                 await self._publish(status="running", extra={"last_tick_delivered": delivered})
                 last_heartbeat = now
             if delivered == 0:
                 await asyncio.sleep(self.poll_interval)
+
+    async def _resource_tick(self, client: Any) -> None:
+        """资源发现的节奏：加群队列 → 发现任务 → 探测候选，一轮只做一件。
+
+        每轮只做一件事是刻意设计的：加群、搜索、探测都要消耗账号的请求额度，
+        串行执行时"是哪一步在触发风控"一目了然，也天然满足 F-R12 的"同账号串行"。
+        """
+        async with session_scope() as session:
+            account = await tg_account_service.get_default_account(session)
+            account_id = account.id if account else None
+
+            task = await resource_join_service.next_due_task(session)
+            if task is not None:
+                await resource_join_service.run_task(
+                    session,
+                    self.config,
+                    client,
+                    task,
+                    actor="runtime",
+                )
+                return
+
+            discover = await resource_discover_service.next_due_task(session)
+            if discover is not None:
+                outcome = await resource_discover_service.run_task(
+                    session,
+                    self.config,
+                    client,
+                    discover,
+                    account_id=account_id,
+                )
+                if outcome.new_resources:
+                    logger.info(
+                        "发现任务「{}」新增 {} 条候选",
+                        outcome.keyword,
+                        outcome.new_resources,
+                    )
+                return
+
+            candidates = await resource_service.next_probe_candidates(session, limit=1)
+            if not candidates:
+                return
+            outcome = await resource_probe_service.probe_resource(
+                session,
+                self.config,
+                client,
+                candidates[0],
+                account_id=account_id,
+            )
+            if outcome.new_resources:
+                logger.info(
+                    "探测资源 {} 时滚出 {} 条新候选",
+                    candidates[0].id,
+                    outcome.new_resources,
+                )
 
     async def _deliver_once(self, client: Any) -> int:
         """投递一条就绪任务；返回 1 表示有投递，0 表示队列空。"""

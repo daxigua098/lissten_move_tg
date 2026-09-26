@@ -306,6 +306,44 @@ async def probe_account(db) -> int:
         return account.id
 
 
+@pytest.fixture
+async def resource_api_client(api_config, fake_resource_client) -> AsyncIterator[AsyncClient]:
+    """带资源替身客户端与一个已登记账号的接口客户端。"""
+    from app.api.app import create_app
+    from app.db.session import (
+        create_schema,
+        dispose_database,
+        init_database,
+        session_scope,
+    )
+    from app.services import tg_account_service
+
+    await init_database(api_config)
+    await create_schema()
+    await _create_admin(api_config, must_change_password=False, is_builtin=True)
+    async with session_scope() as session:
+        await tg_account_service.create_account(
+            session,
+            api_config,
+            name="采集号",
+            phone="+8613800001111",
+            api_id=123456,
+            api_hash="abcdef0123456789abcdef0123456789",
+            is_default=True,
+        )
+
+    async def factory(_config, **_kwargs):
+        return fake_resource_client
+
+    app = create_app(api_config, account_client_factory=factory)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+            yield http_client
+    finally:
+        await dispose_database()
+
+
 async def _create_admin(
     api_config,
     *,

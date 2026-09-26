@@ -124,6 +124,22 @@ def load_title_history(resource: TgResource) -> list[dict[str, Any]]:
     return value if isinstance(value, list) else []
 
 
+def load_samples(resource: TgResource) -> list[dict[str, Any]]:
+    """最近一次探测留下的样本消息预览。"""
+    try:
+        value = json.loads(resource.sample_messages or "[]")
+    except (TypeError, json.JSONDecodeError):
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def dump_samples(items: Iterable[dict[str, Any]] | None, *, limit: int = 20) -> str:
+    """序列化样本预览（最多存 limit 条）。"""
+    return json.dumps(list(items or [])[:limit], ensure_ascii=False)
+
+
 # ------------------------------------------------------------------ 查询
 
 
@@ -305,6 +321,7 @@ async def apply_metrics(
     chat_type: str | None = None,
     username: str | None = None,
     next_refresh_at: datetime | None = None,
+    sample_preview: Sequence[dict[str, Any]] | None = None,
 ) -> TgResource:
     """把一次探测的结果写进资源，并追加一条探测日志。
 
@@ -339,6 +356,8 @@ async def apply_metrics(
         resource.last_active_at = metrics.last_active_at
         resource.is_index_group = metrics.is_index_group
         resource.index_score = metrics.index_score
+        if sample_preview is not None:
+            resource.sample_messages = dump_samples(sample_preview)
         if resource.status == RESOURCE_CANDIDATE:
             resource.status = RESOURCE_PROBED
 

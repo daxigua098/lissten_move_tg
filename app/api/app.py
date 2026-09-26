@@ -26,6 +26,7 @@ from app.api.routers import (
     leads,
     logs,
     meta,
+    resources,
     routes,
     runtime,
     sources,
@@ -111,6 +112,7 @@ def create_app(
     app.include_router(keywords.keyword_router)
     app.include_router(leads.router)
     app.include_router(hot_keywords.router)
+    app.include_router(resources.router)
     app.include_router(uploads.router)
     app.include_router(runtime.router)
     app.include_router(jobs.router)

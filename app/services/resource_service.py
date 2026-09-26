@@ -27,6 +27,7 @@ from app.core.resource_probe import ProbeMetrics
 from app.db.base import as_utc, utc_now
 from app.db.models import (
     CONTENT_RATINGS,
+    JOIN_ACTION_JOIN,
     PROBE_FAILED,
     PROBE_OK,
     RATING_SENSITIVE,
@@ -36,6 +37,7 @@ from app.db.models import (
     RESOURCE_PROBED,
     RESOURCE_RETIRED,
     RESOURCE_STATUSES,
+    ResourceJoinTask,
     ResourceProbeLog,
     TgResource,
 )
@@ -788,6 +790,57 @@ def _display_link(resource: TgResource) -> str | None:
     if resource.invite_link:
         return resource.invite_link
     return None
+
+
+# ---------------------------------------------------------------- 加群状态
+
+
+async def latest_join_states(
+    session: AsyncSession,
+    resource_ids: Sequence[int],
+) -> dict[int, dict[str, Any]]:
+    """每条资源最近一次「让账号加入」的结果。
+
+    卡片上要能一眼看出「配置了监听源，但飞机号还没进群」——不然就会出现
+    "链路建好了却什么都收不到"。取每个资源最新的一条 join 任务即可。
+    """
+    wanted = [int(item) for item in resource_ids]
+    if not wanted:
+        return {}
+    rows = await session.scalars(
+        select(ResourceJoinTask)
+        .where(
+            ResourceJoinTask.resource_id.in_(wanted),
+            ResourceJoinTask.action == JOIN_ACTION_JOIN,
+        )
+        .order_by(ResourceJoinTask.id.desc())
+    )
+    states: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        if row.resource_id in states:
+            continue  # id 倒序，第一条就是最新的
+        scheduled = as_utc(row.scheduled_at)
+        finished = as_utc(row.finished_at)
+        states[row.resource_id] = {
+            "task_id": row.id,
+            "status": row.status,
+            "attempts": row.attempts,
+            "last_error": row.last_error,
+            "scheduled_at": scheduled.isoformat() if scheduled else None,
+            "finished_at": finished.isoformat() if finished else None,
+        }
+    return states
+
+
+async def attach_join_states(
+    session: AsyncSession,
+    payloads: Sequence[dict[str, Any]],
+) -> None:
+    """把加群状态挂到已经序列化好的资源上（列表与详情共用）。"""
+    items = [item for item in payloads if item.get("id") is not None]
+    states = await latest_join_states(session, [int(item["id"]) for item in items])
+    for item in items:
+        item["join"] = states.get(int(item["id"]))
 
 
 EXPORT_FIELDS = [

@@ -100,6 +100,41 @@ const queryParams = computed(() => {
 });
 
 const quick = computed(() => counts.value?.quick || {});
+const runtimeRunning = computed(() => overview.value?.runtime?.running ?? true);
+
+const JOIN_LABEL = {
+  pending: "待加入",
+  running: "加入中",
+  success: "已加入",
+  waiting_approval: "待审批",
+  failed: "加入失败",
+};
+const JOIN_TAG = {
+  pending: "warning",
+  running: "warning",
+  success: "success",
+  waiting_approval: "warning",
+  failed: "danger",
+};
+
+/** 账号到底进群没有：探测确认过，或加群任务成功。 */
+function isJoined(row) {
+  return row.resource_state === "active" || row.join?.status === "success";
+}
+
+function joinState(row) {
+  if (isJoined(row)) return { label: "已在群里", type: "success" };
+  if (!row.join) return { label: "未加入", type: "info" };
+  return {
+    label: JOIN_LABEL[row.join.status] || row.join.status,
+    type: JOIN_TAG[row.join.status] || "info",
+  };
+}
+
+/** 已采纳却没进群：链路建好了也收不到数据，必须显式提醒。 */
+function silentRisk(row) {
+  return row.status === "adopted" && !isJoined(row);
+}
 
 function fmtCount(value) {
   if (value === null || value === undefined) return "-";
@@ -331,6 +366,39 @@ async function enqueueJoin(action) {
   }
 }
 
+/** 卡片/详情上的「让账号加入」：排进限速队列。 */
+async function enqueueJoinOne(row) {
+  try {
+    const { data } = await resourcesApi.join({ ids: [row.id] });
+    if (data.failures?.length) {
+      ElMessage.error(data.failures[0].reason);
+    } else {
+      ElMessage.success("已排入加群队列（按限速执行）");
+      if (!runtimeRunning.value) {
+        ElMessage.warning("运行时没在跑：队列要等它在「运行总览」启动后才会执行");
+      }
+    }
+    await load();
+    if (drawerVisible.value && detail.value?.id === row.id) await openDetail(row);
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function copyLink(row) {
+  const link = row.link;
+  if (!link) {
+    ElMessage.warning("这条资源还没有公开链接");
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(link);
+    ElMessage.success("链接已复制");
+  } catch {
+    ElMessage.info(link);
+  }
+}
+
 async function toggleFavorite(row, value) {
   try {
     await resourcesApi.update(row.id, { is_favorite: value });
@@ -551,6 +619,16 @@ onMounted(async () => {
           </el-tag>
         </template>
       </div>
+
+      <el-alert
+        v-if="!runtimeRunning"
+        class="hero-warn"
+        type="warning"
+        :closable="false"
+        show-icon
+        title="运行时没在跑：加群与探测都不会执行"
+        description="排进队列的加群会一直等着。到「运行总览」启动运行时，队列才会按限速执行、才真的能监听到数据。"
+      />
     </div>
 
     <!-- 分类 chips -->
@@ -736,15 +814,40 @@ onMounted(async () => {
             {{ item }}
           </el-tag>
         </div>
+        <!-- 公开链接 + 加群状态：点链接就是 Telegram 的"加入群组/频道"提示 -->
+        <div class="card-link">
+          <a
+            v-if="row.link"
+            :href="row.link"
+            target="_blank"
+            rel="noopener"
+            class="link-a"
+            :title="row.link"
+          >
+            {{ row.username ? `@${row.username}` : "邀请链接" }}
+          </a>
+          <el-button v-if="row.link" size="small" link @click="copyLink(row)">复制链接</el-button>
+          <span v-else class="card-hint">还没有公开链接</span>
+          <el-tag size="small" :type="joinState(row).type">{{ joinState(row).label }}</el-tag>
+          <el-tag v-if="silentRisk(row)" size="small" type="danger">账号没进群，收不到数据</el-tag>
+        </div>
         <div class="card-source">{{ sourceText(row) }}</div>
         <div class="card-actions">
           <el-button size="small" link type="primary" @click="openDetail(row)">详情</el-button>
           <el-button size="small" link type="primary" @click="refreshOne(row)">刷新</el-button>
           <el-button size="small" link type="primary" @click="openAdopt(row)">采纳</el-button>
+          <el-button
+            v-if="!isJoined(row)"
+            size="small"
+            link
+            type="warning"
+            @click="enqueueJoinOne(row)"
+          >
+            让账号加入
+          </el-button>
           <el-button size="small" link @click="toggleFavorite(row, !row.is_favorite)">
             {{ row.is_favorite ? "取消收藏" : "收藏" }}
           </el-button>
-          <el-button size="small" link @click="openAdopt(row)">加入群组池</el-button>
         </div>
       </el-card>
       <div v-if="!rows.length" class="empty">
@@ -800,6 +903,20 @@ onMounted(async () => {
           <template #default="{ row }">
             {{ SOURCE_LABEL[row.source_site] || "-" }}
             <span v-if="row.directory_rank" class="card-hint">#{{ row.directory_rank }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="公开链接" width="120">
+          <template #default="{ row }">
+            <a v-if="row.link" :href="row.link" target="_blank" rel="noopener" class="link-a">
+              打开
+            </a>
+            <span v-else class="card-hint">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="加群" width="120">
+          <template #default="{ row }">
+            <el-tag size="small" :type="joinState(row).type">{{ joinState(row).label }}</el-tag>
+            <el-tag v-if="silentRisk(row)" size="small" type="danger" class="tag-gap">收不到</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="类型" width="80">
@@ -867,6 +984,15 @@ onMounted(async () => {
             <div class="detail-actions">
               <el-button size="small" @click="refreshOne(detail)">刷新</el-button>
               <el-button size="small" @click="openAdopt(detail)">采纳</el-button>
+              <el-button
+                v-if="!isJoined(detail)"
+                size="small"
+                type="warning"
+                plain
+                @click="enqueueJoinOne(detail)"
+              >
+                让账号加入
+              </el-button>
               <el-button size="small" @click="toggleFavorite(detail, !detail.is_favorite)">
                 {{ detail.is_favorite ? "取消收藏" : "收藏" }}
               </el-button>
@@ -914,6 +1040,31 @@ onMounted(async () => {
             <el-descriptions-item label="来源路径" :span="2">
               {{ detail.discovered_from || "-" }}
               <span class="card-hint">（{{ detail.discovered_by || "未知" }}）</span>
+            </el-descriptions-item>
+            <el-descriptions-item label="公开链接" :span="2">
+              <template v-if="detail.link">
+                <a :href="detail.link" target="_blank" rel="noopener" class="link-a">
+                  {{ detail.link }}
+                </a>
+                <el-button size="small" link @click="copyLink(detail)">复制</el-button>
+              </template>
+              <span v-else class="card-hint">
+                还没有公开链接——私密群需要先拿到邀请链接才能加入
+              </span>
+            </el-descriptions-item>
+            <el-descriptions-item label="加群状态" :span="2">
+              <el-tag size="small" :type="joinState(detail).type">
+                {{ joinState(detail).label }}
+              </el-tag>
+              <span v-if="detail.join?.scheduled_at" class="card-hint">
+                计划 {{ fmtTime(detail.join.scheduled_at) }}
+              </span>
+              <span v-if="detail.join?.last_error" class="card-hint">
+                · {{ detail.join.last_error }}
+              </span>
+              <el-tag v-if="silentRisk(detail)" size="small" type="danger" class="tag-gap">
+                账号没进群，监听不到数据
+              </el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="最后活跃">{{ fmtTime(detail.last_active_at) }}</el-descriptions-item>
             <el-descriptions-item label="最后探测">{{ fmtTime(detail.last_probed_at) }}</el-descriptions-item>
@@ -1093,6 +1244,10 @@ onMounted(async () => {
   flex-wrap: wrap;
 }
 
+.hero-warn {
+  margin-top: 12px;
+}
+
 .chips {
   display: flex;
   align-items: center;
@@ -1232,6 +1387,25 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.card-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+
+.link-a {
+  color: var(--tg-accent);
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.link-a:hover {
+  text-decoration: underline;
 }
 
 .card-actions {

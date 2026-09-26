@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_role, session_dependency
 from app.core.config import AppConfig
-from app.core.heartbeat import heartbeat_age_seconds, read_status
+from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status
 from app.core.runtime_control import (
     read_control,
     set_paused,
@@ -28,8 +28,13 @@ async def _snapshot(config: AppConfig, session: AsyncSession) -> dict[str, Any]:
     control = read_control(control_path)
     jobs = await delivery_service.job_stats(session)
     pending_routes = await runtime_service.pending_route_ids(session, config)
+    # 进程被杀之后状态文件会停在 running：心跳过期就按「已停止」报，
+    # 否则界面会一直显示「运行中」，而加群 / 探测 / 投递其实都没在跑
+    status = (heartbeat or {}).get("status", "stopped")
+    if status == "running" and not is_running(heartbeat):
+        status = "stopped"
     return {
-        "status": (heartbeat or {}).get("status", "stopped"),
+        "status": status,
         "pid": (heartbeat or {}).get("pid"),
         "heartbeat_at": (heartbeat or {}).get("heartbeat_at"),
         "heartbeat_age_seconds": heartbeat_age_seconds(heartbeat),

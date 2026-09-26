@@ -8,6 +8,9 @@ from typing import Any
 
 from app.core.paths import read_json, write_json_atomic
 
+# 心跳超过这个秒数就认为运行时已经不在了（运行时每 30 秒左右写一次）
+STALE_AFTER_SECONDS = 90
+
 
 def write_status(path: str | Path, payload: dict[str, Any]) -> dict[str, Any]:
     """写入运行状态（原子写，避免读到半截内容）。"""
@@ -39,3 +42,15 @@ def heartbeat_age_seconds(status: dict[str, Any] | None) -> float | None:
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=UTC)
     return (datetime.now(UTC) - moment).total_seconds()
+
+
+def is_running(status: dict[str, Any] | None) -> bool:
+    """运行时真的在跑吗：状态是 running，而且心跳还新鲜。
+
+    进程被杀之后状态文件会停在 ``running``，只看那个字符串会让界面一直显示
+    「运行中」——而加群、探测、投递其实全停了。
+    """
+    if not status or status.get("status") != "running":
+        return False
+    age = heartbeat_age_seconds(status)
+    return age is not None and age <= STALE_AFTER_SECONDS

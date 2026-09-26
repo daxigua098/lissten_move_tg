@@ -33,7 +33,6 @@ from app.db.models import (
     JOIN_RUNNING,
     JOIN_SUCCESS,
     JOIN_WAITING_APPROVAL,
-    RESOURCE_ADOPTED,
     RESOURCE_RETIRED,
     STATE_LEFT,
     ResourceJoinTask,
@@ -175,9 +174,6 @@ async def enqueue(
         raise ValidationFailedError(f"动作必须是 {'/'.join(JOIN_ACTIONS)} 之一")
     if resource.is_blacklisted and action == JOIN_ACTION_JOIN:
         raise ConflictError("该资源在黑名单里，不会加入")
-    if resource.status == RESOURCE_ADOPTED and action == JOIN_ACTION_JOIN:
-        # 已经采纳过：让他知道，而不是悄悄再排一次
-        raise ConflictError("该资源已采纳，无需重复加入")
 
     resolved_account = await resolve_account_id(session, account_id)
     existing = await session.scalar(

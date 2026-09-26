@@ -314,6 +314,53 @@ async def test_adopt_unprobed_resource_queues_join(
     assert body["join_task"]["status"] == "pending"
 
 
+async def test_resource_exposes_public_link_and_join_state(
+    resource_api_client,
+    fake_resource_client,
+) -> None:
+    """卡片要能点开公开链接（Telegram 会提示加入），并看见账号加群状态。"""
+    headers = await _token(resource_api_client)
+    await _seed_resource(fake_resource_client, tg_id=4401, username="public_group")
+    await resource_api_client.post(
+        "/api/resources/import",
+        headers=headers,
+        json={"inputs": ["https://t.me/public_group"]},
+    )
+
+    item = (await resource_api_client.get("/api/resources", headers=headers)).json()["items"][0]
+    assert item["link"] == "https://t.me/public_group"
+    # 还没排过加群，状态为空
+    assert item["join"] is None
+
+    queued = await resource_api_client.post(
+        "/api/resources/join",
+        headers=headers,
+        json={"ids": [item["id"]]},
+    )
+    assert queued.status_code == 201
+    assert queued.json()["failures"] == []
+
+    listed = (await resource_api_client.get("/api/resources", headers=headers)).json()["items"][0]
+    assert listed["join"]["status"] == "pending"
+    assert listed["join"]["scheduled_at"] is not None
+
+    detail = await resource_api_client.get(f"/api/resources/{item['id']}", headers=headers)
+    assert detail.json()["join"]["status"] == "pending"
+    assert detail.json()["link"] == "https://t.me/public_group"
+
+
+async def test_overview_reports_runtime_state(resource_api_client) -> None:
+    """概览要说明运行时到底在不在跑——它停了加群与探测都不会执行。"""
+    headers = await _token(resource_api_client)
+
+    response = await resource_api_client.get("/api/resources/overview", headers=headers)
+
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert runtime["running"] is False
+    assert runtime["status"] == "stopped"
+
+
 async def test_export_csv(resource_api_client, fake_resource_client) -> None:
     headers = await _token(resource_api_client)
     await _seed_resource(fake_resource_client, tg_id=4401, username="csv_group")

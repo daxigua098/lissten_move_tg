@@ -93,8 +93,12 @@ async def test_blacklisted_cannot_enqueue(db, probe_account) -> None:
         raise AssertionError("黑名单资源不该进加群队列")
 
 
-async def test_adopted_cannot_enqueue(db, probe_account) -> None:
-    resource = await _create(3004, "已采纳群")
+async def test_adopted_resource_can_still_queue_join(db, probe_account) -> None:
+    """已采纳也能补排加群：采纳后才发现账号没进群，必须能救回来。
+
+    排队中的任务会被去重，所以重复点「让账号加入」不会攒出一堆任务。
+    """
+    resource = await _create(3004, "已采纳群", username="adopted_group")
     async with session_scope() as session:
         row = await resource_service.require_resource(session, resource.id)
         await resource_service.apply_metrics(session, row, ProbeMetrics())
@@ -102,12 +106,14 @@ async def test_adopted_cannot_enqueue(db, probe_account) -> None:
         row = await resource_service.require_resource(session, resource.id)
         await resource_service.mark_adopted(session, row, adopted_by="admin")
 
-    try:
-        await _enqueue(db, resource.id, probe_account)
-    except ConflictError as exc:
-        assert "已采纳" in exc.detail
-    else:  # pragma: no cover
-        raise AssertionError("已采纳的资源不该重复进加群队列")
+    task_id = await _enqueue(db, resource.id, probe_account)
+    again = await _enqueue(db, resource.id, probe_account)
+
+    async with session_scope() as session:
+        task = await session.get(ResourceJoinTask, task_id)
+        assert task is not None
+        assert task.status == JOIN_PENDING
+    assert again == task_id
 
 
 async def test_hourly_limit_pushes_next_slot(db, probe_account) -> None:

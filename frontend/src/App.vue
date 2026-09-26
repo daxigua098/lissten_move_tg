@@ -76,7 +76,7 @@ function logoutAll() {
       <el-header class="shell-header">
         <span class="page-title">{{ route.name === "dashboard" ? "运行总览" : "" }}</span>
         <div class="header-right">
-          <el-tag type="success" effect="light">服务运行中</el-tag>
+          <el-tag type="success" effect="light">后台服务正常</el-tag>
           <span class="card-hint">
             {{ auth.username }} ·
             {{ auth.role === "super_admin" ? "超级管理员" : auth.role === "sub_admin" ? "子管理员" : "只读" }}

@@ -26,6 +26,7 @@ from app.api.schemas.resource import (
 )
 from app.core.config import AppConfig
 from app.core.errors import NotFoundError, ValidationFailedError
+from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status
 from app.core.telegram_client import ChatProfile
 from app.db.models import ROLE_SUB_ADMIN
 from app.services import (
@@ -122,11 +123,18 @@ async def list_resources(
         offset=offset,
     )
     return {
-        "items": [resource_service.serialize_resource(row) for row in rows],
+        "items": await _serialize_many(session, rows),
         "total": total,
         "limit": limit,
         "offset": offset,
     }
+
+
+async def _serialize_many(session: AsyncSession, rows: Any) -> list[dict[str, Any]]:
+    """序列化一批资源，并把「让账号加入」的最近状态一起带上。"""
+    items = [resource_service.serialize_resource(row) for row in rows]
+    await resource_service.attach_join_states(session, items)
+    return items
 
 
 @router.get("/overview")
@@ -153,6 +161,18 @@ async def resource_overview(
         "join_queue": join_stats.get("pending", 0),
         "join_waiting_approval": join_stats.get("waiting_approval", 0),
         "resources": stats,
+        # 加群与探测都由运行时执行：它没在跑的话，队列只会越积越多
+        "runtime": _runtime_snapshot(config),
+    }
+
+
+def _runtime_snapshot(config: AppConfig) -> dict[str, Any]:
+    """运行时是否真的在跑（看心跳新鲜度，不看那条可能过期的状态字符串）。"""
+    heartbeat = read_status(config.path(config.runtime.status_file))
+    return {
+        "status": (heartbeat or {}).get("status", "stopped"),
+        "heartbeat_age_seconds": heartbeat_age_seconds(heartbeat),
+        "running": is_running(heartbeat),
     }
 
 
@@ -471,6 +491,7 @@ async def resource_detail(
     """资源详情：指标、样本消息预览、探测历史（趋势）与来源路径。"""
     resource = await resource_service.require_resource(session, resource_id)
     payload = resource_service.serialize_resource(resource)
+    await resource_service.attach_join_states(session, [payload])
     payload["samples"] = resource_service.load_samples(resource)
     payload["title_history"] = resource_service.load_title_history(resource)
     logs = await resource_service.probe_history(session, resource_id)

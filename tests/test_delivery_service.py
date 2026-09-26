@@ -348,12 +348,100 @@ async def test_repost_mode_uses_cleaned_caption(db, fake_delivery_client) -> Non
             a_config=ACarryConfig(ad_policy="none", text_mode="clean"),
             source_entity="src",
             target_entity="dst",
-            source_message=fake_message(801, "正文 https://ad.example.com", photo=True),
+            source_messages=[fake_message(801, "正文 https://ad.example.com", photo=True)],
             caption="正文",
         )
 
     # 净化模式走重新上传，而不是转发
     assert fake_delivery_client.forwarded == []
+    assert fake_delivery_client.sent[0]["caption"] == "正文"
+
+
+async def test_album_job_forwards_all_media_in_one_call(db, fake_delivery_client) -> None:
+    """一条相册任务只发一次，全部媒体 ID 一起转发（不再逐张刷屏）。"""
+    route_id, source_id, target_ids = await _prepare_route(db)
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        jobs = await delivery_service.enqueue_message(
+            session,
+            route=route,
+            target_chat_ids=target_ids,
+            source_chat_id=source_id,
+            source_message_id=1103,
+            media_group_id=555,
+            source_message_ids=[1101, 1102, 1103],
+        )
+        job_id = jobs[0].id
+
+    async with session_scope() as session:
+        job = await session.get(DeliveryJob, job_id)
+        route = await route_service.get_route(session, route_id)
+        source_chat = await session.get(Chat, source_id)
+        target_chat = await session.get(Chat, target_ids[0])
+        await delivery_service.deliver_job(
+            session,
+            db,
+            job=job,
+            route=route,
+            client=fake_delivery_client,
+            source_chat=source_chat,
+            target_chat=target_chat,
+            a_config=ACarryConfig(ad_policy="none"),
+            source_entity="src",
+            target_entity="dst",
+        )
+
+    assert len(fake_delivery_client.forwarded) == 1  # 只有一次发送
+    assert fake_delivery_client.forwarded[0]["ids"] == [1101, 1102, 1103]
+
+
+async def test_album_repost_mode_sends_as_one_album(db, fake_delivery_client) -> None:
+    """净化模式下，整组媒体作为一条相册发出。"""
+    route_id, source_id, target_ids = await _prepare_route(
+        db,
+        a_config={"ad_policy": "none", "text_mode": "clean"},
+    )
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        jobs = await delivery_service.enqueue_message(
+            session,
+            route=route,
+            target_chat_ids=target_ids,
+            source_chat_id=source_id,
+            source_message_id=1203,
+            media_group_id=777,
+            source_message_ids=[1201, 1202, 1203],
+        )
+        job_id = jobs[0].id
+
+    album = [
+        fake_message(1201, "正文 https://ad.example.com", photo=True),
+        fake_message(1202, photo=True),
+        fake_message(1203, photo=True),
+    ]
+    async with session_scope() as session:
+        job = await session.get(DeliveryJob, job_id)
+        route = await route_service.get_route(session, route_id)
+        source_chat = await session.get(Chat, source_id)
+        target_chat = await session.get(Chat, target_ids[0])
+        await delivery_service.deliver_job(
+            session,
+            db,
+            job=job,
+            route=route,
+            client=fake_delivery_client,
+            source_chat=source_chat,
+            target_chat=target_chat,
+            a_config=ACarryConfig(ad_policy="none", text_mode="clean"),
+            source_entity="src",
+            target_entity="dst",
+            source_messages=album,
+            caption="正文",
+        )
+
+    assert fake_delivery_client.forwarded == []  # 没有逐条转发
+    assert len(fake_delivery_client.sent) == 1  # 只发了一条
+    assert fake_delivery_client.sent[0]["file"] == album  # 整组媒体一起发
     assert fake_delivery_client.sent[0]["caption"] == "正文"
 
 

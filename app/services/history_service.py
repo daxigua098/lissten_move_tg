@@ -9,7 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import AppConfig
 from app.core.content_cleaner import (
+    KIND_TEXT,
     CleanRules,
+    MessageView,
+    clean_text,
     filter_reason,
     resolve_caption,
 )
@@ -84,34 +87,38 @@ async def sync_route_history(
     filtered = 0
     advanced: dict[int, int] = {}
 
+    views: list[MessageView] = []
     for message in messages:
         view = message_view_from_telethon(message)
         if view.message_id <= start_from:
             continue
-        inspected += 1
+        views.append(view)
 
-        if apply_filter:
-            reason = filter_reason(view, content_types=a_config.content_types)
-            if reason is not None:
+    for group in album_groups(views):
+        inspected += len(group)
+        kept: list[MessageView] = []
+        for view in group:
+            if apply_filter:
+                reason = filter_reason(view, content_types=a_config.content_types)
+                if reason is not None:
+                    filtered += 1
+                    continue
+            _cleaned, keep = resolve_caption(
+                clean_text(view.text, rules),
+                empty_text_policy=a_config.empty_text_policy,
+                has_media=view.kind != KIND_TEXT,
+            )
+            if not keep:
                 filtered += 1
                 continue
-
-        from app.core.content_cleaner import clean_text, is_empty_text
-
-        caption = clean_text(view.text, rules)
-        cleaned, keep = resolve_caption(
-            caption,
-            empty_text_policy=a_config.empty_text_policy,
-            has_media=view.kind != "text",
-        )
-        if not keep:
-            filtered += 1
+            kept.append(view)
+        if not kept:
             continue
-        if is_empty_text(cleaned):
-            cleaned = ""
 
+        # 相册按整组处理：水位线看最后一条，任务里带上全部消息 ID
+        last_message_id = max(view.message_id for view in kept)
         pending_targets = [
-            chat_id for chat_id in target_ids if view.message_id > watermarks.get(chat_id, 0)
+            chat_id for chat_id in target_ids if last_message_id > watermarks.get(chat_id, 0)
         ]
         if not pending_targets:
             continue
@@ -121,13 +128,13 @@ async def sync_route_history(
             route=route,
             target_chat_ids=pending_targets,
             source_chat_id=route.source_chat_id,
-            source_message_id=view.message_id,
-            media_group_id=view.grouped_id,
-            source_message_ids=[view.message_id],
+            source_message_id=last_message_id,
+            media_group_id=kept[0].grouped_id,
+            source_message_ids=[view.message_id for view in kept],
         )
         enqueued += len(created)
         for chat_id in pending_targets:
-            advanced[chat_id] = max(advanced.get(chat_id, 0), view.message_id)
+            advanced[chat_id] = max(advanced.get(chat_id, 0), last_message_id)
 
     # 入队即推进水位线：任务已持久化，重启后仍会继续投递
     for chat_id, message_id in advanced.items():
@@ -145,6 +152,27 @@ async def sync_route_history(
         "filtered": filtered,
         "targets": len(target_ids),
     }
+
+
+def album_groups(views: list[MessageView]) -> list[list[MessageView]]:
+    """按相册把消息分组：同一条帖子的多张图/视频合成一组。
+
+    相册消息在历史里本来就是连续的，这里仍按 ``grouped_id`` 归组，
+    这样不依赖顺序，中间夹了别的内容也不会切错。
+    """
+    groups: list[list[MessageView]] = []
+    position_by_group: dict[int, int] = {}
+    for view in views:
+        if view.grouped_id is None:
+            groups.append([view])
+            continue
+        position = position_by_group.get(view.grouped_id)
+        if position is None:
+            position_by_group[view.grouped_id] = len(groups)
+            groups.append([view])
+        else:
+            groups[position].append(view)
+    return groups
 
 
 async def sync_all_routes(

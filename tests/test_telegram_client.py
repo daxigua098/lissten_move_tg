@@ -295,6 +295,7 @@ async def test_connect_does_not_retry_other_errors(monkeypatch, no_sleep) -> Non
 class RepostClient:
     def __init__(self) -> None:
         self.calls: list[tuple[object, ...]] = []
+        self.files: list[object] = []
 
     async def send_message(self, target: object, text: str):
         self.calls.append(("message", target, text))
@@ -302,6 +303,7 @@ class RepostClient:
 
     async def send_file(self, target: object, *, file: object, caption: str | None):
         self.calls.append(("file", target, caption))
+        self.files.append(file)
         return "sent"
 
 
@@ -324,3 +326,31 @@ async def test_repost_message_handles_text_only_messages() -> None:
         caption="带图的文案",
     )
     assert client.calls[1] == ("file", "T", "带图的文案")
+
+
+async def test_repost_album_sends_all_media_at_once() -> None:
+    """相册整体重发：一次 send_file 带上整组媒体，而不是一张一张发。"""
+    from app.core.telegram_client import repost_album
+
+    album = [SimpleNamespace(media=object(), id=index) for index in (1, 2, 3)]
+    client = RepostClient()
+
+    await repost_album(client, target_entity="T", messages=album, caption="整组文案")
+
+    assert len(client.calls) == 1
+    assert client.calls[0] == ("file", "T", "整组文案")
+    assert client.files[0] == album
+
+
+async def test_repost_album_falls_back_for_single_and_text_only() -> None:
+    from app.core.telegram_client import repost_album
+
+    single = [SimpleNamespace(media=object())]
+    client = RepostClient()
+    await repost_album(client, target_entity="T", messages=single, caption="一条")
+    assert client.files[0] == single[0]  # 只有一条时按普通消息发
+
+    text_only = [SimpleNamespace(media=None), SimpleNamespace(media=None)]
+    client = RepostClient()
+    await repost_album(client, target_entity="T", messages=text_only, caption="只有文字")
+    assert client.calls == [("message", "T", "只有文字")]

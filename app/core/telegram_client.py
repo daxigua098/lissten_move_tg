@@ -252,6 +252,30 @@ async def repost_message(
     )
 
 
+async def repost_album(
+    client: Any,
+    *,
+    target_entity: Any,
+    messages: list[Any],
+    caption: str | None,
+) -> Any:
+    """把一条帖子的多条媒体作为**一条相册**发出去。
+
+    关键点：这里传的是源消息对象，Telethon 会把它们转成
+    ``InputMediaPhoto`` / ``InputMediaDocument``（引用原文件），
+    再用 ``messages.sendMultiMedia`` 发送——**不下载、不重新上传**，
+    目标群里看到的就是一条多图/多视频消息，而不是逐张刷屏。
+
+    文案挂在这条相册的第一张上（Telegram 的相册就是这样显示的）。
+    """
+    items = [item for item in messages if getattr(item, "media", None) is not None]
+    if not items:
+        return await client.send_message(target_entity, caption or "")
+    if len(items) == 1:
+        return await client.send_file(target_entity, file=items[0], caption=caption or None)
+    return await client.send_file(target_entity, file=items, caption=caption or None)
+
+
 async def send_ad(
     client: Any,
     *,

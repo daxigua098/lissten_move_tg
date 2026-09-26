@@ -13,6 +13,7 @@ from app.core.route_config import ACarryConfig
 from app.core.telegram_client import (
     forward_to_target,
     render_ad_text,
+    repost_album,
     repost_message,
     send_ad,
 )
@@ -207,24 +208,37 @@ async def deliver_job(
     ad_asset: AdAsset | None = None,
     source_entity: Any = None,
     target_entity: Any = None,
-    source_message: Any = None,
+    source_messages: list[Any] | None = None,
     caption: str | None = None,
 ) -> DeliveryJob:
-    """执行一次投递：转发消息 → 按策略附加广告 → 更新状态。"""
+    """执行一次投递：转发消息 → 按策略附加广告 → 更新状态。
+
+    ``source_messages`` 是这条帖子包含的所有消息：多张图/视频（相册）会作为
+    一条消息发出去，而不是逐张发。
+    """
     job.status = JOB_PROCESSING
     job.attempt_count += 1
     await session.commit()
 
-    message_ids = _message_ids(job)
+    message_ids = job_message_ids(job)
     try:
-        if a_config.text_mode == "clean" and source_message is not None:
-            # 净化后的文案只能通过重新上传生效，转发无法修改原文
-            result = await repost_message(
-                client,
-                target_entity=target_entity,
-                message=source_message,
-                caption=caption,
-            )
+        if a_config.text_mode == "clean" and source_messages:
+            # 净化后的文案只能通过重新上传生效，转发无法修改原文。
+            # 多条媒体走相册发送（同样不会重新上传，见 repost_album）。
+            if len(source_messages) == 1:
+                result = await repost_message(
+                    client,
+                    target_entity=target_entity,
+                    message=source_messages[0],
+                    caption=caption,
+                )
+            else:
+                result = await repost_album(
+                    client,
+                    target_entity=target_entity,
+                    messages=source_messages,
+                    caption=caption,
+                )
         else:
             result = await forward_to_target(
                 client,
@@ -346,7 +360,8 @@ async def cancel_pending_jobs(session: AsyncSession) -> int:
     return int(result.rowcount or 0)
 
 
-def _message_ids(job: DeliveryJob) -> list[int]:
+def job_message_ids(job: DeliveryJob) -> list[int]:
+    """这条任务要处理的源消息 ID（相册就是一组 ID）。"""
     if job.source_message_ids:
         values = [item.strip() for item in job.source_message_ids.split(",") if item.strip()]
         if values:

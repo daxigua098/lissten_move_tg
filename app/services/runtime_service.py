@@ -11,6 +11,7 @@ import contextlib
 import os
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,9 @@ from app.core.bot_api import bot_api_chat_id
 from app.core.config import AppConfig
 from app.core.content_cleaner import (
     KIND_SERVICE,
+    KIND_TEXT,
     CleanRules,
+    MessageView,
     clean_text,
     filter_reason,
     resolve_caption,
@@ -59,6 +62,20 @@ from app.services import (
 # 资源发现的节奏：加群 / 搜索属于会被风控的动作，别跟着投递循环每 2 秒跑一次
 RESOURCE_TICK_SECONDS = 30.0
 
+# 相册收齐窗口：同一条帖子的多张图/视频是逐条到达的，等这一批安静下来再入队
+ALBUM_WINDOW_SECONDS = 2.5
+
+
+@dataclass
+class _AlbumBuffer:
+    """一条正在收集中的相册帖子。"""
+
+    views: dict[int, MessageView] = field(default_factory=dict)
+    routes: list[Any] = field(default_factory=list)
+    # 收齐截止时间（事件循环时钟）。每来一条新成员就往后推。
+    deadline: float = 0.0
+    task: Any = None
+
 
 class RuntimeService:
     """A 线搬运运行时。"""
@@ -85,6 +102,8 @@ class RuntimeService:
         self._last_purge_at = float("-inf")
         # 资源发现（加群 / 搜索 / 探测）上次执行的时间
         self._last_resource_tick = float("-inf")
+        # 相册缓冲：grouped_id → 还没入队的帖子
+        self._album_buffer: dict[int, _AlbumBuffer] = {}
         # 本次启动注册了哪些线路（写进心跳，界面上用来发现"改了但没重启"）
         self._registered: dict[str, Any] = {}
         # 机器人（Bot API）客户端缓存：sender_mode=bot 的线路用它们发言
@@ -131,6 +150,9 @@ class RuntimeService:
             try:
                 await self._loop(client)
             finally:
+                # 停止前把还没入队的相册冲出去，别丢掉刚发的帖子
+                with contextlib.suppress(Exception):
+                    await self._flush_pending_albums()
                 heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat_task
@@ -279,43 +301,147 @@ class RuntimeService:
         return counts
 
     async def _on_new_message(self, event: Any, routes: list[Route]) -> None:
-        """实时消息入队。"""
+        """实时消息入队；相册先攒一下，收齐后当成一条帖子处理。"""
         view = message_view_from_telethon(event.message)
+        if view.grouped_id is not None:
+            self._buffer_album_item(view=view, routes=routes)
+            return
         async with session_scope() as session:
-            for route in routes:
-                fresh = await session.get(Route, route.id)
-                if fresh is None or not fresh.enabled:
-                    continue
-                config = load_a_config(fresh.a_config)
-                if filter_reason(view, content_types=config.content_types) is not None:
-                    continue
-                cleaned, keep = resolve_caption(
-                    clean_text(view.text, CleanRules.from_config(config.model_dump())),
-                    empty_text_policy=config.empty_text_policy,
-                    has_media=view.kind != "text",
-                )
-                if not keep:
-                    continue
-                target_ids = await history_service.route_target_chat_ids(session, fresh.id)
-                if not target_ids:
-                    continue
-                await delivery_service.enqueue_message(
+            await self._enqueue_carry_group(session, routes=routes, views=[view])
+
+    def _buffer_album_item(self, *, view: MessageView, routes: list[Route]) -> None:
+        """把相册里的一条媒体攒进缓冲区，等这一批发完再一起入队。
+
+        实时接收时，一条帖子的多张图/视频是**一条一条**到达的，不能像单条消息
+        那样立刻入队——否则就会逐张发出去（这正是要修的问题）。每来一条就重置
+        计时，安静 ``ALBUM_WINDOW_SECONDS`` 秒后合并成一个任务。
+        """
+        grouped_id = view.grouped_id
+        if grouped_id is None:  # pragma: no cover - 调用方已判空
+            return
+        entry = self._album_buffer.get(grouped_id)
+        if entry is None:
+            entry = _AlbumBuffer()
+            self._album_buffer[grouped_id] = entry
+        entry.views[view.message_id] = view
+        for route in routes:
+            if all(item.id != route.id for item in entry.routes):
+                entry.routes.append(route)
+        # 只是把截止时间往后推，不重建任务：避免频繁 cancel 留下悬空协程
+        entry.deadline = asyncio.get_running_loop().time() + ALBUM_WINDOW_SECONDS
+        if entry.task is None or entry.task.done():
+            entry.task = asyncio.create_task(self._flush_album_later(grouped_id))
+
+    async def _flush_album_later(self, grouped_id: int) -> None:
+        """窗口期内没有新成员到达时，把相册入队。"""
+        loop = asyncio.get_running_loop()
+        while True:
+            entry = self._album_buffer.get(grouped_id)
+            if entry is None:
+                return  # 已经被别处冲刷掉了
+            remaining = entry.deadline - loop.time()
+            if remaining <= 0:
+                break
+            await asyncio.sleep(remaining)
+        try:
+            await self._flush_album(grouped_id)
+        except Exception as exc:  # noqa: BLE001 - 单条帖子失败不影响监听
+            logger.warning("相册 {} 入队失败：{}", grouped_id, exc)
+
+    async def _flush_album(self, grouped_id: int) -> int:
+        """把收齐的相册合并成一个投递任务。"""
+        entry = self._album_buffer.pop(grouped_id, None)
+        if entry is None:
+            return 0
+        task = entry.task
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        views = [entry.views[key] for key in sorted(entry.views)]
+        if not views:
+            return 0
+        async with session_scope() as session:
+            return await self._enqueue_carry_group(
+                session,
+                routes=entry.routes,
+                views=views,
+                media_group_id=grouped_id,
+            )
+
+    async def _flush_pending_albums(self) -> None:
+        """停止运行时前，把缓冲区里还没入队的相册全部冲刷出去。"""
+        for grouped_id in list(self._album_buffer):
+            try:
+                await self._flush_album(grouped_id)
+            except Exception as exc:  # noqa: BLE001 - 退出流程不因单条失败中断
+                logger.warning("退出前冲刷相册 {} 失败：{}", grouped_id, exc)
+
+    async def _enqueue_carry_group(
+        self,
+        session: Any,
+        *,
+        routes: list[Route],
+        views: list[MessageView],
+        media_group_id: int | None = None,
+    ) -> int:
+        """把「一条帖子」入队到各条 A 线，返回入队的线路数。
+
+        ``views`` 是这条帖子包含的全部媒体：单条消息传一个，相册传整组。
+        相册只创建**一个**任务（``source_message_ids`` 带上全部消息 ID），
+        投递时作为一条消息发出，不再逐张刷屏。
+        """
+        enqueued = 0
+        for route in routes:
+            fresh = await session.get(Route, route.id)
+            if fresh is None or not fresh.enabled:
+                continue
+            config = load_a_config(fresh.a_config)
+            kept = [
+                view
+                for view in views
+                if filter_reason(view, content_types=config.content_types) is None
+            ]
+            if not kept:
+                continue
+            # 文案通常挂在这条帖子的第一张上；找第一条有正文的当文案来源
+            text = next((view.text for view in kept if (view.text or "").strip()), "")
+            _cleaned, keep = resolve_caption(
+                clean_text(text, CleanRules.from_config(config.model_dump())),
+                empty_text_policy=config.empty_text_policy,
+                has_media=any(view.kind != KIND_TEXT for view in kept),
+            )
+            if not keep:
+                continue
+            target_ids = await history_service.route_target_chat_ids(session, fresh.id)
+            if not target_ids:
+                continue
+            message_ids = [view.message_id for view in kept]
+            last_message_id = max(message_ids)
+            await delivery_service.enqueue_message(
+                session,
+                route=fresh,
+                target_chat_ids=target_ids,
+                source_chat_id=fresh.source_chat_id,
+                source_message_id=last_message_id,
+                media_group_id=media_group_id,
+                source_message_ids=message_ids,
+            )
+            for chat_id in target_ids:
+                await delivery_service.advance_progress(
                     session,
-                    route=fresh,
-                    target_chat_ids=target_ids,
-                    source_chat_id=fresh.source_chat_id,
-                    source_message_id=view.message_id,
-                    media_group_id=view.grouped_id,
-                    source_message_ids=[view.message_id],
+                    route_id=fresh.id,
+                    target_chat_id=chat_id,
+                    source_message_id=last_message_id,
                 )
-                for chat_id in target_ids:
-                    await delivery_service.advance_progress(
-                        session,
-                        route_id=fresh.id,
-                        target_chat_id=chat_id,
-                        source_message_id=view.message_id,
-                    )
-                logger.info("源消息 {} 已入队（线路 {}）", view.message_id, fresh.name)
+            enqueued += 1
+            logger.info(
+                "源消息 {} 已入队（线路 {}，{} 条媒体）",
+                last_message_id,
+                fresh.name,
+                len(message_ids),
+            )
+        return enqueued
 
     async def _on_monitor_message(
         self,
@@ -747,10 +873,10 @@ class RuntimeService:
                 await delivery_service.mark_failure(session, job, error=str(exc))
                 return 1
 
-            source_message = None
+            source_messages = None
             caption = None
             if a_config.text_mode == "clean":
-                source_message, caption = await self._load_clean_source(
+                source_messages, caption = await self._load_clean_source(
                     client,
                     source_entity=source_entity,
                     job=job,
@@ -769,7 +895,7 @@ class RuntimeService:
                 ad_asset=ad_asset,
                 source_entity=source_entity,
                 target_entity=target_entity,
-                source_message=source_message,
+                source_messages=source_messages,
                 caption=caption,
             )
             return 1
@@ -781,22 +907,23 @@ class RuntimeService:
         source_entity: Any,
         job: Any,
         a_config: Any,
-    ) -> tuple[Any, str | None]:
-        """净化模式：取回原消息并算出净化后的文案。"""
-        raw = job.source_message_ids or str(job.source_message_id)
-        message_ids = [int(item) for item in str(raw).split(",") if item.strip()]
+    ) -> tuple[list[Any] | None, str | None]:
+        """净化模式：取回原消息并算出净化后的文案（相册整组一起取回）。"""
+        message_ids = delivery_service.job_message_ids(job)
         try:
             fetched = await client.get_messages(source_entity, ids=message_ids)
         except Exception as exc:  # noqa: BLE001 - 取不到原消息就退回转发
             logger.warning("取原消息失败，退回转发：{}", exc)
             return None, None
 
-        message = fetched[0] if isinstance(fetched, list) else fetched
-        if message is None:
+        messages = fetched if isinstance(fetched, list) else [fetched]
+        messages = [item for item in messages if item is not None]
+        if not messages:
             return None, None
-        view = message_view_from_telethon(message)
-        caption = clean_text(view.text, CleanRules.from_config(a_config.model_dump()))
-        return message, caption
+        views = [message_view_from_telethon(item) for item in messages]
+        text = next((view.text for view in views if (view.text or "").strip()), "")
+        caption = clean_text(text, CleanRules.from_config(a_config.model_dump()))
+        return messages, caption
 
     async def stop(self) -> None:
         """请求停止循环。"""

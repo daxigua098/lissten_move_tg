@@ -48,3 +48,23 @@ retention:
   archive_days: 30
   audit_days: 180
   login_history_days: 90
+
+resource:                        # 资源发现模块（口径与限速，改完重启运行时生效）
+  sample_depth: 100              # 探测采样消息条数（可选 20 / 100 / 200）
+  index_member_threshold: 5000   # 索引型群：成员数达标线
+  index_feature_threshold: 3     # 索引型群：5 项特征至少命中几项
+  activity_threshold: 30         # 真人活跃度达标线（0-100）
+  link_density_threshold: 30     # 链接密度达标线（每百条）
+  join_hourly_limit: 10          # 加群限速：每小时
+  join_daily_limit: 50           # 加群限速：每天
+  search_daily_limit: 200        # 每天最多搜索次数
+  probe_daily_limit: 500         # 每天最多探测次数
+  search_repeat_hours: 24        # 同一个关键词多久内不重复搜
+  refresh_adopted_days: 1        # 已采纳资源：每天刷新一次
+  refresh_candidate_days: 7      # 候选池（已探测）：每周
+  refresh_low_days: 30           # 低分 / 僵尸：每月
+  review_days: 7                 # 采纳后回看产出
+  probe_log_days: 90             # 探测日志保留天数
+  join_retry_backoff_seconds: 900
+  max_join_attempts: 3
+  index_source_priority: true    # 索引型群里的链接优先探测

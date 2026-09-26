@@ -168,6 +168,42 @@ class RetentionSection(BaseModel):
     login_history_days: int = Field(default=90, ge=1, le=3650)
 
 
+class ResourceSection(BaseModel):
+    """资源发现模块的口径与限速（全部可配，改配置即生效）。
+
+    默认值取自《资源发现模块 需求说明书 v1.1》第 10 章的"待确认"表。
+    """
+
+    # 探测采样深度（可选 20 / 100 / 200）
+    sample_depth: int = Field(default=100, ge=5, le=500)
+    # 索引型群判定（F-R07）
+    index_member_threshold: int = Field(default=5000, ge=0)
+    index_feature_threshold: int = Field(default=3, ge=1, le=5)
+    activity_threshold: float = Field(default=30.0, ge=0, le=100)
+    link_density_threshold: float = Field(default=30.0, ge=0, le=100)
+    # 加群限速（F-R12）
+    join_hourly_limit: int = Field(default=10, ge=1, le=1000)
+    join_daily_limit: int = Field(default=50, ge=1, le=10000)
+    # 每日配额（F-R16）：超限排队而不是报错
+    search_daily_limit: int = Field(default=200, ge=1, le=10000)
+    probe_daily_limit: int = Field(default=500, ge=1, le=100000)
+    # 同一个关键词多久不重复搜（F-R02）
+    search_repeat_hours: int = Field(default=24, ge=1, le=720)
+    # 分层刷新（F-R10）
+    refresh_adopted_days: int = Field(default=1, ge=1, le=365)
+    refresh_candidate_days: int = Field(default=7, ge=1, le=365)
+    refresh_low_days: int = Field(default=30, ge=1, le=3650)
+    # 采纳后回看（F-R14）
+    review_days: int = Field(default=7, ge=1, le=365)
+    # 探测日志保留天数（资源库本身长期保留）
+    probe_log_days: int = Field(default=90, ge=1, le=3650)
+    # 加群失败后的退避（秒）
+    join_retry_backoff_seconds: int = Field(default=900, ge=10, le=86400)
+    max_join_attempts: int = Field(default=3, ge=1, le=10)
+    # 索引型群的链接优先级更高（F-R03）
+    index_source_priority: bool = True
+
+
 class Secrets(BaseModel):
     """来自 .env 的敏感配置。"""
 
@@ -192,6 +228,7 @@ class AppConfig(BaseModel):
     telegram: TelegramSection = Field(default_factory=TelegramSection)
     runtime: RuntimeSection = Field(default_factory=RuntimeSection)
     retention: RetentionSection = Field(default_factory=RetentionSection)
+    resource: ResourceSection = Field(default_factory=ResourceSection)
     secrets: Secrets = Field(default_factory=Secrets)
     project_root: Path
     config_path: Path | None = None

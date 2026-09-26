@@ -199,6 +199,25 @@ class ResourceSection(BaseModel):
     probe_log_days: int = Field(default=90, ge=1, le=3650)
     # 加群失败后的退避（秒）
     join_retry_backoff_seconds: int = Field(default=900, ge=10, le=86400)
+    # 三方目录站（v1.2 F-R20 / F-R21 / F-R24）
+    directory_enabled: bool = True
+    # 启用的站点，按顺序尝试（combot 有数字 ID，tgme 补关键词覆盖面）
+    directory_sites: list[str] = Field(default_factory=lambda: ["combot", "tgme"])
+    # 默认同步范围：语言代码（zh / en …）、global、channels；global 与 channels 建议手动
+    directory_scopes: list[str] = Field(default_factory=lambda: ["zh"])
+    # 目录任务的默认间隔（小时）
+    directory_sync_hours: int = Field(default=24, ge=1, le=720)
+    # 目录同步的每日请求上限（combot 全量群榜需要 381 页 + 频道 198 页）
+    directory_daily_requests: int = Field(default=700, ge=1, le=100000)
+    # 每页条数（实测 combot / tg-me 都是 100）
+    directory_page_size: int = Field(default=100, ge=1, le=500)
+    # 目录请求之间的间隔（秒），防止把三方站打出爆点
+    directory_request_interval: float = Field(default=1.0, ge=0, le=60)
+    # 搜索时的在线补搜（v1.2 F-R19）
+    search_online_default: bool = True
+    search_online_limit: int = Field(default=20, ge=1, le=100)
+    # 卡片墙默认隐藏敏感内容（v1.2 F-R22）
+    content_filter_default: bool = True
     max_join_attempts: int = Field(default=3, ge=1, le=10)
     # 索引型群的链接优先级更高（F-R03）
     index_source_priority: bool = True

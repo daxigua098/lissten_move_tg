@@ -722,3 +722,94 @@ async def bot_client(api_config) -> AsyncIterator[AsyncClient]:
             yield http_client
     finally:
         await dispose_database()
+
+
+class FakeDirectoryFetcher:
+    """目录站抓取替身：按 URL 片段命中预置内容，并记录请求过的地址。"""
+
+    def __init__(self, default: str = "[]") -> None:
+        self.default = default
+        self.pages: list[tuple[str, str]] = []
+        self.errors: dict[str, Exception] = {}
+        self.requests: list[str] = []
+        self.closed = False
+
+    def add_page(self, url_fragment: str, payload: str) -> FakeDirectoryFetcher:
+        """命中 ``url_fragment`` 的请求返回 ``payload``（先注册先匹配）。"""
+        self.pages.append((url_fragment, payload))
+        return self
+
+    def add_error(
+        self,
+        url_fragment: str,
+        message: str = "HTTP 403（站点要求人机校验，按合规约定不绕过）",
+    ) -> FakeDirectoryFetcher:
+        from app.core.directory_client import DirectoryFetchError
+
+        self.errors[url_fragment] = DirectoryFetchError(message)
+        return self
+
+    async def fetch(self, url: str) -> str:
+        self.requests.append(url)
+        for fragment, error in self.errors.items():
+            if fragment in url:
+                raise error
+        for fragment, payload in self.pages:
+            if fragment in url:
+                return payload
+        return self.default
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+@pytest.fixture
+def fake_directory_fetcher() -> FakeDirectoryFetcher:
+    """目录站抓取替身。"""
+    return FakeDirectoryFetcher()
+
+
+@pytest.fixture
+async def directory_api_client(
+    api_config,
+    fake_resource_client,
+    fake_directory_fetcher,
+) -> AsyncIterator[AsyncClient]:
+    """同时带 Telethon 替身与目录抓取替身的接口客户端（预置一个执行账号）。"""
+    from app.api.app import create_app
+    from app.db.session import (
+        create_schema,
+        dispose_database,
+        init_database,
+        session_scope,
+    )
+    from app.services import tg_account_service
+
+    await init_database(api_config)
+    await create_schema()
+    await _create_admin(api_config, must_change_password=False, is_builtin=True)
+    async with session_scope() as session:
+        await tg_account_service.create_account(
+            session,
+            api_config,
+            name="采集号",
+            phone="+8613800001111",
+            api_id=123456,
+            api_hash="abcdef0123456789abcdef0123456789",
+            is_default=True,
+        )
+
+    async def account_factory(_config, **_kwargs):
+        return fake_resource_client
+
+    app = create_app(
+        api_config,
+        account_client_factory=account_factory,
+        directory_fetcher_factory=lambda: fake_directory_fetcher,
+    )
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    try:
+        async with AsyncClient(transport=transport, base_url="http://test") as http_client:
+            yield http_client
+    finally:
+        await dispose_database()

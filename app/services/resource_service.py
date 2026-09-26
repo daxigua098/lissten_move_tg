@@ -26,6 +26,7 @@ from app.core.errors import ConflictError, NotFoundError, ValidationFailedError
 from app.core.resource_probe import ProbeMetrics
 from app.db.base import as_utc, utc_now
 from app.db.models import (
+    CONTENT_RATINGS,
     PROBE_FAILED,
     PROBE_OK,
     RESOURCE_ADOPTED,
@@ -38,7 +39,7 @@ from app.db.models import (
 )
 
 # 人工可以锁定的字段（刷新时不覆盖）
-MANUAL_FIELDS = ("language", "country", "categories", "title")
+MANUAL_FIELDS = ("language", "country", "categories", "title", "content_rating")
 
 # 数据新鲜度分档（F-R01）
 FRESH_SECONDS = 24 * 3600
@@ -61,6 +62,11 @@ class ResourceRef:
     member_count: int | None = None
     member_count_approx: bool = False
     source_url: str | None = None
+    # v1.2：三方目录站的条目带这些字段（一方搜索时为默认值）
+    source_site: str | None = None
+    language: str | None = None
+    directory_rank: int | None = None
+    directory_member_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -244,6 +250,11 @@ async def upsert_resource(
             discovered_by=discovered_by,
             discovered_from=(discovered_from or None),
             source_url=ref.source_url,
+            source_site=ref.source_site,
+            language=ref.language,
+            directory_rank=ref.directory_rank,
+            directory_member_count=ref.directory_member_count,
+            directory_synced_at=now if ref.source_site else None,
             first_seen_at=first_seen_at or now,
         )
         session.add(resource)
@@ -290,6 +301,23 @@ async def upsert_resource(
         changed = True
     if ref.source_url and not resource.source_url:
         resource.source_url = ref.source_url
+        changed = True
+    # v1.2 目录字段：source_site 只记第一次看到的站；名次与三方成员数每次都刷新
+    if ref.source_site and not resource.source_site:
+        resource.source_site = ref.source_site
+        changed = True
+    if ref.directory_member_count is not None:
+        resource.directory_member_count = ref.directory_member_count
+        changed = True
+    if ref.directory_rank is not None:
+        resource.directory_rank = ref.directory_rank
+        changed = True
+    if ref.source_site:
+        resource.directory_synced_at = now
+        changed = True
+    # 目录给的语言只作提示：已经探测出语言（或人工锁定）就不覆盖
+    if ref.language and not resource.language and "language" not in load_locked(resource):
+        resource.language = ref.language
         changed = True
 
     if changed:
@@ -396,6 +424,7 @@ async def update_manual_fields(
     country: str | None = None,
     categories: Sequence[str] | None = None,
     note: str | None = None,
+    content_rating: str | None = None,
 ) -> TgResource:
     """人工修正字段并锁定，之后的刷新不再覆盖它们。"""
     locked = set(load_locked(resource))
@@ -408,6 +437,11 @@ async def update_manual_fields(
     if categories is not None:
         resource.categories = dump_categories(categories)
         locked.add("categories")
+    if content_rating is not None:
+        if content_rating not in CONTENT_RATINGS:
+            raise ValidationFailedError(f"内容分级必须是 {'/'.join(CONTENT_RATINGS)} 之一")
+        resource.content_rating = content_rating
+        locked.add("content_rating")
     if note is not None:
         resource.note = note.strip() or None
     resource.manual_locked = dump_locked(locked)
@@ -547,6 +581,8 @@ def _filters(
     blacklisted: bool | None = None,
     favorite: bool | None = None,
     status: str | None = None,
+    source_site: str | None = None,
+    content_rating: str | None = None,
 ) -> list[Any]:
     """把筛选条件翻成 SQL 条件列表（页面读库，不触发任何 Telegram 请求）。"""
     conditions: list[Any] = []
@@ -586,6 +622,10 @@ def _filters(
         conditions.append(TgResource.is_favorite.is_(favorite))
     if status:
         conditions.append(TgResource.status == status)
+    if source_site:
+        conditions.append(TgResource.source_site == source_site)
+    if content_rating:
+        conditions.append(TgResource.content_rating == content_rating)
     if active_within_days:
         conditions.append(
             TgResource.last_active_at >= utc_now() - timedelta(days=int(active_within_days))
@@ -684,6 +724,16 @@ def serialize_resource(
         "discovered_from": resource.discovered_from,
         "discovered_by": resource.discovered_by,
         "source_url": resource.source_url,
+        "source_site": resource.source_site,
+        "directory_rank": resource.directory_rank,
+        "directory_member_count": resource.directory_member_count,
+        "directory_synced_at": (
+            as_utc(resource.directory_synced_at).isoformat()
+            if resource.directory_synced_at
+            else None
+        ),
+        "content_rating": resource.content_rating,
+        "avatar_path": resource.avatar_path,
         "is_blacklisted": resource.is_blacklisted,
         "blacklist_reason": resource.blacklist_reason,
         "is_favorite": resource.is_favorite,
@@ -733,6 +783,10 @@ EXPORT_FIELDS = [
     ("status", "状态"),
     ("discovered_by", "发现方式"),
     ("discovered_from", "来源路径"),
+    ("source_site", "来源站点"),
+    ("directory_rank", "目录名次"),
+    ("directory_member_count", "目录成员数"),
+    ("content_rating", "内容分级"),
     ("link", "链接"),
     ("last_active_at", "最后活跃"),
     ("last_probed_at", "最后探测"),

@@ -48,6 +48,7 @@ from app.db.session import session_scope
 from app.services import (
     bot_service,
     delivery_service,
+    directory_sync_service,
     history_service,
     hot_keyword_service,
     keyword_service,
@@ -108,6 +109,8 @@ class RuntimeService:
         self._registered: dict[str, Any] = {}
         # 机器人（Bot API）客户端缓存：sender_mode=bot 的线路用它们发言
         self._bot_apis: dict[int, Any] = {}
+        # 目录站抓取器（不需要 Telegram 账号，用到时才建）
+        self._directory_fetcher: Any = None
 
     @property
     def control_path(self):
@@ -246,6 +249,18 @@ class RuntimeService:
             with contextlib.suppress(Exception):
                 await api.close()
             self._bot_apis.pop(bot_id, None)
+        if self._directory_fetcher is not None:
+            with contextlib.suppress(Exception):
+                await self._directory_fetcher.aclose()
+            self._directory_fetcher = None
+
+    def _directory_fetcher_for_tick(self) -> Any:
+        """目录抓取器（懒建；目录同步不需要执行账号）。"""
+        if self._directory_fetcher is None:
+            from app.core.directory_client import DirectoryFetcher
+
+            self._directory_fetcher = DirectoryFetcher()
+        return self._directory_fetcher
 
     async def _register_handlers(self, client: Any) -> int:
         """给每条启用的线路源注册新消息监听（A 线搬运 + B 线监听共用一次注册）。"""
@@ -816,6 +831,24 @@ class RuntimeService:
                         "发现任务「{}」新增 {} 条候选",
                         outcome.keyword,
                         outcome.new_resources,
+                    )
+                return
+
+            directory = await directory_sync_service.next_due_task(session)
+            if directory is not None:
+                outcome = await directory_sync_service.run_task(
+                    session,
+                    self.config,
+                    directory,
+                    fetcher=self._directory_fetcher_for_tick(),
+                )
+                run = outcome.get("run") or {}
+                if run.get("items_added"):
+                    logger.info(
+                        "目录同步 {}/{} 新增 {} 条候选",
+                        outcome.get("source"),
+                        outcome.get("scope"),
+                        run.get("items_added"),
                     )
                 return
 

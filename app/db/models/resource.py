@@ -1,15 +1,19 @@
-"""资源发现模块的数据模型（需求书 v1.1 第 5 章）。
+"""资源发现模块的数据模型（需求书 v1.1 / v1.2 第 5 章）。
 
-五张表：
+六张表：
 
 - ``tg_resources``：群 / 频道资源，``tg_id`` 唯一，候选 → 已探测 → 已采纳 → 已淘汰；
 - ``resource_probe_logs``：每次探测的指标快照，趋势曲线的数据源；
 - ``resource_discover_tasks``：关键词 / 句式 / 热门词发现任务；
+- ``resource_directory_runs``：三方目录站（combot / tg-me）的同步记录，兼作断点续抓；
 - ``resource_join_tasks``：加群队列（限速排队，按账号串行）；
 - ``resource_quotas``：按账号按天的配额计数。
 
 保留策略：资源库与探测日志长期保留（日志按 ``retention`` 可配），
 **不参与**线上线索的 3 天清理——资源是选源依据，删了就白干了。
+
+三方目录站的口径约定（v1.2）：目录站给的成员数存 ``directory_member_count``，
+**不覆盖**我们自己探测出来的 ``member_count``；目录站只负责"发现"。
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -57,13 +62,28 @@ DISCOVER_LINK = "link"
 DISCOVER_HOTWORD = "hotword"
 DISCOVER_PHRASE = "phrase"
 DISCOVER_MANUAL = "manual"
+DISCOVER_DIRECTORY = "directory"  # 三方目录站（F-R20 / F-R21）
 DISCOVER_SOURCES = (
     DISCOVER_KEYWORD,
     DISCOVER_LINK,
     DISCOVER_HOTWORD,
     DISCOVER_PHRASE,
     DISCOVER_MANUAL,
+    DISCOVER_DIRECTORY,
 )
+
+# 数据来源站点（与 discovered_by 互补：这个回答"从哪个站看到的"）
+SITE_TELEGRAM = "telegram"
+SITE_COMBOT = "combot"
+SITE_TGME = "tgme"
+SITE_MANUAL = "manual"
+SOURCE_SITES = (SITE_TELEGRAM, SITE_COMBOT, SITE_TGME, SITE_MANUAL)
+
+# 内容分级（F-R22）：敏感内容默认不出现在卡片墙，也不能自动进加群队列
+RATING_NORMAL = "normal"
+RATING_SENSITIVE = "sensitive"
+RATING_UNKNOWN = "unknown"
+CONTENT_RATINGS = (RATING_NORMAL, RATING_SENSITIVE, RATING_UNKNOWN)
 
 # 加群队列
 JOIN_ACTION_JOIN = "join"
@@ -88,6 +108,12 @@ PROBE_OK = "ok"
 PROBE_FAILED = "failed"
 PROBE_SKIP = "skip"
 PROBE_RESULTS = (PROBE_OK, PROBE_FAILED, PROBE_SKIP)
+
+# 目录同步结果
+SYNC_OK = "ok"
+SYNC_PARTIAL = "partial"
+SYNC_FAILED = "failed"
+SYNC_RESULTS = (SYNC_OK, SYNC_PARTIAL, SYNC_FAILED)
 
 
 class TgResource(TimestampMixin, Base):
@@ -142,6 +168,22 @@ class TgResource(TimestampMixin, Base):
     discovered_from: Mapped[str | None] = mapped_column(String(255), nullable=True)
     discovered_by: Mapped[str | None] = mapped_column(String(16), nullable=True)
     source_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # v1.2：三方目录站相关字段
+    source_site: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
+    directory_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    directory_member_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    directory_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # 内容分级（F-R22），未知 → 常规 / 敏感由探测与目录粗判填
+    content_rating: Mapped[str] = mapped_column(
+        String(16),
+        default=RATING_UNKNOWN,
+        index=True,
+    )
+    # 卡片墙头像的本地相对路径；三方给的是 base64，不入库
+    avatar_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_blacklisted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     blacklist_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_favorite: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -209,7 +251,7 @@ class ResourceProbeLog(TimestampMixin, Base):
 
 
 class ResourceDiscoverTask(TimestampMixin, Base):
-    """发现任务：一个关键词 / 句式 / 热门词。"""
+    """发现任务：一个关键词 / 句式 / 热门词 / 目录范围。"""
 
     __tablename__ = "resource_discover_tasks"
 
@@ -217,6 +259,8 @@ class ResourceDiscoverTask(TimestampMixin, Base):
     kind: Mapped[str] = mapped_column(String(16), default=DISCOVER_KEYWORD, index=True)
     keyword: Mapped[str] = mapped_column(String(64))
     category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 渠道：NULL / telegram 表示走 Telegram 搜索；combot / tgme 走目录同步（v1.2）
+    source: Mapped[str | None] = mapped_column(String(16), nullable=True, index=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     last_run_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -233,6 +277,36 @@ class ResourceDiscoverTask(TimestampMixin, Base):
     flood_waits: Mapped[int] = mapped_column(Integer, default=0)
 
     __table_args__ = (UniqueConstraint("kind", "keyword", name="uq_discover_kind_keyword"),)
+
+
+class ResourceDirectoryRun(TimestampMixin, Base):
+    """一次目录同步的记录（P-R05 的历史表 + 断点续抓的续点）。
+
+    ``pages_done`` 既用于展示进度，也用于**断点续抓**：下次同步从
+    ``pages_done + 1`` 页继续，不会把已经抓过的页再抓一遍。
+    """
+
+    __tablename__ = "resource_directory_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # combot / tgme
+    source: Mapped[str] = mapped_column(String(16), index=True)
+    # 范围：语言代码（zh / en …）、global、channels，或 tg-me 的关键词
+    scope: Mapped[str] = mapped_column(String(32), index=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    pages_done: Mapped[int] = mapped_column(Integer, default=0)
+    pages_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    items_seen: Mapped[int] = mapped_column(Integer, default=0)
+    items_added: Mapped[int] = mapped_column(Integer, default=0)
+    requests_used: Mapped[int] = mapped_column(Integer, default=0)
+    result: Mapped[str] = mapped_column(String(16), default=SYNC_OK, index=True)
+    error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    __table_args__ = (Index("ix_resource_directory_source_scope", "source", "scope"),)
 
 
 class ResourceJoinTask(TimestampMixin, Base):

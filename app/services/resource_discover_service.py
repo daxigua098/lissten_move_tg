@@ -28,6 +28,7 @@ from app.core.telegram_client import (
 )
 from app.db.base import utc_now
 from app.db.models import (
+    DISCOVER_DIRECTORY,
     DISCOVER_HOTWORD,
     DISCOVER_KEYWORD,
     DISCOVER_LINK,
@@ -99,11 +100,14 @@ async def create_task(
     kind: str,
     keyword: str,
     category: str | None = None,
+    source: str | None = None,
     enabled: bool = True,
 ) -> ResourceDiscoverTask:
     """新增一个发现关键词 / 句式。同一种类里同词不重复。"""
     if kind not in DISCOVER_SOURCES:
         raise ValidationFailedError(f"任务类型必须是 {'/'.join(DISCOVER_SOURCES)} 之一")
+    if source and kind != DISCOVER_DIRECTORY:
+        raise ValidationFailedError("只有目录任务（kind=directory）能指定来源站点")
     clean = (keyword or "").strip()
     if not clean:
         raise ValidationFailedError("关键词不能为空")
@@ -119,6 +123,7 @@ async def create_task(
         kind=kind,
         keyword=clean[:64],
         category=(category or "").strip() or None,
+        source=source,
         enabled=enabled,
         next_run_at=utc_now(),
     )
@@ -235,13 +240,17 @@ async def ensure_phrase_presets(session: AsyncSession) -> int:
 
 
 async def next_due_task(session: AsyncSession) -> ResourceDiscoverTask | None:
-    """取一个到点的启用任务（运行时循环用）。"""
+    """取一个到点的启用任务（运行时循环用）。
+
+    目录任务（``kind=directory``）不在 Telegram 搜索的范围内，它由
+    ``directory_sync_service`` 执行，这里必须排除，否则会拿目录范围当关键词去搜群。
+    """
     moment = utc_now()
     return await session.scalar(
         select(ResourceDiscoverTask)
         .where(
             ResourceDiscoverTask.enabled.is_(True),
-            ResourceDiscoverTask.kind != DISCOVER_LINK,
+            ResourceDiscoverTask.kind.not_in((DISCOVER_LINK, DISCOVER_DIRECTORY)),
         )
         .where(
             (ResourceDiscoverTask.next_run_at.is_(None))
@@ -269,6 +278,9 @@ async def run_task(
 
     if not task.enabled:
         return DiscoverOutcome(task.id, task.keyword, skipped="disabled")
+    if task.kind == DISCOVER_DIRECTORY:
+        # 目录任务由 directory_sync_service 跑，这里明确拒绝而不是拿范围去搜群
+        return DiscoverOutcome(task.id, task.keyword, skipped="directory")
 
     # 同一个关键词在窗口期内不重复搜（F-R02）
     if task.last_run_at is not None:
@@ -513,6 +525,7 @@ def serialize_task(task: ResourceDiscoverTask) -> dict[str, Any]:
     return {
         "id": task.id,
         "kind": task.kind,
+        "source": task.source,
         "keyword": task.keyword,
         "category": task.category,
         "enabled": task.enabled,

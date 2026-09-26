@@ -11,6 +11,10 @@ class ResourceUpdateRequest(BaseModel):
     language: str | None = Field(default=None, max_length=16)
     country: str | None = Field(default=None, max_length=8)
     categories: list[str] | None = None
+    content_rating: str | None = Field(
+        default=None,
+        pattern="^(normal|sensitive|unknown)$",
+    )
     note: str | None = Field(default=None, max_length=255)
     is_favorite: bool | None = None
     is_blacklisted: bool | None = None
@@ -66,9 +70,13 @@ class ResourceAdoptRequest(BaseModel):
 class DiscoverTaskCreateRequest(BaseModel):
     """新增发现任务。"""
 
-    kind: str = Field(default="keyword", pattern="^(keyword|phrase|hotword|link)$")
+    kind: str = Field(
+        default="keyword",
+        pattern="^(keyword|phrase|hotword|link|directory)$",
+    )
     keyword: str = Field(min_length=1, max_length=64)
     category: str | None = Field(default=None, max_length=32)
+    source: str | None = Field(default=None, pattern="^(telegram|combot|tgme)$")
     enabled: bool = True
 
 
@@ -78,6 +86,16 @@ class DiscoverTaskUpdateRequest(BaseModel):
     keyword: str | None = Field(default=None, min_length=1, max_length=64)
     category: str | None = Field(default=None, max_length=32)
     enabled: bool | None = None
+
+
+class DirectorySyncRequest(BaseModel):
+    """目录同步一次（F-R20 / F-R21 / F-R24）。"""
+
+    source: str = Field(default="combot", pattern="^(combot|tgme)$")
+    # 语言代码（zh / en …）、global、channels，或 tg-me 的关键词
+    scope: str = Field(default="global", min_length=1, max_length=32)
+    max_pages: int | None = Field(default=None, ge=1, le=1000)
+    resume: bool = True
 
 
 class HotwordImportRequest(BaseModel):

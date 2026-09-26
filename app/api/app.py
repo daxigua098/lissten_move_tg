@@ -68,10 +68,12 @@ def create_app(
     *,
     bot_client_factory: Any = None,
     account_client_factory: Any = None,
+    directory_fetcher_factory: Any = None,
 ) -> FastAPI:
     """构造应用实例。
 
-    两个 factory 用于测试注入 Telethon 替身；生产传 None 走真实调用。
+    三个 factory 用于测试注入替身（Telethon 账号 / 控制机器人 / 目录站抓取）；
+    生产传 None 走真实调用。
     """
     resolved = config or load_config()
     app = FastAPI(
@@ -86,6 +88,7 @@ def create_app(
         account_client_factory = account_client_factory or demo_account_client_factory()
     app.state.bot_client_factory = bot_client_factory
     app.state.account_client_factory = account_client_factory
+    app.state.directory_fetcher_factory = directory_fetcher_factory
     app.add_middleware(
         CORSMiddleware,
         allow_origins=resolved.server.cors_origins,

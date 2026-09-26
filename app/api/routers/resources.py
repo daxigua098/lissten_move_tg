@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_identity, require_role, session_dependency
 from app.api.schemas.resource import (
+    DirectorySyncRequest,
     DiscoverTaskCreateRequest,
     DiscoverTaskUpdateRequest,
     HotwordImportRequest,
@@ -32,6 +33,7 @@ from app.db.models import ROLE_SUB_ADMIN
 from app.services import (
     chat_service,
     chat_sync_service,
+    directory_sync_service,
     resource_discover_service,
     resource_join_service,
     resource_probe_service,
@@ -49,6 +51,16 @@ router = APIRouter(
 
 def _client_factory(request: Request) -> Any:
     return getattr(request.app.state, "account_client_factory", None)
+
+
+def _directory_fetcher(request: Request) -> Any:
+    """目录站抓取器（测试通过 app.state.directory_fetcher_factory 注入替身）。"""
+    factory = getattr(request.app.state, "directory_fetcher_factory", None)
+    if factory is not None:
+        return factory()
+    from app.core.directory_client import DirectoryFetcher
+
+    return DirectoryFetcher()
 
 
 def _config(request: Request) -> AppConfig:
@@ -74,6 +86,11 @@ async def list_resources(
     blacklisted: bool | None = Query(default=None),
     favorite: bool | None = Query(default=None),
     status: str | None = Query(default=None),
+    source_site: str | None = Query(default=None, pattern="^(telegram|combot|tgme|manual)$"),
+    content_rating: str | None = Query(
+        default=None,
+        pattern="^(normal|sensitive|unknown)$",
+    ),
     sort: str = Query(default="activity"),
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
@@ -96,6 +113,8 @@ async def list_resources(
         blacklisted=blacklisted,
         favorite=favorite,
         status=status,
+        source_site=source_site,
+        content_rating=content_rating,
         sort=sort,
         limit=limit,
         offset=offset,
@@ -196,6 +215,11 @@ async def export_resources(
     blacklisted: bool | None = Query(default=None),
     favorite: bool | None = Query(default=None),
     status: str | None = Query(default=None),
+    source_site: str | None = Query(default=None, pattern="^(telegram|combot|tgme|manual)$"),
+    content_rating: str | None = Query(
+        default=None,
+        pattern="^(normal|sensitive|unknown)$",
+    ),
     sort: str = Query(default="activity"),
     session: AsyncSession = Depends(session_dependency),
 ) -> Response:
@@ -215,6 +239,8 @@ async def export_resources(
         blacklisted=blacklisted,
         favorite=favorite,
         status=status,
+        source_site=source_site,
+        content_rating=content_rating,
         sort=sort,
         limit=5000,
         offset=0,
@@ -251,6 +277,7 @@ async def create_discover_task(
         kind=payload.kind,
         keyword=payload.keyword,
         category=payload.category,
+        source=payload.source,
         enabled=payload.enabled,
     )
     return resource_discover_service.serialize_task(task)
@@ -306,6 +333,55 @@ async def delete_discover_task(
 
 
 # ------------------------------------------------------------------ 加群队列
+
+
+@router.get("/directory/sources")
+async def directory_sources(
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """目录站与范围的状态（P-R05 的站点卡片，纯读库）。"""
+    return await directory_sync_service.overview(session, _config(request))
+
+
+@router.get("/directory/runs")
+async def directory_runs(
+    source: str | None = Query(default=None),
+    scope: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """目录同步历史（P-R05 的表）。"""
+    rows = await directory_sync_service.list_runs(
+        session,
+        source=source,
+        scope=scope,
+        limit=limit,
+    )
+    return {"items": [directory_sync_service.serialize_run(row) for row in rows]}
+
+
+@router.post("/directory/sync")
+async def directory_sync(
+    payload: DirectorySyncRequest,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """同步一次目录站（显式动作，会出网；默认从上次的断点继续）。"""
+    fetcher = _directory_fetcher(request)
+    try:
+        return await directory_sync_service.sync_once(
+            session,
+            _config(request),
+            payload.source,
+            payload.scope,
+            fetcher=fetcher,
+            max_pages=payload.max_pages,
+            resume=payload.resume,
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await fetcher.aclose()
 
 
 @router.get("/join-tasks")
@@ -547,6 +623,7 @@ async def update_resource(
         or payload.country is not None
         or payload.categories is not None
         or payload.note is not None
+        or payload.content_rating is not None
     ):
         resource = await resource_service.update_manual_fields(
             session,
@@ -555,6 +632,7 @@ async def update_resource(
             country=payload.country,
             categories=payload.categories,
             note=payload.note,
+            content_rating=payload.content_rating,
         )
     if payload.is_favorite is not None:
         resource = await resource_service.set_favorite(session, resource, payload.is_favorite)

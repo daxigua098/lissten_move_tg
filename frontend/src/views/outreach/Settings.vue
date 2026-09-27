@@ -2,11 +2,12 @@
 import { ElMessage } from "element-plus";
 import { onMounted, reactive, ref } from "vue";
 
-import { outreachApi } from "../../api";
+import { botsApi, outreachApi } from "../../api";
 
 const loading = ref(false);
 const saving = ref(false);
 const autoTemplates = ref([]);
+const bots = ref([]);
 const form = reactive({
   cooldown_hours: 2,
   cross_account_lock_days: 30,
@@ -22,16 +23,20 @@ const form = reactive({
   auto_reply_enabled: false,
   auto_reply_max_rounds: 3,
   auto_reply_template_id: null,
+  handoff_bot_enabled: false,
+  handoff_bot_id: null,
 });
 
 async function load() {
   loading.value = true;
   try {
-    const [{ data }, templates] = await Promise.all([
+    const [{ data }, templates, botList] = await Promise.all([
       outreachApi.settings(),
       outreachApi.templates({ kind: "auto_reply" }),
+      botsApi.list({ limit: 100 }),
     ]);
     autoTemplates.value = templates.data.items.filter((item) => item.enabled);
+    bots.value = botList.data.items.filter((item) => item.enabled);
     form.cooldown_hours = Math.round(data.default_cooldown_seconds / 3600);
     form.cross_account_lock_days = data.cross_account_lock_days;
     form.strict_permanent_lock = data.strict_permanent_lock;
@@ -47,6 +52,8 @@ async function load() {
     form.auto_reply_enabled = !!data.auto_reply_enabled;
     form.auto_reply_max_rounds = data.auto_reply_max_rounds ?? 3;
     form.auto_reply_template_id = data.auto_reply_template_id || null;
+    form.handoff_bot_enabled = !!data.handoff_bot_enabled;
+    form.handoff_bot_id = data.handoff_bot_id || null;
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -72,6 +79,8 @@ async function save() {
       auto_reply_enabled: form.auto_reply_enabled,
       auto_reply_max_rounds: Number(form.auto_reply_max_rounds),
       auto_reply_template_id: form.auto_reply_template_id || null,
+      handoff_bot_enabled: form.handoff_bot_enabled,
+      handoff_bot_id: form.handoff_bot_id || null,
     });
     ElMessage.success("已保存");
     load();
@@ -141,6 +150,20 @@ onMounted(load);
             v-for="item in autoTemplates"
             :key="item.id"
             :label="item.name"
+            :value="item.id"
+          />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="允许把会话转交给 Bot">
+        <el-switch v-model="form.handoff_bot_enabled" />
+        <span class="card-hint">只在用户已回复的会话里可发链接</span>
+      </el-form-item>
+      <el-form-item label="承接 Bot">
+        <el-select v-model="form.handoff_bot_id" clearable placeholder="选择承接私聊的 Bot">
+          <el-option
+            v-for="item in bots"
+            :key="item.id"
+            :label="item.bot_username ? `${item.name}（@${item.bot_username}）` : item.name"
             :value="item.id"
           />
         </el-select>

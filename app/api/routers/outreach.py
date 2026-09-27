@@ -20,6 +20,7 @@ from app.api.deps import (
     tenant_scope_of,
 )
 from app.api.schemas.outreach import (
+    HandoffConsumeRequest,
     OutreachSettingsUpdate,
     OutreachTemplateCreate,
     OutreachTemplateUpdate,
@@ -35,8 +36,10 @@ from app.db.models import (
     OutreachContact,
     OutreachTask,
     OutreachTemplate,
+    TgAccount,
 )
 from app.services import (
+    outreach_handoff_service,
     outreach_queue_service,
     outreach_reply_service,
     outreach_sender_service,
@@ -113,6 +116,9 @@ def _contact(row: OutreachContact) -> dict[str, Any]:
         "contact_state": row.contact_state,
         "state_label": CONTACT_STATE_LABELS.get(row.contact_state, row.contact_state),
         "reply_state": row.reply_state,
+        "owner_type": row.owner_type,
+        "owner_account_id": row.owner_account_id,
+        "owner_bot_id": row.owner_bot_id,
         "contact_count": row.contact_count,
         "follow_up_count": row.follow_up_count,
         "first_contact_at": as_utc(row.first_contact_at),
@@ -339,6 +345,56 @@ async def takeover_contact(
     if contact is None:
         raise NotFoundError("联系人不存在")
     await outreach_sender_service.takeover(session, contact)
+    return _contact(contact)
+
+
+@router.post("/contacts/{contact_id}/handoff")
+async def handoff_contact(
+    contact_id: int,
+    request: Request,
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """引导进 Bot：由归属账号发一条带一次性深链接的消息。"""
+    config: Any = request.app.state.config
+    contact = await session.get(OutreachContact, contact_id)
+    if contact is None:
+        raise NotFoundError("联系人不存在")
+    if not contact.owner_account_id:
+        raise ValidationFailedError("该会话还没有归属账号，不能转交")
+    account = await session.get(TgAccount, contact.owner_account_id)
+    if account is None:
+        raise ValidationFailedError("归属账号不存在")
+    settings = await outreach_settings_service.read_settings(session, contact.tenant_id)
+    factory = getattr(request.app.state, "account_client_factory", None)
+    client = await _open_outreach_client(config, account, factory)
+    try:
+        return await outreach_handoff_service.send_handoff(
+            session,
+            client=client,
+            account=account,
+            contact=contact,
+            settings=settings,
+            created_by=identity.get("username"),
+        )
+    finally:
+        with contextlib.suppress(Exception):
+            await client.disconnect()
+
+
+@router.post("/handoff/consume")
+async def consume_handoff(
+    payload: HandoffConsumeRequest,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """用户按下 Bot 的 Start：令牌作废并把会话归属转给 Bot。"""
+    contact = await outreach_handoff_service.consume(
+        session,
+        payload.token,
+        tg_user_id=payload.tg_user_id,
+    )
+    if contact is None:
+        raise NotFoundError("转交令牌无效或已过期")
     return _contact(contact)
 
 

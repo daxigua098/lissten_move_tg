@@ -23,6 +23,7 @@ LOCK_FOREVER = datetime(9999, 12, 31, tzinfo=UTC)
 BOOL_FIELDS = (
     "strict_permanent_lock",
     "auto_reply_enabled",
+    "handoff_bot_enabled",
     "kill_switch",
     "delete_session_on_account_delete",
 )
@@ -51,6 +52,8 @@ def _dump(row: OutreachSettings) -> dict:
         "auto_reply_enabled": bool(row.auto_reply_enabled),
         "auto_reply_max_rounds": row.auto_reply_max_rounds,
         "auto_reply_template_id": row.auto_reply_template_id,
+        "handoff_bot_enabled": bool(row.handoff_bot_enabled),
+        "handoff_bot_id": row.handoff_bot_id,
         "working_hours": parse_working_hours(row.working_hours),
         "daily_pool_cap": row.daily_pool_cap,
         "kill_switch": bool(row.kill_switch),
@@ -71,6 +74,8 @@ def defaults() -> dict:
         "auto_reply_enabled": False,
         "auto_reply_max_rounds": DEFAULT_AUTO_REPLY_ROUNDS,
         "auto_reply_template_id": None,
+        "handoff_bot_enabled": False,
+        "handoff_bot_id": None,
         "working_hours": [],
         "daily_pool_cap": None,
         "kill_switch": False,
@@ -143,6 +148,10 @@ async def update_settings(session: AsyncSession, tenant_id: int, **fields) -> di
         if not 0 <= value <= 20:
             raise ValidationFailedError("自动回复轮次上限必须在 0～20 之间")
         row.auto_reply_max_rounds = value
+
+    if "handoff_bot_id" in fields:
+        raw_bot = fields["handoff_bot_id"]
+        row.handoff_bot_id = int(raw_bot) if raw_bot else None
 
     if "auto_reply_template_id" in fields:
         raw_template = fields["auto_reply_template_id"]

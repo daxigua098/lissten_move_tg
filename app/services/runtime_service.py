@@ -43,6 +43,7 @@ from app.db.models import (
     DISCOVER_LINK,
     SENDER_MODE_BOT,
     OutreachContact,
+    OutreachSettings,
     Route,
     TenantChat,
 )
@@ -55,6 +56,7 @@ from app.services import (
     hot_keyword_service,
     keyword_service,
     lead_service,
+    outreach_handoff_service,
     outreach_queue_service,
     outreach_reply_service,
     outreach_sender_service,
@@ -68,6 +70,9 @@ from app.services import (
 
 # 资源发现的节奏：加群 / 搜索属于会被风控的动作，别跟着投递循环每 2 秒跑一次
 RESOURCE_TICK_SECONDS = 30.0
+
+# 承接 Bot 的 /start 轮询间隔
+HANDOFF_TICK_SECONDS = 5.0
 
 # 相册收齐窗口：同一条帖子的多张图/视频是逐条到达的，等这一批安静下来再入队
 ALBUM_WINDOW_SECONDS = 2.5
@@ -124,6 +129,9 @@ class RuntimeService:
         # 发信息账号连接（account_id → client）：冷触达自己一组，与监听账号分开
         self._outreach_clients: dict[int, Any] = {}
         self._outreach_reply_handlers: set[int] = set()
+        # 承接 Bot 的 getUpdates 游标（bot_id → offset）
+        self._handoff_offsets: dict[int, int] = {}
+        self._last_handoff_tick = float("-inf")
 
     @property
     def control_path(self):
@@ -235,7 +243,53 @@ class RuntimeService:
                 if result.get("status") == "SENT":
                     sent += 1
             await asyncio.sleep(1.0)
+
+        now = asyncio.get_running_loop().time()
+        if now - self._last_handoff_tick >= HANDOFF_TICK_SECONDS:
+            self._last_handoff_tick = now
+            await self._poll_handoff_updates()
         return sent
+
+    async def _poll_handoff_updates(self) -> None:
+        """轮询承接 Bot 的 /start，把会话归属从账号转给 Bot。"""
+        async with session_scope() as session:
+            rows = list(
+                await session.scalars(
+                    select(OutreachSettings).where(
+                        OutreachSettings.handoff_bot_enabled.is_(True),
+                        OutreachSettings.handoff_bot_id.is_not(None),
+                    )
+                )
+            )
+            targets = [(row.tenant_id, int(row.handoff_bot_id or 0)) for row in rows]
+
+        for _tenant_id, bot_id in targets:
+            if not bot_id:
+                continue
+            try:
+                api = await self._bot_api(bot_id)
+                updates = await api.get_updates(offset=self._handoff_offsets.get(bot_id, 0))
+            except Exception as exc:  # noqa: BLE001 - 拉取失败只跳过这一轮
+                logger.debug("拉取承接 Bot 更新失败（bot {}）：{}", bot_id, exc)
+                continue
+            for update in updates:
+                self._handoff_offsets[bot_id] = int(update.get("update_id", 0)) + 1
+                message = update.get("message") or {}
+                text = str(message.get("text") or "").strip()
+                if not text.startswith("/start"):
+                    continue
+                parts = text.split(maxsplit=1)
+                if len(parts) < 2:
+                    continue
+                from_user = (message.get("from") or {}).get("id")
+                async with session_scope() as session:
+                    contact = await outreach_handoff_service.consume(
+                        session,
+                        parts[1].strip(),
+                        tg_user_id=int(from_user) if from_user else None,
+                    )
+                if contact is not None:
+                    logger.info("会话已转交给 Bot：联系人 #{}", contact.id)
 
     async def _outreach_client(self, session: Any, account: Any) -> Any:
         """取发信息账号的连接；第一次用到时才建，并挂上回复监听。"""

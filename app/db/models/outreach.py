@@ -313,6 +313,12 @@ class OutreachSettings(TimestampMixin, Base):
     strict_permanent_lock: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_days: Mapped[int] = mapped_column(Integer, default=7)
     follow_up_max: Mapped[int] = mapped_column(Integer, default=1)
+    # Bot 转交：只在「用户已回复」的会话里可用，首条冷消息禁止放链接
+    handoff_bot_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    handoff_bot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("control_bots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # B 模式：自动回复（默认关闭，只对已回复的会话生效）
     reply_mode: Mapped[str] = mapped_column(String(8), default=REPLY_MODE_HUMAN)
     auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -413,3 +419,32 @@ class OutreachMessage(TenantOwnedMixin, TimestampMixin, Base):
     text: Mapped[str] = mapped_column(Text, default="")
     generated_by: Mapped[str] = mapped_column(String(8), default=MESSAGE_GENERATED_AUTO)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+# Bot 转交令牌状态
+HANDOFF_PENDING = "pending"
+HANDOFF_USED = "used"
+HANDOFF_EXPIRED = "expired"
+HANDOFF_STATUSES = (HANDOFF_PENDING, HANDOFF_USED, HANDOFF_EXPIRED)
+
+
+class OutreachHandoffToken(TenantOwnedMixin, TimestampMixin, Base):
+    """一次性转交令牌：用户点 Bot 的 /start 后，会话归属从账号转给 Bot。"""
+
+    __tablename__ = "outreach_handoff_tokens"
+    __table_args__ = (UniqueConstraint("token", name="uq_outreach_handoff_tokens_token"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token: Mapped[str] = mapped_column(String(64))
+    contact_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_contacts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    bot_id: Mapped[int] = mapped_column(
+        ForeignKey("control_bots.id", ondelete="CASCADE"),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(16), default=HANDOFF_PENDING)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)

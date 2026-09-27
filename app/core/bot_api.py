@@ -81,6 +81,18 @@ class BotApiClient:
     async def get_me(self) -> dict[str, Any]:
         return await self.call("getMe") or {}
 
+    async def get_updates(self, *, offset: int = 0, timeout: int = 0) -> list[dict[str, Any]]:
+        """拉取机器人更新（用来接收用户点 Bot 后的 /start）。"""
+        result = await self.call(
+            "getUpdates",
+            data={
+                "offset": int(offset),
+                "timeout": int(timeout),
+                "allowed_updates": '["message"]',
+            },
+        )
+        return list(result) if isinstance(result, list) else []
+
     async def get_chat(self, chat_id: str) -> dict[str, Any]:
         """取群资料（也用来确认机器人是否在群里）。"""
         return await self.call("getChat", data={"chat_id": chat_id}) or {}

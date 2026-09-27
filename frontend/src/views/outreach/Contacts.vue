@@ -43,6 +43,16 @@ async function takeover(row) {
   }
 }
 
+async function handoff(row) {
+  try {
+    const { data } = await outreachApi.handoff(row.id);
+    ElMessage.success(`已发出 Bot 转交链接（@${data.bot_username}）`);
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
 async function resumeAuto(row) {
   try {
     await outreachApi.resumeAuto(row.id);
@@ -136,6 +146,15 @@ onMounted(load);
             @click="resumeAuto(row)"
           >
             恢复自动
+          </el-button>
+          <el-button
+            v-if="row.contact_state === 'REPLIED' && row.owner_type === 'account'"
+            size="small"
+            link
+            type="primary"
+            @click="handoff(row)"
+          >
+            引导进 Bot
           </el-button>
           <el-button v-if="!row.do_not_contact" size="small" link type="danger" @click="suppress(row)">
             拉黑

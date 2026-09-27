@@ -22,6 +22,8 @@ class OutreachSettingsUpdate(BaseModel):
     auto_reply_enabled: bool | None = None
     auto_reply_max_rounds: int | None = Field(default=None, ge=0, le=20)
     auto_reply_template_id: int | None = Field(default=None, ge=1)
+    handoff_bot_enabled: bool | None = None
+    handoff_bot_id: int | None = Field(default=None, ge=1)
     working_hours: list[str] | None = None
     daily_pool_cap: int | None = Field(default=None, ge=1, le=100000)
     kill_switch: bool | None = None
@@ -45,3 +47,10 @@ class OutreachTemplateUpdate(BaseModel):
     text: str | None = Field(default=None, min_length=1, max_length=4000)
     enabled: bool | None = None
     variables: list[str] | None = None
+
+
+class HandoffConsumeRequest(BaseModel):
+    """用户按下 Bot 的 Start 后回传的令牌。"""
+
+    token: str = Field(min_length=8, max_length=64)
+    tg_user_id: int | None = Field(default=None, gt=0)

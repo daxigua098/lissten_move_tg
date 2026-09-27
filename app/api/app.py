@@ -29,6 +29,7 @@ from app.api.routers import (
     leads,
     logs,
     meta,
+    outreach,
     platform,
     resources,
     routes,
@@ -191,6 +192,7 @@ def create_app(
     app.include_router(uploads.router)
     app.include_router(runtime.router)
     app.include_router(jobs.router)
+    app.include_router(outreach.router)
     app.mount(
         "/uploads",
         StaticFiles(directory=ensure_dir(uploads_directory(resolved))),

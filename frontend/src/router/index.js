@@ -9,6 +9,7 @@ const LibraryTabs = () => import("../views/LibraryTabs.vue");
 const Leads = () => import("../views/Leads.vue");
 const Login = () => import("../views/Login.vue");
 const OpsTabs = () => import("../views/OpsTabs.vue");
+const OutreachTabs = () => import("../views/OutreachTabs.vue");
 const OverviewTabs = () => import("../views/OverviewTabs.vue");
 const PlatformConsole = () => import("../views/PlatformConsole.vue");
 const ResourceTabs = () => import("../views/ResourceTabs.vue");
@@ -56,8 +57,9 @@ const routes = [
     component: ResourceTabs,
     meta: { role: "sub_admin", modules: ["discovery"] },
   },
-  // 「账号与机器人」是基础能力，平台（超管）与会员都能进，代理不能
+  // 「账号与机器人」「冷触达」是基础能力，平台（超管）与会员都能进，代理不能
   { path: "/ops", name: "ops", component: OpsTabs, meta: { role: "super_admin" } },
+  { path: "/outreach", name: "outreach", component: OutreachTabs, meta: { role: "sub_admin" } },
   {
     path: "/system",
     name: "system",

@@ -34,6 +34,7 @@ const menuItems = computed(() => {
     if (auth.hasModule("discovery")) {
       items.push({ index: "/resources", label: "资源发现" });
     }
+    items.push({ index: "/outreach", label: "冷触达" });
     items.push({ index: "/ops", label: "账号与机器人" });
     return items;
   }
@@ -46,6 +47,9 @@ const menuItems = computed(() => {
     items.push({ index: "/library", label: "词库" });
     items.push({ index: "/resources", label: "资源发现" });
     items.push({ index: "/leads", label: "线索池" });
+  }
+  if (canOperate.value) {
+    items.push({ index: "/outreach", label: "冷触达" });
   }
   if (auth.isSuperAdmin) {
     items.push({ index: "/ops", label: "账号与机器人" });

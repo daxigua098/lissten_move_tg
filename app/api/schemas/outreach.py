@@ -1,0 +1,42 @@
+"""冷触达请求模型：租户策略与话术模板。"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+TemplateKindLiteral = Literal["first_contact", "follow_up"]
+
+
+class OutreachSettingsUpdate(BaseModel):
+    """租户级冷触达策略（字段均可选）。"""
+
+    default_cooldown_seconds: int | None = Field(default=None, ge=0, le=24 * 3600)
+    cross_account_lock_days: int | None = Field(default=None, ge=0, le=3650)
+    strict_permanent_lock: bool | None = None
+    follow_up_days: int | None = Field(default=None, ge=0, le=365)
+    follow_up_max: int | None = Field(default=None, ge=0, le=5)
+    working_hours: list[str] | None = None
+    daily_pool_cap: int | None = Field(default=None, ge=1, le=100000)
+    kill_switch: bool | None = None
+    delete_session_on_account_delete: bool | None = None
+
+
+class OutreachTemplateCreate(BaseModel):
+    """新建会员自己的话术模板。"""
+
+    name: str = Field(min_length=1, max_length=64)
+    kind: TemplateKindLiteral
+    text: str = Field(min_length=1, max_length=4000)
+    variables: list[str] = Field(default_factory=list)
+
+
+class OutreachTemplateUpdate(BaseModel):
+    """修改会员自己的话术模板。"""
+
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    kind: TemplateKindLiteral | None = None
+    text: str | None = Field(default=None, min_length=1, max_length=4000)
+    enabled: bool | None = None
+    variables: list[str] | None = None

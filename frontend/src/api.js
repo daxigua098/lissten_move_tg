@@ -140,6 +140,21 @@ export const accountsApi = {
   refreshCredentials: (id) => http.post(`/api/accounts/${id}/credentials/refresh`),
 };
 
+export const outreachApi = {
+  settings: () => http.get("/api/outreach/settings"),
+  updateSettings: (payload) => http.patch("/api/outreach/settings", payload),
+  capacity: () => http.get("/api/outreach/capacity"),
+  planQueue: (limit = 200) =>
+    http.post("/api/outreach/queue/plan", null, { params: { limit } }),
+  tasks: (params) => http.get("/api/outreach/tasks", { params }),
+  contacts: (params) => http.get("/api/outreach/contacts", { params }),
+  templates: (params) => http.get("/api/outreach/templates", { params }),
+  createTemplate: (payload) => http.post("/api/outreach/templates", payload),
+  updateTemplate: (id, payload) => http.patch(`/api/outreach/templates/${id}`, payload),
+  removeTemplate: (id) => http.delete(`/api/outreach/templates/${id}`),
+  adoptTemplate: (id) => http.post(`/api/outreach/templates/${id}/adopt`),
+};
+
 export const botsApi = {
   list: (params) => http.get("/api/bots", { params }),
   create: (payload) => http.post("/api/bots", payload),

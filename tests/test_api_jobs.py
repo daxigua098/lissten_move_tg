@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from conftest import ADMIN_API_TOKEN, auth_header, login
 
 from app.core.telegram_client import ChatProfile
@@ -155,7 +157,7 @@ async def test_runtime_start_skips_when_already_running(admin_client, api_config
 
     write_status(
         api_config.path(api_config.runtime.status_file),
-        {"status": "running", "pid": 4321},
+        {"status": "running", "pid": os.getpid()},
     )
 
     response = await admin_client.post("/api/runtime/start", headers=_headers())
@@ -164,6 +166,32 @@ async def test_runtime_start_skips_when_already_running(admin_client, api_config
     assert response.status_code == 200
     assert body["start"]["started"] is False
     assert body["start"]["reason"] == "already_running"
+
+
+async def test_system_status_reports_stale_runtime_as_stopped(admin_client, api_config) -> None:
+    """心跳过期后总览必须显示未启动；否则用户会以为监听仍在跑。"""
+    from datetime import UTC, datetime, timedelta
+
+    from app.core.paths import write_json_atomic
+
+    write_json_atomic(
+        api_config.path(api_config.runtime.status_file),
+        {
+            "status": "running",
+            "heartbeat_at": (datetime.now(UTC) - timedelta(minutes=5)).isoformat(
+                timespec="seconds"
+            ),
+            "pid": 4321,
+            "routes": {"sources": 2, "carry": 0, "monitor": 2},
+        },
+    )
+
+    response = await admin_client.get("/api/system/status", headers=_headers())
+
+    assert response.status_code == 200
+    runtime = response.json()["runtime"]
+    assert runtime["status"] == "stopped"
+    assert runtime["routes"]["monitor"] == 2
 
 
 async def test_viewer_cannot_control_runtime(admin_client, api_config) -> None:

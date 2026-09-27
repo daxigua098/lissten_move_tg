@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -111,3 +112,37 @@ def test_control_switches(tmp_path) -> None:
     set_stop_requested(path, False)
     assert is_paused(path) is False
     assert is_stop_requested(path) is False
+
+
+def test_runtime_executable_prefers_pythonw(tmp_path, monkeypatch) -> None:
+    """Windows 下用 pythonw.exe 启动，避免任何可见的 Python 控制台窗口。"""
+    from app.services import runtime_service
+
+    python = tmp_path / "python.exe"
+    pythonw = tmp_path / "pythonw.exe"
+    python.touch()
+    pythonw.touch()
+    monkeypatch.setattr(runtime_service.sys, "executable", str(python))
+
+    assert runtime_service._runtime_executable() == str(pythonw)
+
+
+async def test_runtime_run_closes_bot_apis(monkeypatch, db) -> None:
+    """退出路径要调用现有的 close 方法，不能因方法名漂移卡住锁。"""
+    from app.services.runtime_service import RuntimeService
+
+    service = RuntimeService(db)
+    monkeypatch.setattr(
+        service,
+        "_register_handlers",
+        AsyncMock(return_value={"sources": 0, "carry": 0, "monitor": 0, "ids": [], "tenants": []}),
+    )
+    monkeypatch.setattr(service, "_loop", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_publish", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_close_clients", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_close_bot_apis", AsyncMock(return_value=None))
+
+    assert await service.run() == 0
+
+    service._close_bot_apis.assert_awaited_once()
+    assert not service._lock.path.exists()

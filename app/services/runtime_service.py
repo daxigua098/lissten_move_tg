@@ -29,9 +29,10 @@ from app.core.content_cleaner import (
     filter_reason,
     resolve_caption,
 )
-from app.core.heartbeat import heartbeat_age_seconds, read_status, write_status
+from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status, write_status
 from app.core.keyword_matcher import is_excluded, match_text
 from app.core.lead_extractor import extract_contacts, render_lead_card, sender_info
+from app.core.outreach_capture import CONSENT_NONE
 from app.core.route_config import load_a_config, load_b_config
 from app.core.runtime_control import is_paused, is_stop_requested, set_paused, set_stop_requested
 from app.core.runtime_lock import RuntimeLock, RuntimeLockError
@@ -170,7 +171,7 @@ class RuntimeService:
                     await heartbeat_task
         finally:
             await self._close_clients()
-            await self._close_bot_clients()
+            await self._close_bot_apis()
             self._lock.release()
             await self._publish(status="stopped", extra={})
         return 0
@@ -692,27 +693,32 @@ class RuntimeService:
                     exclude=(),
                 )
                 hit = hits[0] if hits else None
-                # 新规则：关键词命中是入库前置条件。全量模式仍扫描消息、
-                # 采集热门词和链接，但没有命中的用户不进入线索 / 会员档案。
-                if hit is None:
+                # 全量监听要把未命中的发言也落进线索池；关键词模式只处理命中项。
+                if hit is None and config.listen_mode != "all":
                     continue
-                decision = await lead_service.evaluate_capture_eligibility(
-                    session,
-                    tenant_id=fresh.tenant_id,
-                    sender=sender,
-                    text=text,
-                    capture_mode=config.capture_mode,
-                    source_account_id=fresh.exec_account_id,
-                )
-                if not decision.allowed:
-                    logger.debug(
-                        "跳过不可冷触达用户：{}（线路 {}，原因 {}）",
-                        sender.display_name or sender.tg_user_id,
-                        fresh.name,
-                        decision.reason,
+
+                # 命中后仍计算冷触达资格，给后续 outreach 流程留下快照。
+                # 但“全量监听”是否入库、以及命中卡片是否转发，不由资格结果短路：
+                # 否则大量没有用户名/手机号的群成员会表现成“明明在运行却完全没数据”。
+                decision = None
+                if hit is not None:
+                    decision = await lead_service.evaluate_capture_eligibility(
+                        session,
+                        tenant_id=fresh.tenant_id,
+                        sender=sender,
+                        text=text,
+                        capture_mode=config.capture_mode,
+                        source_account_id=fresh.exec_account_id,
                     )
-                    continue
-                if await lead_service.recent_lead_exists(
+                    if not decision.allowed and config.listen_mode != "all":
+                        logger.debug(
+                            "跳过不可冷触达用户：{}（线路 {}，原因 {}）",
+                            sender.display_name or sender.tg_user_id,
+                            fresh.name,
+                            decision.reason,
+                        )
+                        continue
+                if hit is not None and await lead_service.recent_lead_exists(
                     session,
                     route_id=fresh.id,
                     sender_tg_id=sender.tg_user_id,
@@ -729,6 +735,7 @@ class RuntimeService:
                     capture_phone=config.capture_phone,
                     capture_contact=config.capture_contact,
                 )
+                metadata = decision if decision is not None and decision.allowed else None
                 lead = await lead_service.record_lead(
                     session,
                     route_id=fresh.id,
@@ -737,34 +744,41 @@ class RuntimeService:
                     message_at=view.date,
                     sender=sender,
                     contacts=contacts,
-                    keyword=hit.keyword,
-                    keyword_group_id=hit.group_id,
-                    matched_mode=hit.mode,
-                    score=hit.score,
+                    keyword=hit.keyword if hit else None,
+                    keyword_group_id=hit.group_id if hit else None,
+                    matched_mode=hit.mode if hit else "",
+                    score=hit.score if hit else 0.0,
                     text=text,
                     source_title=source_title,
                     tenant_id=fresh.tenant_id,
-                    reachable_routes=decision.reachable_routes,
-                    consent_type=decision.consent_type,
-                    capture_reason=decision.reason,
-                    route_owner_account_id=decision.route_owner_account_id,
+                    reachable_routes=metadata.reachable_routes if metadata else (),
+                    consent_type=metadata.consent_type if metadata else CONSENT_NONE,
+                    capture_reason=(
+                        metadata.reason
+                        if metadata
+                        else (decision.reason if decision else "FULL_INDEX")
+                    ),
+                    route_owner_account_id=(metadata.route_owner_account_id if metadata else None),
                 )
                 await lead_service.upsert_member(
                     session,
                     sender,
                     seen_at=view.date,
-                    hit=True,
+                    hit=hit is not None,
                     tenant_id=fresh.tenant_id,
-                    reachable_routes=decision.reachable_routes,
-                    consent_type=decision.consent_type,
+                    reachable_routes=metadata.reachable_routes if metadata else (),
+                    consent_type=metadata.consent_type if metadata else CONSENT_NONE,
                 )
                 logger.info(
-                    "监听到冷触达候选：{}（线路 {}，命中 {}，路径 {}）",
+                    "监听到发言：{}（线路 {}，命中 {}）",
                     sender.display_name or sender.tg_user_id,
                     fresh.name,
-                    hit.keyword,
-                    ",".join(decision.reachable_routes) or "无",
+                    hit.keyword if hit else "无（全量入库）",
                 )
+
+                # 全量监听默认只入库不刷屏；命中关键词或显式打开时才推卡片。
+                if hit is None and not config.push_card_on_all:
+                    continue
                 await self._push_lead_card(
                     client,
                     session,
@@ -773,7 +787,7 @@ class RuntimeService:
                     lead=lead,
                     sender=sender,
                     contacts=contacts,
-                    keyword=hit.keyword,
+                    keyword=hit.keyword if hit else "",
                     source_title=source_title,
                     message_at=view.date,
                     text=text,
@@ -1125,6 +1139,7 @@ class RuntimeService:
                 self.status_path,
                 {
                     "status": status,
+                    "pid": os.getpid(),
                     "paused": is_paused(self.control_path),
                     "queue": counts,
                     "routes": self._registered,
@@ -1143,17 +1158,18 @@ async def runtime_status(config: AppConfig) -> dict[str, Any]:
     }
 
 
-# 心跳超过这个秒数就认为运行时已经死了
-RUNTIME_STALE_SECONDS = 30
-
-
 def _runtime_is_alive(config: AppConfig) -> bool:
-    """心跳还在跳，说明运行时进程活着。"""
+    """心跳还新鲜、且记录到的 PID 仍存活时，运行时才算活着。"""
     status = read_status(config.path(config.runtime.status_file))
-    if not status or status.get("status") != "running":
+    if not is_running(status):
         return False
-    age = heartbeat_age_seconds(status)
-    return age is not None and age < RUNTIME_STALE_SECONDS
+    pid = status.get("pid")
+    if pid is None:
+        return True
+    try:
+        return _pid_alive(int(pid))
+    except (TypeError, ValueError):
+        return False
 
 
 def _pid_alive(pid: int | None) -> bool:
@@ -1301,6 +1317,16 @@ def _tail_text(path: Path, limit: int = 400) -> str:
     return text[-limit:] if text else ""
 
 
+def _runtime_executable() -> str:
+    """Windows 优先用 pythonw.exe，确保后台运行时连控制台句柄都不创建。"""
+    executable = Path(sys.executable)
+    if executable.name.lower() == "python.exe":
+        pythonw = executable.with_name("pythonw.exe")
+        if pythonw.is_file():
+            return str(pythonw)
+    return str(executable)
+
+
 def _spawn_runtime(config: AppConfig) -> subprocess.Popen:
     """同步拉起运行时进程（由 start_runtime_process 放进线程执行）。"""
     root = Path(config.project_root)
@@ -1328,7 +1354,7 @@ def _spawn_runtime(config: AppConfig) -> subprocess.Popen:
 
     with out_path.open("ab") as out, err_path.open("ab") as err:
         process = subprocess.Popen(  # noqa: S603 - 命令固定，参数不来自外部输入
-            [sys.executable, "main.py", "run"],
+            [_runtime_executable(), "main.py", "run"],
             cwd=str(root),
             stdin=subprocess.DEVNULL,
             stdout=out,

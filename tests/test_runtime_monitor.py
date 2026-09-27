@@ -7,7 +7,13 @@ from types import SimpleNamespace
 from conftest import fake_message
 
 
-async def _prepare_monitor_route(db, *, listen_mode: str = "keyword", capture_mode: str = "cold"):
+async def _prepare_monitor_route(
+    db,
+    *,
+    listen_mode: str = "keyword",
+    capture_mode: str = "cold",
+    push_card_on_all: bool = False,
+):
     """建一条 B 线：搜索群 → 线索群，并配好关键词组。"""
     from app.core.telegram_client import ChatProfile
     from app.db.session import session_scope
@@ -52,6 +58,7 @@ async def _prepare_monitor_route(db, *, listen_mode: str = "keyword", capture_mo
             b_config={
                 "listen_mode": listen_mode,
                 "capture_mode": capture_mode,
+                "push_card_on_all": push_card_on_all,
                 "keyword_group_ids": [group.id],
             },
         )
@@ -117,10 +124,8 @@ async def test_keyword_hit_records_lead_and_pushes_card(db, fake_delivery_client
     assert "@seller01" in card
 
 
-async def test_full_listen_mode_scans_without_storing_unmatched_user(
-    db, fake_delivery_client
-) -> None:
-    """全量监听仍扫描消息，但关键词未命中的用户不入线索库。"""
+async def test_full_listen_mode_only_stores_without_push(db, fake_delivery_client) -> None:
+    """全量监听：没命中关键词也入库，但默认不推卡片。"""
     from app.db.session import session_scope
     from app.services import lead_service, route_service
     from app.services.runtime_service import RuntimeService
@@ -133,9 +138,40 @@ async def test_full_listen_mode_scans_without_storing_unmatched_user(
     await service._on_monitor_message(fake_delivery_client, _event("今天天气不错啊"), [route])
 
     async with session_scope() as session:
-        _rows, total = await lead_service.list_leads(session)
-    assert total == 0
+        rows, total = await lead_service.list_leads(session)
+    assert total == 1
+    assert rows[0].keyword is None
+    assert rows[0].delivered is False
     assert fake_delivery_client.sent == []
+
+
+async def test_full_listen_mode_can_push_all(db, fake_delivery_client) -> None:
+    """全量模式显式打开推卡片后，未命中的发言也会实时转发。"""
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(
+        db,
+        listen_mode="all",
+        push_card_on_all=True,
+    )
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("今天天气不错啊"),
+        [route],
+    )
+
+    async with session_scope() as session:
+        rows, total = await lead_service.list_leads(session)
+    assert total == 1
+    assert rows[0].keyword is None
+    assert rows[0].delivered is True
+    assert len(fake_delivery_client.sent) == 1
 
 
 async def test_keyword_mode_skips_message_without_hit(db, fake_delivery_client) -> None:
@@ -210,9 +246,11 @@ async def test_exclude_group_blocks_message(db, fake_delivery_client) -> None:
     await service._on_monitor_message(fake_delivery_client, _event("随便聊聊天气"), [route])
 
     async with session_scope() as session:
-        _rows, total = await lead_service.list_leads(session)
-    # 客服那条被排除词挡掉；普通发言没命中关键词，也不入库
-    assert total == 0
+        rows, total = await lead_service.list_leads(session)
+    # 客服那条被排除词挡掉，只剩普通发言（全量监听会入库但不推卡片）
+    assert total == 1
+    assert rows[0].text == "随便聊聊天气"
+    assert fake_delivery_client.sent == []
     assert source_id
 
 

@@ -39,6 +39,7 @@ const heartbeatText = computed(() => {
 });
 
 const isPaused = computed(() => Boolean(status.value?.runtime?.paused));
+const runtimeRoutes = computed(() => status.value?.runtime?.routes || {});
 
 // P4：会员的租户运行状态（功能是否在跑、为什么停）。平台账号没有租户块。
 const tenant = computed(() => status.value?.tenant || null);
@@ -129,9 +130,16 @@ async function act(action) {
       </el-col>
       <el-col :xs="12" :sm="8" :md="6">
         <el-card shadow="never">
-          <div class="card-hint">搬运运行时</div>
+          <div class="card-hint">搬运 / 监听运行时</div>
           <div class="stat-value">{{ runtimeLabel }}</div>
-          <div class="card-hint">队列 {{ status?.counts?.queue_size ?? 0 }} 条</div>
+          <div class="card-hint">
+            已接管 {{ runtimeRoutes.sources ?? 0 }} 个源（A {{ runtimeRoutes.carry ?? 0 }} /
+            B {{ runtimeRoutes.monitor ?? 0 }}）
+          </div>
+          <div class="card-hint">
+            待投递 {{ status?.counts?.queue_size ?? 0 }} 条 · 累计成功
+            {{ status?.counts?.jobs?.success ?? 0 }}
+          </div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="8" :md="6">

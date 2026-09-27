@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_identity, require_member_or_platform, session_dependency
 from app.core.config import AppConfig
-from app.core.heartbeat import heartbeat_age_seconds, read_status
+from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status
 from app.core.runtime_control import read_control
 from app.db.models import ACCOUNT_TYPE_MEMBER, ACCOUNT_TYPE_PLATFORM, User
 from app.db.session import get_engine
@@ -55,6 +55,8 @@ async def status(
     heartbeat = read_status(config.path(config.runtime.status_file))
     control = read_control(config.path(config.runtime.control_file))
     runtime_state = (heartbeat or {}).get("status", "stopped")
+    if runtime_state == "running" and not is_running(heartbeat):
+        runtime_state = "stopped"
 
     # 租户块（P4）：会员只看得到自己的；线路号也只算自己租户的，不泄露别人
     tenant_id = (
@@ -92,6 +94,7 @@ async def status(
             "started_at": (heartbeat or {}).get("started_at"),
             "paused": control["paused"],
             "stop_requested": control["stop_requested"],
+            "routes": (heartbeat or {}).get("routes") or {},
             "pending_route_ids": pending_routes or [],
             "config_stale": bool(pending_routes),
         },

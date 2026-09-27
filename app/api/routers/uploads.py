@@ -42,3 +42,18 @@ async def delete_image(filename: str, request: Request) -> dict[str, Any]:
     if not removed:
         raise ValidationFailedError("文件不存在或已删除")
     return {"filename": filename, "deleted": True}
+
+
+@router.post("/video", status_code=201)
+async def upload_video(
+    request: Request,
+    file: UploadFile = File(...),
+) -> dict[str, Any]:
+    """上传一个视频（模板用），返回相对路径与可访问 URL。"""
+    config: AppConfig = request.app.state.config
+    content = await file.read()
+    return upload_service.save_video(
+        config,
+        filename=file.filename,
+        content=content,
+    )

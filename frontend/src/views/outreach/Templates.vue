@@ -1,8 +1,8 @@
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 
-import { outreachApi } from "../../api";
+import { outreachApi, uploadApi } from "../../api";
 
 const loading = ref(false);
 const rows = ref([]);
@@ -10,7 +10,24 @@ const total = ref(0);
 const kind = ref("");
 const dialogVisible = ref(false);
 const editing = ref(null);
-const form = reactive({ name: "", kind: "first_contact", text: "" });
+const form = reactive({
+  name: "",
+  kind: "first_contact",
+  text: "",
+  media_path: "",
+  media_kind: "",
+});
+const imageInput = ref(null);
+const videoInput = ref(null);
+const uploading = ref(false);
+
+// 常用表情 / 特殊符号（点一下插到光标后面）
+const SYMBOLS = ["😀", "🙂", "😉", "👍", "🙏", "🎉", "✅", "🔥", "⭐", "💰", "📌", "📞", "👉", "❤️", "✨", "—"];
+// 变量：发送时会替换成真实内容
+const VARIABLES = ["{称呼}", "{姓名}"];
+
+/** 首条招呼仍然禁止链接与媒体（反垃圾红线） */
+const richAllowed = computed(() => form.kind !== "first_contact");
 
 const KINDS = [
   { value: "first_contact", label: "首条招呼" },
@@ -35,30 +52,89 @@ async function load() {
 
 function openCreate() {
   editing.value = null;
-  Object.assign(form, { name: "", kind: "first_contact", text: "" });
+  Object.assign(form, {
+    name: "",
+    kind: "first_contact",
+    text: "",
+    media_path: "",
+    media_kind: "",
+  });
   dialogVisible.value = true;
+}
+
+function insertText(value) {
+  form.text = `${form.text || ""}${value}`;
+}
+
+async function insertLink() {
+  try {
+    const { value } = await ElMessageBox.prompt("粘贴要插入的链接（https://…）", "插入链接", {
+      confirmButtonText: "插入",
+      cancelButtonText: "取消",
+      inputPattern: /^https?:\/\/\S+$/,
+      inputErrorMessage: "请填写 http/https 链接",
+    });
+    insertText(value.trim());
+  } catch {
+    // 取消
+  }
+}
+
+function pickImage() {
+  imageInput.value?.click();
+}
+
+function pickVideo() {
+  videoInput.value?.click();
+}
+
+async function onPickMedia(event, kind) {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  uploading.value = true;
+  try {
+    const { data } = kind === "image" ? await uploadApi.image(file) : await uploadApi.video(file);
+    form.media_path = data.path;
+    form.media_kind = kind;
+    ElMessage.success(kind === "image" ? "图片已上传" : "视频已上传");
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    uploading.value = false;
+  }
+}
+
+function clearMedia() {
+  form.media_path = "";
+  form.media_kind = "";
 }
 
 function openEdit(row) {
   editing.value = row;
-  Object.assign(form, { name: row.name, kind: row.kind, text: row.text });
+  Object.assign(form, {
+    name: row.name,
+    kind: row.kind,
+    text: row.text,
+    media_path: row.media_path || "",
+    media_kind: row.media_kind || "",
+  });
   dialogVisible.value = true;
 }
 
 async function save() {
   try {
+    const payload = {
+      name: form.name,
+      kind: form.kind,
+      text: form.text,
+      media_path: form.media_path || null,
+      media_kind: form.media_kind || null,
+    };
     if (editing.value) {
-      await outreachApi.updateTemplate(editing.value.id, {
-        name: form.name,
-        kind: form.kind,
-        text: form.text,
-      });
+      await outreachApi.updateTemplate(editing.value.id, payload);
     } else {
-      await outreachApi.createTemplate({
-        name: form.name,
-        kind: form.kind,
-        text: form.text,
-      });
+      await outreachApi.createTemplate(payload);
     }
     dialogVisible.value = false;
     ElMessage.success("已保存");
@@ -175,8 +251,69 @@ onMounted(load);
           </el-select>
         </el-form-item>
         <el-form-item label="话术内容">
-          <el-input v-model="form.text" type="textarea" :rows="5" placeholder="你好，我是……，想确认一下你是否愿意了解。" />
+          <el-input
+            v-model="form.text"
+            type="textarea"
+            :rows="5"
+            placeholder="你好，我是……，想确认一下你是否愿意了解。"
+          />
+          <div class="rich-tools">
+            <span class="card-hint">表情符号</span>
+            <el-button
+              v-for="item in SYMBOLS"
+              :key="item"
+              size="small"
+              text
+              @click="insertText(item)"
+            >
+              {{ item }}
+            </el-button>
+            <span class="card-hint">变量</span>
+            <el-button
+              v-for="item in VARIABLES"
+              :key="item"
+              size="small"
+              text
+              @click="insertText(item)"
+            >
+              {{ item }}
+            </el-button>
+            <el-button v-if="richAllowed" size="small" text @click="insertLink">插入链接</el-button>
+          </div>
         </el-form-item>
+
+        <el-form-item v-if="richAllowed" label="图片 / 视频（可选）">
+          <el-button size="small" :loading="uploading" @click="pickImage">上传图片</el-button>
+          <el-button size="small" :loading="uploading" @click="pickVideo">上传视频</el-button>
+          <span v-if="form.media_path" class="card-hint">
+            已附加：{{ form.media_kind === "video" ? "视频" : "图片" }}
+            <el-button size="small" text type="danger" @click="clearMedia">移除</el-button>
+          </span>
+          <span v-else class="card-hint">图片不超过 5 MB，视频不超过 50 MB</span>
+          <input
+            ref="imageInput"
+            type="file"
+            accept="image/*"
+            style="display: none"
+            @change="(event) => onPickMedia(event, 'image')"
+          />
+          <input
+            ref="videoInput"
+            type="file"
+            accept="video/*"
+            style="display: none"
+            @change="(event) => onPickMedia(event, 'video')"
+          />
+        </el-form-item>
+
+        <el-alert
+          v-else
+          type="warning"
+          :closable="false"
+          show-icon
+          title="首条招呼不能带链接、图片或视频"
+          description="首条消息只用来确认对方是否愿意沟通；富媒体与链接请放到「跟进」或「自动回复」模板里。"
+        />
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -189,5 +326,13 @@ onMounted(load);
 <style scoped>
 .panel {
   margin-top: 12px;
+}
+
+.rich-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-wrap: wrap;
+  margin-top: 6px;
 }
 </style>

@@ -13,6 +13,7 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import AppConfig
 from app.core.outreach_capture import OUTREACH_REPLIED
 from app.db.base import as_utc, utc_now
 from app.db.models import (
@@ -149,6 +150,7 @@ async def auto_reply(
     contact: OutreachContact,
     incoming_text: str | None,
     now: datetime | None = None,
+    config: AppConfig | None = None,
 ) -> dict[str, Any]:
     """按 B 模式回一条；命中人工话题或任一闸门不过就跳过。"""
     if needs_handover(incoming_text):
@@ -169,7 +171,9 @@ async def auto_reply(
     moment = now or utc_now()
     text = sender.render_template(template.text, contact)
     entity = await sender.resolve_entity(client, contact)
-    message = await client.send_message(entity, text)
+    message = await sender.send_template(
+        client, entity, template=template, text=text, config=config
+    )
 
     contact.last_outbound_at = moment
     session.add(

@@ -17,6 +17,9 @@ from app.core.errors import ValidationFailedError
 from app.core.paths import ensure_dir
 
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
+# 模板里的视频：给宽松一点的上限，仍然限制在合理范围内
+MAX_VIDEO_BYTES = 50 * 1024 * 1024
+VIDEO_EXTENSIONS = (".mp4", ".mov", ".mkv", ".webm", ".m4v")
 UPLOAD_SUBDIR = "assets/uploads"
 URL_PREFIX = "/uploads"
 
@@ -99,6 +102,49 @@ def save_image(
         "size": len(content),
         "width": width,
         "height": height,
+    }
+
+
+def save_video(
+    config: AppConfig,
+    *,
+    filename: str | None,
+    content: bytes,
+) -> dict[str, Any]:
+    """保存上传的视频，返回 {filename, path, url, size}。"""
+    if not content:
+        raise ValidationFailedError("上传内容为空")
+    if len(content) > MAX_VIDEO_BYTES:
+        limit_mb = MAX_VIDEO_BYTES // (1024 * 1024)
+        raise ValidationFailedError(f"视频不能超过 {limit_mb} MB")
+
+    suffix = Path(filename or "").suffix.lower()
+    if suffix not in VIDEO_EXTENSIONS:
+        allowed = " / ".join(item.lstrip(".").upper() for item in VIDEO_EXTENSIONS)
+        raise ValidationFailedError(f"不支持的视频格式，请上传 {allowed}")
+
+    target_dir = ensure_dir(uploads_directory(config))
+    stored_name = f"{uuid4().hex}{suffix}"
+    target = target_dir / stored_name
+    handle_fd, temp_name = tempfile.mkstemp(prefix=f"{stored_name}.", dir=str(target_dir))
+    try:
+        with os.fdopen(handle_fd, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temp_name)
+        raise
+
+    return {
+        "filename": stored_name,
+        "original_name": Path(filename or "").name or None,
+        "path": f"{UPLOAD_SUBDIR}/{stored_name}",
+        "url": f"{URL_PREFIX}/{stored_name}",
+        "size": len(content),
+        "kind": "video",
     }
 
 

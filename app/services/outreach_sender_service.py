@@ -6,12 +6,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import AppConfig
 from app.core.errors import ValidationFailedError
 from app.core.outreach_capture import (
     OUTREACH_CONTACTED,
@@ -186,6 +188,28 @@ async def resolve_entity(client: Any, contact: OutreachContact) -> Any:
     raise ValidationFailedError("缺少可直接寻址方式，无法发送")
 
 
+def template_media_path(config: AppConfig | None, template: OutreachTemplate) -> Path | None:
+    """模板附带的图片/视频路径（没有则 None）。"""
+    if not template.media_path:
+        return None
+    return config.path(template.media_path) if config is not None else Path(template.media_path)
+
+
+async def send_template(
+    client: Any,
+    entity: Any,
+    *,
+    template: OutreachTemplate,
+    text: str,
+    config: AppConfig | None = None,
+) -> Any:
+    """按模板发送：有媒体就带 caption 发文件，否则发纯文本。"""
+    path = template_media_path(config, template)
+    if path is not None and path.is_file():
+        return await client.send_file(entity, str(path), caption=text or None)
+    return await client.send_message(entity, text or "")
+
+
 async def send_task(
     session: AsyncSession,
     *,
@@ -194,6 +218,7 @@ async def send_task(
     task: OutreachTask,
     contact: OutreachContact,
     now: datetime | None = None,
+    config: AppConfig | None = None,
 ) -> dict[str, Any]:
     """发送一条冷触达任务并记账。"""
     moment = now or utc_now()
@@ -209,7 +234,7 @@ async def send_task(
     task.rendered_text = text
     try:
         entity = await resolve_entity(client, contact)
-        message = await client.send_message(entity, text)
+        message = await send_template(client, entity, template=template, text=text, config=config)
     except Exception as exc:  # noqa: BLE001 - 失败原因要落库并决定账号状态
         return await _on_send_error(session, task=task, account=account, contact=contact, exc=exc)
 

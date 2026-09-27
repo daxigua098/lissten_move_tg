@@ -50,6 +50,7 @@ from app.services import (
     outreach_settings_service,
     outreach_template_service,
     tg_account_service,
+    upload_service,
 )
 
 router = APIRouter(
@@ -72,6 +73,9 @@ def _template(row: OutreachTemplate) -> dict[str, Any]:
         "kind_label": TEMPLATE_KIND_LABELS.get(row.kind, row.kind),
         "text": row.text,
         "variables": variables,
+        "media_path": row.media_path,
+        "media_kind": row.media_kind,
+        "media_url": upload_service.public_url(row.media_path),
         "enabled": row.enabled,
         "version": row.version,
         "source_template_id": row.source_template_id,
@@ -206,6 +210,8 @@ async def create_template(
         kind=payload.kind,
         text=payload.text,
         variables=payload.variables,
+        media_path=payload.media_path,
+        media_kind=payload.media_kind,
         created_by=identity.get("username"),
     )
     return _template(row)
@@ -491,6 +497,7 @@ async def dispatch_queue(
                     account=account,
                     task=task,
                     contact=contact,
+                    config=config,
                 )
             )
     finally:

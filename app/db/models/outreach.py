@@ -159,6 +159,10 @@ TEMPLATE_FIRST_CONTACT = "first_contact"
 TEMPLATE_FOLLOW_UP = "follow_up"
 TEMPLATE_AUTO_REPLY = "auto_reply"
 TEMPLATE_KINDS = (TEMPLATE_FIRST_CONTACT, TEMPLATE_FOLLOW_UP, TEMPLATE_AUTO_REPLY)
+MEDIA_KIND_IMAGE = "image"
+MEDIA_KIND_VIDEO = "video"
+MEDIA_KINDS = (MEDIA_KIND_IMAGE, MEDIA_KIND_VIDEO)
+
 TEMPLATE_KIND_LABELS: dict[str, str] = {
     TEMPLATE_FIRST_CONTACT: "首条招呼",
     TEMPLATE_FOLLOW_UP: "跟进",
@@ -295,6 +299,9 @@ class OutreachTemplate(TimestampMixin, Base):
     text: Mapped[str] = mapped_column(Text, default="")
     variables: Mapped[str] = mapped_column(Text, default="[]")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 富媒体（只允许跟进 / 自动回复模板）：图片或视频，存 assets/uploads 下的相对路径
+    media_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    media_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
     source_template_id: Mapped[int | None] = mapped_column(
         ForeignKey("outreach_templates.id", ondelete="SET NULL"),

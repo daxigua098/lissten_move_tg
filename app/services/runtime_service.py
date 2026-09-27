@@ -240,6 +240,7 @@ class RuntimeService:
                     account=account,
                     task=task,
                     contact=contact,
+                    config=self.config,
                 )
                 if result.get("status") == "SENT":
                     sent += 1
@@ -374,6 +375,7 @@ class RuntimeService:
                     account=account,
                     contact=fresh,
                     incoming_text=text,
+                    config=self.config,
                 )
             except Exception as exc:  # noqa: BLE001 - 自动回复失败不能影响监听
                 logger.warning("冷触达自动回复失败：{}", exc)

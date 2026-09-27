@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 TemplateKindLiteral = Literal["first_contact", "follow_up", "auto_reply"]
+MediaKindLiteral = Literal["image", "video"]
 ReplyModeLiteral = Literal["human", "auto"]
 
 
@@ -37,6 +38,9 @@ class OutreachTemplateCreate(BaseModel):
     kind: TemplateKindLiteral
     text: str = Field(min_length=1, max_length=4000)
     variables: list[str] = Field(default_factory=list)
+    # 富媒体（只给跟进 / 自动回复）：本地上传后的相对路径
+    media_path: str | None = Field(default=None, max_length=255)
+    media_kind: MediaKindLiteral | None = None
 
 
 class OutreachTemplateUpdate(BaseModel):
@@ -47,6 +51,8 @@ class OutreachTemplateUpdate(BaseModel):
     text: str | None = Field(default=None, min_length=1, max_length=4000)
     enabled: bool | None = None
     variables: list[str] | None = None
+    media_path: str | None = Field(default=None, max_length=255)
+    media_kind: MediaKindLiteral | None = None
 
 
 class HandoffConsumeRequest(BaseModel):

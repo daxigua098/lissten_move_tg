@@ -148,6 +148,19 @@ export const accountsApi = {
     http.post("/api/accounts/auto-login/stop", { account_ids: accountIds }),
 };
 
+export const uploadApi = {
+  image: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return http.post("/api/uploads/image", form, { timeout: TELEGRAM_TIMEOUT });
+  },
+  video: (file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return http.post("/api/uploads/video", form, { timeout: TELEGRAM_TIMEOUT });
+  },
+};
+
 export const outreachApi = {
   settings: () => http.get("/api/outreach/settings"),
   updateSettings: (payload) => http.patch("/api/outreach/settings", payload),

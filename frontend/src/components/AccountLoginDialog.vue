@@ -15,9 +15,7 @@ const stage = ref("idle");
 const busy = ref(false);
 const result = ref(null);
 const form = reactive({ code: "", password: "", force_sms: false });
-// 自动取码：接码平台 / 2925 邮箱（取到的码会填进输入框，可手动改）
-const mail = reactive({ user: "", password: "" });
-const fetching = ref("");
+// 手动登录：接码平台只负责"打开页面给人看"，验证码 / 二级密码由人工输入
 const platformBusy = ref(false);
 const platformMessage = ref("");
 
@@ -30,21 +28,24 @@ async function startPlatformLogin() {
       platformMessage.value = "验证码没发出去，请检查手机号或稍后重试";
       return;
     }
-    platformMessage.value = "正在从接码平台取码，取到会自动填进下面（也可以自己手动输入）";
-    await fetchCode("logincode");
-    platformMessage.value = "取码完成：确认或修改后点「提交」完成登录";
-  } catch (error) {
-    ElMessage.error(error.message);
+    platformMessage.value = "验证码已发送：点「打开接码平台」查看验证码与二级密码，然后手动填入下面";
   } finally {
     platformBusy.value = false;
   }
 }
 
 async function openPlatform() {
+  // 先同步开一个空窗口（用户手势内），拿到地址后再跳转，避免被浏览器拦截
+  const opened = window.open("", "_blank");
   try {
     const { data } = await accountsApi.codeUrl(props.account.id);
-    window.open(data.code_url, "_blank", "noopener");
+    if (opened) {
+      opened.location.href = data.code_url;
+    } else {
+      ElMessage.error("浏览器拦截了新窗口，请允许本站弹窗后重试");
+    }
   } catch (error) {
+    if (opened) opened.close();
     ElMessage.error(error.message);
   }
 }
@@ -52,54 +53,6 @@ async function openPlatform() {
 function cooldownMinutes() {
   const left = Number(props.account?.code_cooldown_remaining || 0);
   return left > 0 ? Math.max(1, Math.ceil(left / 60)) : 0;
-}
-
-async function fetchCode(source) {
-  if (source === "mail2925" && (!mail.user.trim() || !mail.password)) {
-    ElMessage.warning("请先填写 2925 主邮箱和密码");
-    return;
-  }
-  fetching.value = source;
-  try {
-    const payload = { source, timeout_seconds: 120 };
-    if (source === "mail2925") {
-      payload.mail_user = mail.user.trim();
-      payload.mail_pass = mail.password;
-    }
-    const { data } = await accountsApi.fetchLoginCode(props.account.id, payload);
-    form.code = data.code;
-    if (data.password) form.password = data.password;
-    ElMessage.success(
-      source === "logincode"
-        ? "已从接码平台取到验证码，确认或修改后再提交"
-        : `已从 ${data.alias} 取到验证码，确认或修改后再提交`,
-    );
-  } catch (error) {
-    ElMessage.error(error.message);
-  } finally {
-    fetching.value = "";
-  }
-}
-
-watch(
-  () => props.modelValue,
-  (open) => {
-    if (!open) return;
-    stage.value = "idle";
-    result.value = null;
-    Object.assign(form, { code: "", password: "", force_sms: false });
-  },
-);
-
-async function close(force = false) {
-  if (!force && props.account && ["code_sent", "password_required"].includes(stage.value)) {
-    try {
-      await accountsApi.loginCancel(props.account.id);
-    } catch {
-      // 取消失败不阻塞关闭
-    }
-  }
-  emit("update:modelValue", false);
 }
 
 async function sendCode() {
@@ -217,27 +170,11 @@ async function submitPassword() {
           placeholder="二级密码（账号开了两步验证才需要）"
           @keyup.enter="submitCode"
         />
-        <div class="code-sources">
-          <el-button size="small" :loading="fetching === 'logincode'" @click="fetchCode('logincode')">
-            从接码平台取码
-          </el-button>
-          <el-button size="small" :loading="fetching === 'mail2925'" @click="fetchCode('mail2925')">
-            从 2925 邮箱取码
-          </el-button>
-        </div>
-        <div class="login-actions">
-          <el-input v-model="mail.user" size="small" placeholder="2925 主邮箱（user@2925.com）" />
-          <el-input
-            v-model="mail.password"
-            size="small"
-            type="password"
-            show-password
-            placeholder="2925 密码"
-          />
-        </div>
+        <el-button v-if="account.has_code_url" size="small" @click="openPlatform">
+          打开接码平台
+        </el-button>
         <p class="card-hint">
-          验证码 / 二级密码都可以直接手动输入；从接码平台或 2925 邮箱取到的码会自动填进上面，
-          确认或修改后点「提交」即可。
+          手动登录：点「打开接码平台」看验证码与二级密码，填进上面两个输入框后点「提交」。
         </p>
         <div class="login-actions">
           <el-button link type="primary" :loading="busy" @click="sendCode">
@@ -286,11 +223,6 @@ async function submitPassword() {
 </template>
 
 <style scoped>
-.code-sources {
-  display: flex;
-  gap: 8px;
-}
-
 .login-body {
   display: flex;
   flex-direction: column;

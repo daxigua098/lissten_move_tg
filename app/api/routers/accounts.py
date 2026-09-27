@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_member_or_platform, session_dependency
+from app.api.deps import current_identity, require_member_or_platform, session_dependency
 from app.api.schemas.telegram import (
     AccountCreateRequest,
     AccountUpdateRequest,
@@ -19,8 +19,8 @@ from app.core.config import AppConfig, ConfigError, load_config
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.telegram_client import session_file_path
 from app.db.base import as_utc
-from app.db.models import ROLE_SUPER_ADMIN, TgAccount
-from app.services import tg_account_service, tg_login_service
+from app.db.models import ACCOUNT_PURPOSE_OUTREACH, ROLE_SUPER_ADMIN, TgAccount
+from app.services import outreach_account_service, tg_account_service, tg_login_service
 
 router = APIRouter(
     prefix="/api/accounts",
@@ -34,6 +34,8 @@ def serialize_account(config: AppConfig, account: TgAccount) -> dict[str, Any]:
     return {
         "id": account.id,
         "name": account.name,
+        "purpose": account.purpose,
+        "purpose_label": tg_account_service.describe_purpose(account.purpose),
         "phone_masked": account.phone_masked,
         "session_name": account.session_name,
         "session_file": f"{session_file_path(config, account.session_name)}.session",
@@ -47,9 +49,19 @@ def serialize_account(config: AppConfig, account: TgAccount) -> dict[str, Any]:
         "last_used_at": as_utc(account.last_used_at),
         "last_error": account.last_error,
         "note": account.note,
+        "owner_confirmed_at": as_utc(account.owner_confirmed_at),
+        "owner_confirmed_by": account.owner_confirmed_by,
         "created_at": as_utc(account.created_at),
         "updated_at": as_utc(account.updated_at),
     }
+
+
+async def serialize(session: AsyncSession, config: AppConfig, account: TgAccount) -> dict[str, Any]:
+    """账号对外结构；发信息账号额外带上额度与冷却快照。"""
+    data = serialize_account(config, account)
+    if account.purpose == ACCOUNT_PURPOSE_OUTREACH:
+        data["outreach"] = await outreach_account_service.snapshot(session, account)
+    return data
 
 
 def _account_client_factory(request: Request) -> Any:
@@ -61,20 +73,22 @@ def _account_client_factory(request: Request) -> Any:
 async def list_accounts(
     request: Request,
     status: str | None = Query(default=None),
+    purpose: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """执行账号列表。"""
+    """账号列表；``purpose`` 区分执行账号与发信息账号。"""
     config: AppConfig = request.app.state.config
     rows, total = await tg_account_service.list_accounts(
         session,
         status=status,
+        purpose=purpose,
         limit=limit,
         offset=offset,
     )
     return {
-        "items": [serialize_account(config, row) for row in rows],
+        "items": [await serialize(session, config, row) for row in rows],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -85,9 +99,10 @@ async def list_accounts(
 async def create_account(
     payload: AccountCreateRequest,
     request: Request,
+    identity: dict[str, Any] = Depends(current_identity),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """登记执行账号（凭据加密保存，之后用 CLI 完成登录）。"""
+    """登记账号（凭据加密保存，之后完成 Telegram 登录）。"""
     config: AppConfig = request.app.state.config
     account = await tg_account_service.create_account(
         session,
@@ -99,8 +114,11 @@ async def create_account(
         session_name=payload.session_name,
         is_default=payload.is_default,
         note=payload.note,
+        purpose=payload.purpose,
+        owner_confirmed=payload.owner_confirmed,
+        owner_confirmed_by=identity.get("username"),
     )
-    return serialize_account(config, account)
+    return await serialize(session, config, account)
 
 
 @router.patch("/{account_id}")
@@ -110,7 +128,7 @@ async def update_account(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """更新账号信息或状态。"""
+    """更新账号信息、登录状态，或发信息账号的档位与运营态。"""
     config: AppConfig = request.app.state.config
     account = await tg_account_service.update_account(
         session,
@@ -124,7 +142,16 @@ async def update_account(
         api_id=payload.api_id,
         api_hash=payload.api_hash,
     )
-    return serialize_account(config, account)
+    if payload.outreach_tier is not None or payload.outreach_state is not None:
+        if account.purpose != ACCOUNT_PURPOSE_OUTREACH:
+            raise ValidationFailedError("只有发信息账号可以调整档位与运营态")
+        await outreach_account_service.update_state(
+            session,
+            account,
+            tier=payload.outreach_tier,
+            state=payload.outreach_state,
+        )
+    return await serialize(session, config, account)
 
 
 @router.delete("/{account_id}")
@@ -167,7 +194,7 @@ async def refresh_credentials(
         api_id=fresh.telegram.api_id,
         api_hash=fresh.telegram.api_hash,
     )
-    return serialize_account(config, account)
+    return await serialize(session, config, account)
 
 
 @router.post("/{account_id}/login/start")

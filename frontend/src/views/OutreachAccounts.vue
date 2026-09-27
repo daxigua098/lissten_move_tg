@@ -16,8 +16,9 @@ const form = reactive({
   phone: "",
   api_id: "",
   api_hash: "",
-  is_default: false,
   note: "",
+  is_default: false,
+  owner_confirmed: false,
 });
 
 const STATUS_TYPE = {
@@ -27,10 +28,27 @@ const STATUS_TYPE = {
   disabled: "info",
 };
 
+const STATE_TYPE = {
+  NEW: "info",
+  READY: "success",
+  COOLING: "warning",
+  CAPPED: "info",
+  LIMITED: "danger",
+  PAUSED: "warning",
+  DISABLED: "info",
+};
+
+const TIERS = [
+  { value: "NEW", label: "新号（<14 天）" },
+  { value: "WARMING", label: "养号（2~8 周）" },
+  { value: "STANDARD", label: "普通（2~6 月）" },
+  { value: "MATURE", label: "成熟健康号" },
+];
+
 async function load() {
   loading.value = true;
   try {
-    const { data } = await accountsApi.list({ limit: 100 });
+    const { data } = await accountsApi.list({ purpose: "outreach", limit: 100 });
     rows.value = data.items;
     total.value = data.total;
   } catch (error) {
@@ -46,55 +64,67 @@ function openCreate() {
     phone: "",
     api_id: "",
     api_hash: "",
-    is_default: false,
     note: "",
+    is_default: false,
+    owner_confirmed: false,
   });
   dialogVisible.value = true;
 }
 
 async function create() {
+  if (!form.owner_confirmed) {
+    ElMessage.warning("请先确认该账号归你所有并已获授权用于发送消息");
+    return;
+  }
   try {
     await accountsApi.create({
       name: form.name,
       phone: form.phone,
       api_id: form.api_id ? Number(form.api_id) : null,
       api_hash: form.api_hash || null,
-      is_default: form.is_default,
       note: form.note || null,
+      is_default: form.is_default,
+      purpose: "outreach",
+      owner_confirmed: true,
     });
     dialogVisible.value = false;
-    ElMessage.success("账号已登记，请用 CLI 完成 Telegram 登录");
+    ElMessage.success("账号已登记，请完成 Telegram 登录");
     load();
   } catch (error) {
     ElMessage.error(error.message);
   }
+}
+
+function openLogin(row) {
+  loginAccount.value = row;
+  loginDialog.value = true;
 }
 
 async function setDefault(row) {
   try {
     await accountsApi.update(row.id, { is_default: true });
-    ElMessage.success(`已把 ${row.name} 设为默认账号`);
+    ElMessage.success(`已把 ${row.name} 设为默认发信息账号`);
     load();
   } catch (error) {
     ElMessage.error(error.message);
   }
 }
 
-async function refreshCredentials(row) {
+async function setTier(row, tier) {
   try {
-    await accountsApi.refreshCredentials(row.id);
-    ElMessage.success("已用 .env 里的凭据覆盖该账号");
+    await accountsApi.update(row.id, { outreach_tier: tier });
+    ElMessage.success(`已把 ${row.name} 调为 ${TIERS.find((item) => item.value === tier)?.label}`);
     load();
   } catch (error) {
     ElMessage.error(error.message);
   }
 }
 
-async function toggleStatus(row) {
-  const next = row.status === "disabled" ? "pending_login" : "disabled";
+async function toggleState(row) {
+  const paused = row.outreach?.state === "PAUSED";
   try {
-    await accountsApi.update(row.id, { status: next });
-    ElMessage.success(next === "disabled" ? "账号已停用" : "账号已启用，请重新登录");
+    await accountsApi.update(row.id, { outreach_state: paused ? "READY" : "PAUSED" });
+    ElMessage.success(paused ? "账号已恢复" : "账号已暂停");
     load();
   } catch (error) {
     ElMessage.error(error.message);
@@ -104,7 +134,7 @@ async function toggleStatus(row) {
 async function remove(row) {
   try {
     await ElMessageBox.confirm(
-      `确认删除执行账号 ${row.name}？session 文件需要手工清理。`,
+      `确认删除发信息账号 ${row.name}？session 文件需要手工清理。`,
       "删除账号",
       { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
     );
@@ -122,21 +152,16 @@ function fmt(value) {
   return value ? new Date(value).toLocaleString("zh-CN") : "-";
 }
 
-function openLogin(row) {
-  loginAccount.value = row;
-  loginDialog.value = true;
-}
-
 onMounted(load);
 </script>
 
 <template>
   <div>
     <div class="toolbar">
-      <h2 class="page-title">执行账号池</h2>
+      <h2 class="page-title">发信息账号</h2>
       <span class="card-hint">共 {{ total }} 个账号</span>
       <div class="spacer" />
-      <el-button size="small" type="primary" @click="openCreate">登记执行账号</el-button>
+      <el-button size="small" type="primary" @click="openCreate">登记发信息账号</el-button>
       <el-button size="small" @click="load">刷新</el-button>
     </div>
 
@@ -149,35 +174,40 @@ onMounted(load);
         </template>
       </el-table-column>
       <el-table-column prop="phone_masked" label="手机号" width="130" />
-      <el-table-column label="状态" width="100">
+      <el-table-column label="登录状态" width="100">
         <template #default="{ row }">
           <el-tag :type="STATUS_TYPE[row.status] || 'info'" size="small">
             {{ row.status_label }}
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="健康度" width="140">
+      <el-table-column label="运营态" width="120">
         <template #default="{ row }">
-          <el-progress
-            :percentage="row.health_score"
-            :stroke-width="6"
-            :status="row.health_score >= 80 ? 'success' : row.health_score >= 50 ? 'warning' : 'exception'"
-          />
+          <el-tag :type="STATE_TYPE[row.outreach?.state] || 'info'" size="small">
+            {{ row.outreach?.state_label || "-" }}
+          </el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="Telegram" min-width="150">
+      <el-table-column label="档位" width="170">
         <template #default="{ row }">
-          <span v-if="row.username || row.tg_user_id">
-            {{ row.username ? `@${row.username}` : "" }}
-            <span class="card-hint">{{ row.tg_user_id || "" }}</span>
-          </span>
-          <span v-else class="card-hint">未登录</span>
+          <el-select
+            :model-value="row.outreach?.tier"
+            size="small"
+            @change="(value) => setTier(row, value)"
+          >
+            <el-option v-for="item in TIERS" :key="item.value" :label="item.label" :value="item.value" />
+          </el-select>
         </template>
       </el-table-column>
-      <el-table-column label="最近使用" width="170">
-        <template #default="{ row }">{{ fmt(row.last_used_at) }}</template>
+      <el-table-column label="今日额度" width="120">
+        <template #default="{ row }">
+          {{ row.outreach?.today_sent ?? 0 }} / {{ row.outreach?.daily_cap ?? "-" }}
+        </template>
       </el-table-column>
-      <el-table-column label="操作" width="270" fixed="right">
+      <el-table-column label="冷却至" width="170">
+        <template #default="{ row }">{{ fmt(row.outreach?.cooldown_until) }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="260" fixed="right">
         <template #default="{ row }">
           <el-button size="small" link type="success" @click="openLogin(row)">
             {{ row.status === "active" ? "重新登录" : "登录" }}
@@ -185,9 +215,8 @@ onMounted(load);
           <el-button size="small" link type="primary" :disabled="row.is_default" @click="setDefault(row)">
             设为默认
           </el-button>
-          <el-button size="small" link @click="refreshCredentials(row)">用 .env 凭据</el-button>
-          <el-button size="small" link @click="toggleStatus(row)">
-            {{ row.status === "disabled" ? "启用" : "停用" }}
+          <el-button size="small" link @click="toggleState(row)">
+            {{ row.outreach?.state === "PAUSED" ? "恢复" : "暂停" }}
           </el-button>
           <el-button size="small" link type="danger" @click="remove(row)">删除</el-button>
         </template>
@@ -199,8 +228,8 @@ onMounted(load);
       type="warning"
       :closable="false"
       show-icon
-      title="登记后还要完成一次 Telegram 登录，状态才会变成「正常」"
-      description="点列表里的「登录」按钮即可：发送验证码 → 输入验证码 →（若开了两步验证）输入密码。也可以在服务器终端执行 main.py account-login --account-id 账号ID。"
+      title="发信息账号专门用于冷触达与对话，与监听账号分开使用"
+      description="每日首次私聊按档位限额（新号 3 / 养号 5 / 普通 10 / 成熟最多 20），每次首触冷却默认 2 小时。这是实验功能：不保证送达，也不保证账号稳定，请只用真实、成熟的账号。"
     />
 
     <el-alert
@@ -208,14 +237,14 @@ onMounted(load);
       type="info"
       :closable="false"
       show-icon
-      title="账号是业务的生命线"
-      description="同一账号内部严格串行投递；API ID / API Hash / 手机号均加密存储，界面只显示掩码。账号文件与 session 不进版本库，请单独备份。"
+      title="账号归属与授权"
+      description="登记前请确认该账号归你本人或你的组织所有，并已获授权用于发送消息。手机号 / API 凭据均加密存储，界面只显示掩码。"
     />
 
-    <el-dialog v-model="dialogVisible" title="登记执行账号" width="480px">
+    <el-dialog v-model="dialogVisible" title="登记发信息账号" width="480px">
       <el-form label-position="top">
         <el-form-item label="别名">
-          <el-input v-model="form.name" placeholder="例如：主号、备用1" />
+          <el-input v-model="form.name" placeholder="例如：冷聊1号" />
         </el-form-item>
         <el-form-item label="手机号（含区号）">
           <el-input v-model="form.phone" placeholder="+8613800001111" />
@@ -230,7 +259,12 @@ onMounted(load);
           <el-input v-model="form.note" />
         </el-form-item>
         <el-form-item>
-          <el-checkbox v-model="form.is_default">设为默认执行账号</el-checkbox>
+          <el-checkbox v-model="form.is_default">设为默认发信息账号</el-checkbox>
+        </el-form-item>
+        <el-form-item>
+          <el-checkbox v-model="form.owner_confirmed">
+            我确认该账号归我本人或我的组织所有，并已获授权用于发送消息
+          </el-checkbox>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -239,7 +273,12 @@ onMounted(load);
       </template>
     </el-dialog>
 
-    <AccountLoginDialog v-model="loginDialog" :account="loginAccount" @logged-in="load" />
+    <AccountLoginDialog
+      v-model="loginDialog"
+      :account="loginAccount"
+      title="登录发信息账号"
+      @logged-in="load"
+    />
   </div>
 </template>
 
@@ -251,6 +290,4 @@ onMounted(load);
 .panel {
   margin-top: 12px;
 }
-
-
 </style>

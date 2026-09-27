@@ -20,6 +20,10 @@ from app.db.models import (
     ACCOUNT_ACTIVE,
     ACCOUNT_DISABLED,
     ACCOUNT_PENDING,
+    ACCOUNT_PURPOSE_LABELS,
+    ACCOUNT_PURPOSE_LISTEN,
+    ACCOUNT_PURPOSE_OUTREACH,
+    ACCOUNT_PURPOSES,
     ACCOUNT_RESTRICTED,
     ACCOUNT_STATUSES,
     TgAccount,
@@ -28,16 +32,28 @@ from app.db.models import (
 FAILURE_THRESHOLD = 3
 
 
+def validate_purpose(purpose: str) -> str:
+    """校验账号用途代号。"""
+    value = (purpose or "").strip()
+    if value not in ACCOUNT_PURPOSES:
+        raise ValidationFailedError(f"账号用途必须是 {'/'.join(ACCOUNT_PURPOSES)} 之一")
+    return value
+
+
 async def list_accounts(
     session: AsyncSession,
     *,
     status: str | None = None,
+    purpose: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[TgAccount], int]:
-    """分页查询执行账号。"""
+    """分页查询账号；``purpose`` 用于区分执行账号与发信息账号。"""
     statement = select(TgAccount).order_by(TgAccount.id)
     count_statement = select(func.count()).select_from(TgAccount)
+    if purpose:
+        statement = statement.where(TgAccount.purpose == purpose)
+        count_statement = count_statement.where(TgAccount.purpose == purpose)
     if status:
         statement = statement.where(TgAccount.status == status)
         count_statement = count_statement.where(TgAccount.status == status)
@@ -60,17 +76,22 @@ async def get_default_account(
     session: AsyncSession,
     *,
     tenant_id: int | None = None,
+    purpose: str = ACCOUNT_PURPOSE_LISTEN,
 ) -> TgAccount | None:
-    """返回默认执行账号；没有默认则退回第一个未停用账号。
+    """返回某用途下的默认账号；没有默认则退回第一个未停用账号。
 
     ``tenant_id`` 非空时只在这个租户里找（P1-06）：运行时按线路的租户取号，
-    不能拿别的租户的账号去发帖。传 None 保持旧口径（全库第一个可用账号），
-    只给"还没按租户切分"的老调用方用。
+    不能拿别的租户的账号去发帖。
+    ``purpose`` 保证采集 / 搬运 / 监听运行时永远不会拿到发信息账号。
     """
-    statement = select(TgAccount).where(TgAccount.is_default.is_(True)).order_by(TgAccount.id)
+    statement = (
+        select(TgAccount)
+        .where(TgAccount.purpose == purpose, TgAccount.is_default.is_(True))
+        .order_by(TgAccount.id)
+    )
     fallback = (
         select(TgAccount)
-        .where(TgAccount.status != ACCOUNT_DISABLED)
+        .where(TgAccount.purpose == purpose, TgAccount.status != ACCOUNT_DISABLED)
         .order_by(TgAccount.id)
         .limit(1)
     )
@@ -103,8 +124,18 @@ async def create_account(
     session_name: str | None = None,
     is_default: bool = False,
     note: str | None = None,
+    purpose: str = ACCOUNT_PURPOSE_LISTEN,
+    owner_confirmed: bool = False,
+    owner_confirmed_by: str | None = None,
+    owner_confirm_version: str | None = None,
 ) -> TgAccount:
-    """登记执行账号（凭据加密保存，登录另用 CLI 执行）。"""
+    """登记账号（凭据加密保存，登录另用 CLI / 网页完成）。
+
+    发信息账号（``purpose=outreach``）必须由会员确认账号归属与授权后才能登记。
+    """
+    purpose = validate_purpose(purpose)
+    if purpose == ACCOUNT_PURPOSE_OUTREACH and not owner_confirmed:
+        raise ValidationFailedError("请先确认该账号归你所有并已获授权用于发送消息")
     alias = (name or "").strip()
     if not alias:
         raise ValidationFailedError("请填写账号别名")
@@ -145,11 +176,16 @@ async def create_account(
         is_default=False,
         status=ACCOUNT_PENDING,
         note=(note or "").strip() or None,
+        purpose=purpose,
     )
+    if purpose == ACCOUNT_PURPOSE_OUTREACH:
+        account.owner_confirmed_at = utc_now()
+        account.owner_confirmed_by = (owner_confirmed_by or "").strip() or None
+        account.owner_confirm_version = (owner_confirm_version or "").strip() or None
     session.add(account)
     await session.flush()
     if is_default:
-        await _clear_other_defaults(session, account.id)
+        await _clear_other_defaults(session, account.id, purpose)
         account.is_default = True
     await session.commit()
     await session.refresh(account)
@@ -206,7 +242,7 @@ async def update_account(
         account.api_hash_enc = cipher.encrypt(api_hash.strip())
 
     if is_default is True:
-        await _clear_other_defaults(session, account.id)
+        await _clear_other_defaults(session, account.id, account.purpose)
         account.is_default = True
     elif is_default is False:
         account.is_default = False
@@ -305,12 +341,22 @@ async def touch_account(session: AsyncSession, account: TgAccount) -> None:
     await session.commit()
 
 
-async def _clear_other_defaults(session: AsyncSession, keep_id: int) -> None:
+async def _clear_other_defaults(session: AsyncSession, keep_id: int, purpose: str) -> None:
+    """清掉同一用途下的其他默认账号（执行账号与发信息账号各有一个默认）。"""
     others = await session.scalars(
-        select(TgAccount).where(TgAccount.id != keep_id, TgAccount.is_default.is_(True))
+        select(TgAccount).where(
+            TgAccount.id != keep_id,
+            TgAccount.purpose == purpose,
+            TgAccount.is_default.is_(True),
+        )
     )
     for item in others:
         item.is_default = False
+
+
+def describe_purpose(purpose: str) -> str:
+    """用途的中文描述。"""
+    return ACCOUNT_PURPOSE_LABELS.get(purpose, purpose)
 
 
 def describe_status(status: str) -> str:

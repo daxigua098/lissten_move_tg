@@ -26,6 +26,15 @@ ACCOUNT_RESTRICTED = "restricted"
 ACCOUNT_DISABLED = "disabled"
 ACCOUNT_STATUSES = (ACCOUNT_PENDING, ACCOUNT_ACTIVE, ACCOUNT_RESTRICTED, ACCOUNT_DISABLED)
 
+# 账号用途：执行账号（采集 / 搬运 / 监听）与发信息账号（冷触达 / 对话）物理隔离
+ACCOUNT_PURPOSE_LISTEN = "listen"
+ACCOUNT_PURPOSE_OUTREACH = "outreach"
+ACCOUNT_PURPOSES = (ACCOUNT_PURPOSE_LISTEN, ACCOUNT_PURPOSE_OUTREACH)
+ACCOUNT_PURPOSE_LABELS: dict[str, str] = {
+    ACCOUNT_PURPOSE_LISTEN: "执行账号",
+    ACCOUNT_PURPOSE_OUTREACH: "发信息账号",
+}
+
 # 聊天对象类型与来源
 CHAT_CHANNEL = "channel"
 CHAT_SUPERGROUP = "supergroup"
@@ -48,6 +57,12 @@ class TgAccount(TenantOwnedMixin, TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(64), index=True)
+    # 用途：listen=执行账号（采集 / 搬运 / 监听），outreach=发信息账号（冷触达 / 对话）
+    purpose: Mapped[str] = mapped_column(
+        String(16),
+        default=ACCOUNT_PURPOSE_LISTEN,
+        index=True,
+    )
     phone_masked: Mapped[str] = mapped_column(String(32))
     # 敏感字段以 Fernet 加密存储
     phone_enc: Mapped[str] = mapped_column(String(255))
@@ -63,6 +78,13 @@ class TgAccount(TenantOwnedMixin, TimestampMixin, Base):
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 会员接入发信息账号时确认「账号归我所有并已获授权使用」的留痕
+    owner_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    owner_confirmed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    owner_confirm_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"<TgAccount {self.name} status={self.status}>"

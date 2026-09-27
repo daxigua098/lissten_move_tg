@@ -7,6 +7,17 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 AccountStatusLiteral = Literal["pending_login", "active", "restricted", "disabled"]
+AccountPurposeLiteral = Literal["listen", "outreach"]
+OutreachTierLiteral = Literal["NEW", "WARMING", "STANDARD", "MATURE"]
+OutreachStateLiteral = Literal[
+    "NEW",
+    "READY",
+    "COOLING",
+    "CAPPED",
+    "LIMITED",
+    "PAUSED",
+    "DISABLED",
+]
 
 
 class AccountCreateRequest(BaseModel):
@@ -20,6 +31,10 @@ class AccountCreateRequest(BaseModel):
     session_name: str | None = Field(default=None, max_length=128)
     is_default: bool = False
     note: str | None = Field(default=None, max_length=255)
+    # listen=执行账号（采集/搬运/监听），outreach=发信息账号（冷触达/对话）
+    purpose: AccountPurposeLiteral = "listen"
+    # 发信息账号必须由会员确认「账号归我所有并已获授权用于发送消息」
+    owner_confirmed: bool = False
 
 
 class AccountUpdateRequest(BaseModel):
@@ -32,6 +47,9 @@ class AccountUpdateRequest(BaseModel):
     status: AccountStatusLiteral | None = None
     is_default: bool | None = None
     note: str | None = Field(default=None, max_length=255)
+    # 发信息账号的运营态 / 档位（人工调整）
+    outreach_tier: OutreachTierLiteral | None = None
+    outreach_state: OutreachStateLiteral | None = None
 
 
 class BotCreateRequest(BaseModel):

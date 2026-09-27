@@ -17,6 +17,7 @@ from app.core.route_config import (
     validate_route_config,
 )
 from app.db.models import (
+    ACCOUNT_PURPOSE_LISTEN,
     BACKFILL_IDLE,
     BUSINESS_CARRY,
     BUSINESS_TYPES,
@@ -809,8 +810,12 @@ async def _validate_owner_refs(
     exec_account_id: int | None,
     notify_bot_id: int | None,
 ) -> None:
-    if exec_account_id is not None and await session.get(TgAccount, exec_account_id) is None:
-        raise NotFoundError("执行账号不存在")
+    if exec_account_id is not None:
+        account = await session.get(TgAccount, exec_account_id)
+        if account is None:
+            raise NotFoundError("执行账号不存在")
+        if account.purpose != ACCOUNT_PURPOSE_LISTEN:
+            raise ValidationFailedError("发信息账号不能用于搬运 / 监听线路")
     if notify_bot_id is not None and await session.get(ControlBot, notify_bot_id) is None:
         raise NotFoundError("控制 Bot 不存在")
 

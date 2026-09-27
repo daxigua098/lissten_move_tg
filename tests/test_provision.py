@@ -13,6 +13,7 @@ from app.core.errors import (
     ValidationFailedError,
 )
 from app.core.expiry import expiry_for_days
+from app.services.user_service import INITIAL_PASSWORD
 
 
 async def _make_user(session, config, username, *, account_type="platform", parent_user_id=None):
@@ -106,9 +107,8 @@ async def test_open_member_by_agent_consumes_one_member_quota(db) -> None:
     assert tenant["quota_held"] is True
     assert result["modules"] == ["carry", "monitor"]
     assert result["limits"] == {}
-    # 初始密码只在这一刻明文返回，且要能通过强度校验
-    assert len(result["initial_password"]) >= 8
-    assert any(char.isdigit() for char in result["initial_password"])
+    # 初始密码只在这一刻明文返回：平台统一下发 INITIAL_PASSWORD，首登必须自己改
+    assert result["initial_password"] == INITIAL_PASSWORD
 
     async with session_scope() as session:
         assert await quota_service.balance_of(session, agent_id, "member") == 0
@@ -475,16 +475,14 @@ async def test_unknown_template_is_rejected(db) -> None:
             )
 
 
-async def test_generated_password_is_strong(db) -> None:
-    """初始密码生成器：长度足够、字母数字都有、不重复。"""
-    from app.services.provision_service import generate_password
+def test_initial_password_is_the_platform_default() -> None:
+    """开号统一下发 a123456；只有显式传密码才走强度校验。"""
+    from app.services.provision_service import resolve_initial_password
 
-    samples = {generate_password() for _ in range(50)}
-    assert len(samples) == 50
-    for value in samples:
-        assert len(value) == 12
-        assert any(char.isdigit() for char in value)
-        assert any(char.isalpha() for char in value)
+    assert INITIAL_PASSWORD == "a123456"
+    assert resolve_initial_password(None) == (INITIAL_PASSWORD, True)
+    assert resolve_initial_password("   ") == (INITIAL_PASSWORD, True)
+    assert resolve_initial_password(" Custom12345 ") == ("Custom12345", False)
 
 
 def test_expiry_helper_matches_design() -> None:

@@ -31,6 +31,10 @@ from app.db.models import (
 )
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,64}$")
+# 平台开号统一下发的初始密码：开号时给、首次登录必须自己改掉。
+# 它是公开的固定值（只有 7 位），所以**开号链路不套用户改密时的那套强度校验**，
+# 用户自己改密时依旧要满足 ``security.password_min_length`` 与"字母+数字"。
+INITIAL_PASSWORD = "a123456"
 _LETTER_PATTERN = re.compile(r"[A-Za-z]")
 _DIGIT_PATTERN = re.compile(r"\d")
 
@@ -118,6 +122,7 @@ async def build_user(
     display_name: str | None = None,
     is_builtin: bool = False,
     must_change_password: bool = True,
+    enforce_password_policy: bool = True,
     flush: bool = True,
 ) -> User:
     """构造账号并挂到当前事务上，**不提交**。
@@ -129,6 +134,9 @@ async def build_user(
     规则：
     - 平台 / 代理账号：``role`` 必须在 ``ROLE_RANK`` 里，默认 ``viewer``；
     - 会员账号：一人一号，``role`` 固定 ``owner``，传别的值会被强制改写。
+
+    密码：``enforce_password_policy=False`` 只给**平台开号链路**用——开号下发的是统一初始
+    密码（:data:`INITIAL_PASSWORD`），本来是临时口令、首登必改，不需要满足长度门槛。
     """
     name = validate_username(username)
     if account_type not in ACCOUNT_TYPES:
@@ -146,7 +154,8 @@ async def build_user(
         if parent is None:
             raise NotFoundError("上级账号不存在")
 
-    validate_password(password, min_length=config.security.password_min_length)
+    if enforce_password_policy:
+        validate_password(password, min_length=config.security.password_min_length)
     if await get_user_by_username(session, name) is not None:
         raise UserExistsError()
 
@@ -180,6 +189,7 @@ async def create_user(
     display_name: str | None = None,
     is_builtin: bool = False,
     must_change_password: bool = True,
+    enforce_password_policy: bool = True,
 ) -> User:
     """创建账号并提交（单账号场景的便捷入口）。"""
     user = await build_user(
@@ -194,6 +204,7 @@ async def create_user(
         display_name=display_name,
         is_builtin=is_builtin,
         must_change_password=must_change_password,
+        enforce_password_policy=enforce_password_policy,
     )
     await session.commit()
     await session.refresh(user)

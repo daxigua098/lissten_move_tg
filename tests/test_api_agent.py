@@ -87,7 +87,7 @@ async def test_agent_can_open_member_until_quota_runs_out(admin_client, api_conf
     assert body["account"]["account_type"] == "member"
     assert body["tenant"]["quota_type"] == "member"
     assert body["tenant"]["quota_held"] is True
-    assert len(body["initial_password"]) >= 8
+    assert body["initial_password"] == "a123456"
 
     second = await admin_client.post(
         "/api/agent/members",

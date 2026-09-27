@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -52,21 +51,18 @@ from app.services import (
 TRIAL_DAYS = 1
 TRIAL_TEMPLATE_CODES = ("trial_carry", "trial_monitor")
 
-DEFAULT_PASSWORD_LENGTH = 12
-# 剔除 0/O/1/l/I 这些容易抄错的字符，初始密码要能念给对方
-_PASSWORD_LETTERS = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ"
-_PASSWORD_DIGITS = "23456789"
 
+def resolve_initial_password(password: str | None) -> tuple[str, bool]:
+    """开号下发的密码，返回 ``(密码, 是否平台统一初始密码)``。
 
-def generate_password(length: int = DEFAULT_PASSWORD_LENGTH) -> str:
-    """生成满足强度要求的初始密码（同时含字母与数字）。"""
-    size = max(8, int(length))
-    chars = [secrets.choice(_PASSWORD_LETTERS), secrets.choice(_PASSWORD_DIGITS)]
-    pool = _PASSWORD_LETTERS + _PASSWORD_DIGITS
-    while len(chars) < size:
-        chars.append(secrets.choice(pool))
-    secrets.SystemRandom().shuffle(chars)
-    return "".join(chars)
+    不指定就用 :data:`app.services.user_service.INITIAL_PASSWORD`（``a123456``），
+    它是**临时口令**：登录后必须先改密（``must_change_password=True``），
+    所以不套用户改密时的强度校验；调用方显式传了密码才按强度校验。
+    """
+    value = (password or "").strip()
+    if value:
+        return value, False
+    return user_service.INITIAL_PASSWORD, True
 
 
 def _is_agent(actor: User) -> bool:
@@ -143,7 +139,7 @@ async def _create_member_account(
     又指回租户。先建账号（``tenant_id`` 留空）→ 建租户并绑账号 → 回填
     ``users.tenant_id``，这样两个方向的外键都是先有的那个。
     """
-    password_value = password or generate_password()
+    password_value, default_password = resolve_initial_password(password)
     # 归属代理：平台后台可以指定「这个会员挂在哪个代理名下」，额度就从那个代理账上扣
     owner_agent_id = (
         owner_agent.id if owner_agent is not None else (actor.id if _is_agent(actor) else None)
@@ -158,6 +154,7 @@ async def _create_member_account(
         tenant_id=None,
         display_name=display_name or username,
         must_change_password=True,
+        enforce_password_policy=not default_password,
     )
     tenant = await tenant_service.build_tenant(
         session,
@@ -444,7 +441,7 @@ async def open_agent(
     ``allocate`` 是"顺手划拨"的便捷参数，但落库是**两笔独立动作**：
     一笔 ``open_agent`` 扣代理额度，再来一次 ``allocate``（两行流水）。
     """
-    password_value = password or generate_password()
+    password_value, default_password = resolve_initial_password(password)
     child = await user_service.build_user(
         session,
         config,
@@ -456,6 +453,7 @@ async def open_agent(
         tenant_id=None,
         display_name=display_name or username,
         must_change_password=True,
+        enforce_password_policy=not default_password,
     )
     await quota_service.get_or_create_quota(session, child.id)
     if _is_agent(actor):

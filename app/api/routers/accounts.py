@@ -30,6 +30,7 @@ from app.db.models import ACCOUNT_PURPOSE_OUTREACH, ROLE_SUPER_ADMIN, TgAccount
 from app.services import (
     outreach_account_service,
     outreach_auto_login_service,
+    outreach_settings_service,
     tg_account_service,
     tg_login_service,
 )
@@ -83,7 +84,12 @@ async def serialize(session: AsyncSession, config: AppConfig, account: TgAccount
     """账号对外结构；发信息账号额外带上额度与冷却快照。"""
     data = serialize_account(config, account)
     if account.purpose == ACCOUNT_PURPOSE_OUTREACH:
-        data["outreach"] = await outreach_account_service.snapshot(session, account)
+        settings = await outreach_settings_service.read_settings(session, account.tenant_id)
+        data["outreach"] = await outreach_account_service.snapshot(
+            session,
+            account,
+            tz_name=settings.get("timezone"),
+        )
     return data
 
 

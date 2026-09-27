@@ -165,10 +165,14 @@ export const outreachApi = {
   settings: () => http.get("/api/outreach/settings"),
   updateSettings: (payload) => http.patch("/api/outreach/settings", payload),
   capacity: () => http.get("/api/outreach/capacity"),
-  planQueue: (limit = 200) =>
-    http.post("/api/outreach/queue/plan", null, { params: { limit } }),
+  previewQueue: (params = {}) => http.get("/api/outreach/queue/preview", { params }),
+  planQueue: (params = {}) => http.post("/api/outreach/queue/plan", null, { params }),
   clearQueue: () => http.post("/api/outreach/queue/clear"),
+  deleteTasks: (taskIds) => http.post("/api/outreach/tasks/delete", { task_ids: taskIds }),
   taskDetail: (id) => http.get(`/api/outreach/tasks/${id}/detail`),
+  confirmDelivery: (id, delivered) =>
+    http.post(`/api/outreach/tasks/${id}/confirm-delivery`, { delivered }),
+  retryTask: (id) => http.post(`/api/outreach/tasks/${id}/retry`),
   tasks: (params) => http.get("/api/outreach/tasks", { params }),
   contacts: (params) => http.get("/api/outreach/contacts", { params }),
   templates: (params) => http.get("/api/outreach/templates", { params }),

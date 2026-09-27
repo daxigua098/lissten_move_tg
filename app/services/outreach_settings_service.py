@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,9 +24,13 @@ BOOL_FIELDS = (
     "strict_permanent_lock",
     "auto_reply_enabled",
     "handoff_bot_enabled",
+    "only_authorized",
+    "auto_queue_enabled",
     "kill_switch",
     "delete_session_on_account_delete",
 )
+
+ALLOWED_LEAD_AGE_DAYS = (7, 30, 90)
 
 
 def parse_working_hours(raw: str | None) -> list[str]:
@@ -56,6 +60,10 @@ def _dump(row: OutreachSettings) -> dict:
         "handoff_bot_id": row.handoff_bot_id,
         "working_hours": parse_working_hours(row.working_hours),
         "daily_pool_cap": row.daily_pool_cap,
+        "only_authorized": bool(row.only_authorized),
+        "auto_queue_enabled": bool(row.auto_queue_enabled),
+        "max_lead_age_days": row.max_lead_age_days,
+        "timezone": row.timezone or "Asia/Shanghai",
         "kill_switch": bool(row.kill_switch),
         "delete_session_on_account_delete": bool(row.delete_session_on_account_delete),
     }
@@ -78,6 +86,10 @@ def defaults() -> dict:
         "handoff_bot_id": None,
         "working_hours": [],
         "daily_pool_cap": None,
+        "only_authorized": False,
+        "auto_queue_enabled": False,
+        "max_lead_age_days": 30,
+        "timezone": "Asia/Shanghai",
         "kill_switch": False,
         "delete_session_on_account_delete": False,
     }
@@ -134,6 +146,23 @@ async def update_settings(session: AsyncSession, tenant_id: int, **fields) -> di
                 raise ValidationFailedError("租户日总量至少为 1")
             row.daily_pool_cap = value
 
+    if "max_lead_age_days" in fields:
+        raw_days = fields["max_lead_age_days"]
+        if raw_days in (None, "", 0):
+            row.max_lead_age_days = None
+        else:
+            value = int(raw_days)
+            if value not in ALLOWED_LEAD_AGE_DAYS:
+                allowed = "/".join(str(item) for item in ALLOWED_LEAD_AGE_DAYS)
+                raise ValidationFailedError(f"线索时效只能是 {allowed} 天或不限")
+            row.max_lead_age_days = value
+
+    if "timezone" in fields:
+        value = str(fields["timezone"] or "").strip() or "Asia/Shanghai"
+        if len(value) > 64:
+            raise ValidationFailedError("时区名称不能超过 64 个字符")
+        row.timezone = value
+
     if "working_hours" in fields:
         row.working_hours = _validate_hours(fields["working_hours"])
 
@@ -186,3 +215,60 @@ def lock_until(settings: dict, now: datetime) -> datetime | None:
     if days <= 0:
         return None
     return now + timedelta(days=days)
+
+
+def parse_clock(value: str) -> time:
+    """把 ``HH:MM`` 解析为本地时间；调用方已负责校验。"""
+    hour, minute = (int(part) for part in value.split(":", 1))
+    return time(hour=hour, minute=minute)
+
+
+def within_working_hours(
+    settings: dict,
+    now: datetime,
+    *,
+    tz_name: str | None = None,
+) -> bool:
+    """判断某个 UTC 时刻是否落在租户工作时段内。"""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    hours = settings.get("working_hours") or []
+    if not hours:
+        return True
+    from app.core.expiry import resolve_timezone
+
+    local_now = now.astimezone(resolve_timezone(tz_name or settings.get("timezone")))
+    start = parse_clock(str(hours[0]))
+    end = parse_clock(str(hours[1]))
+    current = local_now.time().replace(second=0, microsecond=0)
+    if start <= end:
+        return start <= current < end
+    return current >= start or current < end
+
+
+def next_working_start(
+    settings: dict,
+    now: datetime,
+    *,
+    tz_name: str | None = None,
+) -> datetime | None:
+    """下一个工作时段开始时刻（UTC）；无限制时返回 ``None``。"""
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    hours = settings.get("working_hours") or []
+    if not hours or within_working_hours(settings, now, tz_name=tz_name):
+        return None
+    from app.core.expiry import resolve_timezone
+
+    tz = resolve_timezone(tz_name or settings.get("timezone"))
+    local_now = now.astimezone(tz)
+    start = parse_clock(str(hours[0]))
+    candidate = local_now.replace(
+        hour=start.hour,
+        minute=start.minute,
+        second=0,
+        microsecond=0,
+    )
+    if candidate <= local_now:
+        candidate += timedelta(days=1)
+    return candidate.astimezone(UTC)

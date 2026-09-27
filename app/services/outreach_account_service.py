@@ -38,9 +38,9 @@ from app.db.models import (
 )
 
 
-def local_day(moment: datetime | None = None) -> date:
+def local_day(moment: datetime | None = None, *, tz_name: str | None = None) -> date:
     """租户本地日期（配置时区，缺 tzdata 时退回东八区）。"""
-    return local_today(now=moment)
+    return local_today(tz_name=tz_name, now=moment)
 
 
 def tier_limits(tier: str) -> tuple[int, int]:
@@ -63,6 +63,7 @@ async def snapshot(
     account: TgAccount,
     *,
     now: datetime | None = None,
+    tz_name: str | None = None,
 ) -> dict[str, Any]:
     """额度与冷却快照（只读，列表展示用）。"""
     state = await session.get(OutreachAccountState, account.id)
@@ -74,7 +75,7 @@ async def snapshot(
     counter = await session.scalar(
         select(OutreachAccountDaily).where(
             OutreachAccountDaily.account_id == account.id,
-            OutreachAccountDaily.day == local_day(now),
+            OutreachAccountDaily.day == local_day(now, tz_name=tz_name),
         )
     )
     today_sent = counter.first_contact_sent if counter is not None else 0
@@ -113,9 +114,10 @@ async def get_or_create_daily(
     account: TgAccount,
     *,
     day: date | None = None,
+    tz_name: str | None = None,
 ) -> OutreachAccountDaily:
     """取账号当天的计分行；没有就建一条（调用方负责 commit）。"""
-    target = day or local_day()
+    target = day or local_day(tz_name=tz_name)
     row = await session.scalar(
         select(OutreachAccountDaily).where(
             OutreachAccountDaily.account_id == account.id,
@@ -133,6 +135,7 @@ async def bump_daily(
     session: AsyncSession,
     account: TgAccount,
     *,
+    tz_name: str | None = None,
     first_contact: int = 0,
     follow_up: int = 0,
     failed: int = 0,
@@ -140,7 +143,7 @@ async def bump_daily(
     limited: int = 0,
 ) -> OutreachAccountDaily:
     """累加当天的计数（调用方负责 commit）。"""
-    row = await get_or_create_daily(session, account)
+    row = await get_or_create_daily(session, account, tz_name=tz_name)
     row.first_contact_sent += first_contact
     row.follow_up_sent += follow_up
     row.failed += failed

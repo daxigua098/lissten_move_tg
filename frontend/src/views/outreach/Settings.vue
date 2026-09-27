@@ -17,6 +17,10 @@ const form = reactive({
   work_start: "",
   work_end: "",
   daily_pool_cap: null,
+  only_authorized: false,
+  auto_queue_enabled: false,
+  max_lead_age_days: 30,
+  timezone: "Asia/Shanghai",
   kill_switch: false,
   delete_session_on_account_delete: false,
   reply_mode: "human",
@@ -46,6 +50,10 @@ async function load() {
     form.work_start = hours[0];
     form.work_end = hours[1];
     form.daily_pool_cap = data.daily_pool_cap;
+    form.only_authorized = !!data.only_authorized;
+    form.auto_queue_enabled = !!data.auto_queue_enabled;
+    form.max_lead_age_days = data.max_lead_age_days ?? 0;
+    form.timezone = data.timezone || "Asia/Shanghai";
     form.kill_switch = data.kill_switch;
     form.delete_session_on_account_delete = data.delete_session_on_account_delete;
     form.reply_mode = data.reply_mode || "human";
@@ -73,6 +81,10 @@ async function save() {
       follow_up_max: Number(form.follow_up_max),
       working_hours: hours,
       daily_pool_cap: form.daily_pool_cap ? Number(form.daily_pool_cap) : null,
+      only_authorized: form.only_authorized,
+      auto_queue_enabled: form.auto_queue_enabled,
+      max_lead_age_days: form.max_lead_age_days || null,
+      timezone: form.timezone || "Asia/Shanghai",
       kill_switch: form.kill_switch,
       delete_session_on_account_delete: form.delete_session_on_account_delete,
       reply_mode: form.reply_mode,
@@ -125,6 +137,26 @@ onMounted(load);
         <span class="spacer" />
         <el-time-select v-model="form.work_end" start="00:00" step="00:30" end="23:30" placeholder="结束" />
         <span class="card-hint">留空表示不限制</span>
+      </el-form-item>
+      <el-form-item label="计算时区">
+        <el-input v-model="form.timezone" placeholder="Asia/Shanghai" />
+        <span class="card-hint">工作时段、账号日额度和池级日上限统一按此时区计算</span>
+      </el-form-item>
+      <el-form-item label="线索可触达时效">
+        <el-select v-model="form.max_lead_age_days" style="width: 180px">
+          <el-option label="7 天" :value="7" />
+          <el-option label="30 天" :value="30" />
+          <el-option label="90 天" :value="90" />
+          <el-option label="不限" :value="0" />
+        </el-select>
+      </el-form-item>
+      <el-form-item label="仅触达有授权线索">
+        <el-switch v-model="form.only_authorized" />
+        <span class="card-hint">开启后 CONSENT_NONE 不会生成任务</span>
+      </el-form-item>
+      <el-form-item label="自动补队列">
+        <el-switch v-model="form.auto_queue_enabled" />
+        <span class="card-hint">每 5 分钟最多补 200 条，只入队不发送</span>
       </el-form-item>
       <el-form-item label="租户每日冷聊总量">
         <el-input-number v-model="form.daily_pool_cap" :min="1" :max="100000" placeholder="不限" />

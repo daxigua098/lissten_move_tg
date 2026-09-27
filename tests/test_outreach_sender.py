@@ -112,6 +112,7 @@ def test_detect_refusal_and_classify_error() -> None:
     assert sender.detect_refusal("你好呀") is False
     assert sender.classify_error(FloodWaitError()) == "flood"
     assert sender.classify_error(PeerFloodError()) == "peer_flood"
+    assert sender.classify_error(TimeoutError("timed out")) == "uncertain"
     assert sender.classify_error(ValueError("boom")) == "unknown"
 
 
@@ -295,6 +296,151 @@ async def test_pick_account_respects_cooldown_and_cap(admin_client) -> None:
         daily.first_contact_sent = 10
         await session.commit()
         assert await sender.pick_account(session, tenant_id) is None
+
+
+async def test_send_window_enforces_hours_and_pool_cap(admin_client) -> None:
+    from datetime import UTC, datetime
+
+    from app.db.session import session_scope
+    from app.services import outreach_account_service, outreach_settings_service
+    from app.services import outreach_sender_service as sender
+
+    async with session_scope() as session:
+        account, contact, task = await _prepare(session, tg_user_id=880020)
+        tenant_id = account.tenant_id
+        noon = datetime(2026, 9, 28, 12, 0, tzinfo=UTC)
+
+        await outreach_settings_service.update_settings(
+            session,
+            tenant_id,
+            timezone="UTC",
+            working_hours=["09:00", "18:00"],
+            daily_pool_cap=1,
+        )
+        allowed, reason = await sender.enforce_send_window(session, tenant_id, now=noon)
+        assert allowed is True and reason == ""
+
+        daily = await outreach_account_service.get_or_create_daily(
+            session,
+            account,
+            day=outreach_account_service.local_day(noon, tz_name="UTC"),
+            tz_name="UTC",
+        )
+        daily.first_contact_sent = 1
+        await session.commit()
+        allowed, reason = await sender.enforce_send_window(session, tenant_id, now=noon)
+        assert allowed is False and reason == "DAILY_POOL_CAP"
+        sent = await sender.send_task(
+            session,
+            client=FakeOutreachClient(),
+            account=account,
+            task=task,
+            contact=contact,
+            now=noon,
+        )
+        assert sent["status"] == "QUEUED"
+        assert sent["error"] == "DAILY_POOL_CAP"
+
+        await outreach_settings_service.update_settings(
+            session,
+            tenant_id,
+            working_hours=["09:00", "10:00"],
+        )
+        allowed, reason = await sender.enforce_send_window(session, tenant_id, now=noon)
+        assert allowed is False and reason == "OUTSIDE_WORKING_HOURS"
+
+
+async def test_uncertain_delivery_requires_manual_confirmation(admin_client) -> None:
+    from app.db.session import session_scope
+    from app.services import outreach_sender_service as sender
+
+    async with session_scope() as session:
+        account, contact, task = await _prepare(session, tg_user_id=880021)
+
+        result = await sender.send_task(
+            session,
+            client=FakeOutreachClient(fail=TimeoutError("timed out")),
+            account=account,
+            task=task,
+            contact=contact,
+        )
+        assert result["status"] == "UNKNOWN_DELIVERY"
+        await session.refresh(task)
+        assert task.account_id == account.id
+        assert contact.first_contact_at is None
+
+        result = await sender.confirm_unknown_delivery(session, task=task, delivered=False)
+        assert result["status"] == "QUEUED"
+        await session.refresh(task)
+        assert task.account_id is None
+        assert task.attempt_count == 0
+
+
+async def test_confirm_unknown_delivery_as_sent_commits_lock(admin_client) -> None:
+    from app.db.session import session_scope
+    from app.services import outreach_sender_service as sender
+
+    async with session_scope() as session:
+        account, contact, task = await _prepare(session, tg_user_id=880022)
+        await sender.send_task(
+            session,
+            client=FakeOutreachClient(fail=TimeoutError("timed out")),
+            account=account,
+            task=task,
+            contact=contact,
+        )
+
+        result = await sender.confirm_unknown_delivery(session, task=task, delivered=True)
+
+        assert result["status"] == "SENT"
+        await session.refresh(contact)
+        assert contact.contact_state == "CONTACTED"
+        assert contact.first_contact_at is not None
+        assert contact.global_lock_until is not None
+
+
+async def test_first_contact_account_limit_requeues_without_freezing(admin_client) -> None:
+    from app.db.session import session_scope
+    from app.services import outreach_sender_service as sender
+
+    async with session_scope() as session:
+        account, contact, task = await _prepare(session, tg_user_id=880023)
+
+        await sender.send_task(
+            session,
+            client=FakeOutreachClient(fail=PeerFloodError()),
+            account=account,
+            task=task,
+            contact=contact,
+        )
+
+        await session.refresh(task)
+        await session.refresh(contact)
+        assert task.status == "QUEUED"
+        assert task.account_id is None
+        assert contact.contact_state == "QUEUED"
+
+
+async def test_retry_failed_task_allows_temporary_failure(admin_client) -> None:
+    from app.db.session import session_scope
+    from app.services import outreach_sender_service as sender
+
+    async with session_scope() as session:
+        _account, contact, task = await _prepare(session, tg_user_id=880024)
+        task.status = "FAILED"
+        task.account_id = None
+        task.attempt_count = 3
+        contact.contact_state = "WAITING_SENDER_ACCOUNT"
+        await session.commit()
+
+        result = await sender.retry_failed_task(session, task=task)
+
+        assert result["status"] == "QUEUED"
+        await session.refresh(task)
+        await session.refresh(contact)
+        assert task.attempt_count == 0
+        assert task.account_id is None
+        assert contact.contact_state == "QUEUED"
 
 
 async def test_dispatch_endpoints_and_runtime_switch(admin_client) -> None:

@@ -75,6 +75,10 @@ RESOURCE_TICK_SECONDS = 30.0
 # 承接 Bot 的 /start 轮询间隔
 HANDOFF_TICK_SECONDS = 5.0
 
+# 冷触达自动补队列：开关打开后每 5 分钟补一次，单租户每次最多 200 条
+AUTO_QUEUE_TICK_SECONDS = 300.0
+AUTO_QUEUE_BATCH = 200
+
 # 相册收齐窗口：同一条帖子的多张图/视频是逐条到达的，等这一批安静下来再入队
 ALBUM_WINDOW_SECONDS = 2.5
 
@@ -133,6 +137,7 @@ class RuntimeService:
         # 承接 Bot 的 getUpdates 游标（bot_id → offset）
         self._handoff_offsets: dict[int, int] = {}
         self._last_handoff_tick = float("-inf")
+        self._last_auto_queue_tick = float("-inf")
 
     @property
     def control_path(self):
@@ -216,6 +221,10 @@ class RuntimeService:
 
     async def _outreach_tick(self) -> int:
         """处理一轮冷触达任务：闸门由发送服务负责，这里只做串行调度。"""
+        loop_now = asyncio.get_running_loop().time()
+        if loop_now - self._last_auto_queue_tick >= AUTO_QUEUE_TICK_SECONDS:
+            self._last_auto_queue_tick = loop_now
+            await self._auto_queue_tick()
         async with session_scope() as session:
             tenant_ids = await outreach_queue_service.pending_tenants(session)
         sent = 0
@@ -223,6 +232,12 @@ class RuntimeService:
             async with session_scope() as session:
                 settings = await outreach_settings_service.read_settings(session, tenant_id)
                 if settings.get("kill_switch"):
+                    continue
+                allowed, _reason = await outreach_sender_service.enforce_send_window(
+                    session,
+                    tenant_id,
+                )
+                if not allowed:
                     continue
                 task = await outreach_queue_service.next_ready_task(session, tenant_id)
                 if task is None:
@@ -252,6 +267,27 @@ class RuntimeService:
             self._last_handoff_tick = now
             await self._poll_handoff_updates()
         return sent
+
+    async def _auto_queue_tick(self) -> int:
+        """按租户策略自动补队列；生成不发送，不受工作时段限制。"""
+        async with session_scope() as session:
+            rows = list(
+                await session.scalars(
+                    select(OutreachSettings).where(OutreachSettings.auto_queue_enabled.is_(True))
+                )
+            )
+        created = 0
+        for settings in rows:
+            async with session_scope() as session:
+                result = await outreach_queue_service.plan_pending(
+                    session,
+                    tenant_id=settings.tenant_id,
+                    limit=AUTO_QUEUE_BATCH,
+                )
+                created += int(result.get("created") or 0)
+        if created:
+            logger.info("冷触达自动补队列：新增 {} 条任务", created)
+        return created
 
     async def _poll_handoff_updates(self) -> None:
         """轮询承接 Bot 的 /start，把会话归属从账号转给 Bot。"""

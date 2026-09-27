@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import AppConfig
@@ -40,11 +40,14 @@ from app.db.models import (
     TASK_BLOCKED,
     TASK_CANCELLED,
     TASK_FAILED,
+    TASK_FIRST_CONTACT,
     TASK_FOLLOW_UP,
     TASK_QUEUED,
     TASK_SENT,
+    TASK_UNKNOWN_DELIVERY,
     TEMPLATE_SCOPE_PLATFORM,
     ContactSuppression,
+    OutreachAccountDaily,
     OutreachAccountState,
     OutreachContact,
     OutreachMessage,
@@ -52,7 +55,11 @@ from app.db.models import (
     OutreachTemplate,
     TgAccount,
 )
-from app.services import outreach_account_service, outreach_settings_service
+from app.services import (
+    outreach_account_service,
+    outreach_queue_service,
+    outreach_settings_service,
+)
 
 # 对方明确表示不想被联系的说法（中英都覆盖，避免被当成"可以继续聊"）
 REFUSAL_KEYWORDS = (
@@ -102,6 +109,16 @@ def classify_error(exc: BaseException) -> str:
         return "privacy"
     if name in {"UsernameNotOccupiedError", "UsernameInvalidError", "CannotResolveUsernameError"}:
         return "unreachable"
+    if name in {
+        "ConnectionError",
+        "ConnectionResetError",
+        "TimeoutError",
+        "TimedOutError",
+        "DisconnectedError",
+    } or any(
+        token in text for token in ("timed out", "timeout", "connection reset", "network error")
+    ):
+        return "uncertain"
     return "unknown"
 
 
@@ -113,6 +130,8 @@ async def pick_account(
 ) -> TgAccount | None:
     """挑一个现在就能用的发信息账号（额度、冷却、受限都要过）。"""
     moment = now or utc_now()
+    settings = await outreach_settings_service.read_settings(session, tenant_id)
+    tz_name = settings.get("timezone")
     accounts = list(
         await session.scalars(
             select(TgAccount)
@@ -124,6 +143,7 @@ async def pick_account(
             .order_by(TgAccount.id)
         )
     )
+    candidates: list[tuple[tuple, TgAccount]] = []
     for account in accounts:
         state = await session.get(OutreachAccountState, account.id)
         if state is not None:
@@ -134,11 +154,59 @@ async def pick_account(
                 continue
             if _cooling(state, moment):
                 continue
-        snapshot = await outreach_account_service.snapshot(session, account, now=moment)
+        snapshot = await outreach_account_service.snapshot(
+            session,
+            account,
+            now=moment,
+            tz_name=tz_name,
+        )
         if int(snapshot["remaining"]) <= 0:
             continue
-        return account
-    return None
+        tier_rank = {"MATURE": 4, "STANDARD": 3, "WARMING": 2, "NEW": 1}
+        last_cold = as_utc(state.last_cold_at) if state is not None else None
+        score = (
+            tier_rank.get(state.tier if state is not None else "NEW", 0),
+            float(snapshot.get("success_rate_7d") or 0.5),
+            float(snapshot.get("reply_rate_7d") or 0.0),
+            int(snapshot["remaining"]),
+            -int(snapshot.get("active_conversation_count") or 0),
+            -(last_cold.timestamp() if last_cold else 0.0),
+            -account.id,
+        )
+        candidates.append((score, account))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+async def enforce_send_window(
+    session: AsyncSession,
+    tenant_id: int,
+    *,
+    now: datetime | None = None,
+) -> tuple[bool, str]:
+    """发送端硬闸门：工作时段与租户日总量。"""
+    moment = now or utc_now()
+    settings = await outreach_settings_service.read_settings(session, tenant_id)
+    tz_name = settings.get("timezone")
+    if not outreach_settings_service.within_working_hours(settings, moment, tz_name=tz_name):
+        return False, "OUTSIDE_WORKING_HOURS"
+    cap = settings.get("daily_pool_cap")
+    if not cap:
+        return True, ""
+    day = outreach_account_service.local_day(moment, tz_name=tz_name)
+    sent = int(
+        await session.scalar(
+            select(func.coalesce(func.sum(OutreachAccountDaily.first_contact_sent), 0)).where(
+                OutreachAccountDaily.tenant_id == tenant_id,
+                OutreachAccountDaily.day == day,
+            )
+        )
+        or 0
+    )
+    if sent >= int(cap):
+        return False, "DAILY_POOL_CAP"
+    return True, ""
 
 
 def _cooling(state: OutreachAccountState, moment: datetime) -> bool:
@@ -222,6 +290,28 @@ async def send_task(
 ) -> dict[str, Any]:
     """发送一条冷触达任务并记账。"""
     moment = now or utc_now()
+    task.account_id = account.id
+    settings = await outreach_settings_service.read_settings(session, contact.tenant_id)
+    allowed, blocked_reason = await enforce_send_window(
+        session,
+        contact.tenant_id,
+        now=moment,
+    )
+    if not allowed:
+        task.status = TASK_QUEUED
+        task.account_id = None
+        task.next_retry_at = (
+            moment + timedelta(hours=1)
+            if blocked_reason == "DAILY_POOL_CAP"
+            else outreach_settings_service.next_working_start(
+                settings,
+                moment,
+                tz_name=settings.get("timezone"),
+            )
+        )
+        task.last_error = blocked_reason
+        await session.commit()
+        return {"task_id": task.id, "status": task.status, "error": blocked_reason}
     template = await pick_template(session, contact.tenant_id, task.kind)
     if template is None:
         task.last_error = "没有可用话术模板，请先在「话术模板」里建一套"
@@ -238,7 +328,6 @@ async def send_task(
     except Exception as exc:  # noqa: BLE001 - 失败原因要落库并决定账号状态
         return await _on_send_error(session, task=task, account=account, contact=contact, exc=exc)
 
-    settings = await outreach_settings_service.read_settings(session, contact.tenant_id)
     task.status = TASK_SENT
     task.sent_at = moment
     task.account_id = account.id
@@ -254,12 +343,18 @@ async def send_task(
         contact.first_contact_at = moment
         contact.first_contact_account_id = account.id
     contact.global_lock_until = outreach_settings_service.lock_until(settings, moment)
+    await outreach_queue_service.apply_contact_status_to_leads(session, contact, OUTREACH_CONTACTED)
 
     state = await outreach_account_service.get_or_create_state(session, account)
     state.last_cold_at = moment
     state.state = STATE_COOLING
     params = {"follow_up": 1} if task.kind == TASK_FOLLOW_UP else {"first_contact": 1}
-    await outreach_account_service.bump_daily(session, account, **params)
+    await outreach_account_service.bump_daily(
+        session,
+        account,
+        tz_name=settings.get("timezone"),
+        **params,
+    )
     session.add(
         OutreachMessage(
             tenant_id=contact.tenant_id,
@@ -296,6 +391,12 @@ async def _on_send_error(
     state = await outreach_account_service.get_or_create_state(session, account)
 
     limited = 0
+    if kind == "uncertain":
+        task.status = TASK_UNKNOWN_DELIVERY
+        task.next_retry_at = None
+        await session.commit()
+        logger.warning("冷触达发送结果不确定：任务 #{}（{}）", task.id, exc)
+        return {"task_id": task.id, "status": task.status, "error": kind}
     if kind == "flood":
         seconds = int(getattr(exc, "seconds", 0) or 0)
         state.state = STATE_COOLING
@@ -309,24 +410,121 @@ async def _on_send_error(
         state.state = STATE_LIMITED if kind == "peer_flood" else STATE_DISABLED
         state.limited_until = moment + timedelta(days=LIMITED_DAYS)
         state.limited_reason = kind
-        await freeze_account_contacts(session, account, reason=kind)
-        task.status = TASK_FAILED
+        not_started = (
+            task.kind == TASK_FIRST_CONTACT
+            and contact.first_contact_at is None
+            and contact.owner_account_id is None
+            and contact.contact_state
+            not in (OUTREACH_CONTACTED, OUTREACH_REPLIED, OUTREACH_REFUSED)
+        )
+        if not_started:
+            task.status = TASK_QUEUED
+            task.account_id = None
+            task.next_retry_at = None
+            task.last_error = f"{kind}: 原账号不可用，等待其他健康账号"
+            contact.contact_state = "QUEUED"
+        else:
+            await freeze_account_contacts(session, account, reason=kind)
+            task.status = TASK_FAILED
         limited = 1
     elif kind in {"privacy", "unreachable"}:
         # 对方不收陌生私聊 / 找不到人：这条线索永久作废，别再换号试
         contact.do_not_contact = True
         await add_suppression(session, contact, reason=kind)
         task.status = TASK_BLOCKED
+        await outreach_queue_service.apply_contact_status_to_leads(session, contact, "BLOCKED")
     elif task.attempt_count >= task.max_attempts:
         task.status = TASK_FAILED
     else:
         task.status = TASK_QUEUED
         task.next_retry_at = moment + timedelta(seconds=BACKOFF_SECONDS * task.attempt_count)
 
-    await outreach_account_service.bump_daily(session, account, failed=1, limited=limited)
+    settings = await outreach_settings_service.read_settings(session, contact.tenant_id)
+    await outreach_account_service.bump_daily(
+        session,
+        account,
+        tz_name=settings.get("timezone"),
+        failed=1,
+        limited=limited,
+    )
     await session.commit()
     logger.warning("冷触达发送失败：任务 #{}，原因 {}（{}）", task.id, kind, exc)
     return {"task_id": task.id, "status": task.status, "error": kind}
+
+
+async def confirm_unknown_delivery(
+    session: AsyncSession,
+    *,
+    task: OutreachTask,
+    delivered: bool,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """人工核实发送结果：已送达按成功记账，未送达放回队列。"""
+    if task.status != TASK_UNKNOWN_DELIVERY:
+        raise ValidationFailedError("只有待核实任务可以确认发送结果")
+    contact = await session.get(OutreachContact, task.contact_id)
+    if contact is None:
+        raise ValidationFailedError("任务联系人不存在")
+    moment = now or utc_now()
+    if not delivered:
+        task.status = TASK_QUEUED
+        task.account_id = None
+        task.next_retry_at = None
+        task.attempt_count = 0
+        task.last_error = "人工确认未送达，已重新排队"
+        contact.contact_state = "QUEUED"
+        await session.commit()
+        return {"task_id": task.id, "status": task.status, "delivered": False}
+
+    account = await session.get(TgAccount, task.account_id) if task.account_id else None
+    settings = await outreach_settings_service.read_settings(session, contact.tenant_id)
+    task.status = TASK_SENT
+    task.sent_at = moment
+    task.next_retry_at = None
+    task.last_error = None
+    contact.contact_state = OUTREACH_CONTACTED
+    contact.contact_count += 1
+    contact.last_contact_at = moment
+    contact.last_outbound_at = moment
+    if contact.first_contact_at is None:
+        contact.first_contact_at = moment
+        contact.first_contact_account_id = account.id if account is not None else None
+    contact.global_lock_until = outreach_settings_service.lock_until(settings, moment)
+    await outreach_queue_service.apply_contact_status_to_leads(session, contact, OUTREACH_CONTACTED)
+
+    if account is not None:
+        state = await outreach_account_service.get_or_create_state(session, account)
+        state.last_cold_at = moment
+        state.state = STATE_COOLING
+        params = {"follow_up": 1} if task.kind == TASK_FOLLOW_UP else {"first_contact": 1}
+        await outreach_account_service.bump_daily(
+            session,
+            account,
+            tz_name=settings.get("timezone"),
+            **params,
+        )
+    await session.commit()
+    return {"task_id": task.id, "status": task.status, "delivered": True}
+
+
+async def retry_failed_task(session: AsyncSession, *, task: OutreachTask) -> dict[str, Any]:
+    """人工重试临时失败任务；永久阻塞任务不允许进入这里。"""
+    if task.status != TASK_FAILED:
+        raise ValidationFailedError("只有发送失败任务可以人工重试")
+    contact = await session.get(OutreachContact, task.contact_id)
+    if contact is None:
+        raise ValidationFailedError("任务联系人不存在")
+    if contact.do_not_contact:
+        raise ValidationFailedError("联系人已加入免打扰，不能重试")
+    task.status = TASK_QUEUED
+    task.account_id = None
+    task.attempt_count = 0
+    task.next_retry_at = None
+    task.last_error = "人工重试，等待重新排队"
+    contact.contact_state = "QUEUED"
+    await outreach_queue_service.apply_contact_status_to_leads(session, contact, "QUEUED")
+    await session.commit()
+    return {"task_id": task.id, "status": task.status}
 
 
 async def freeze_account_contacts(
@@ -391,6 +589,11 @@ async def handle_incoming(
         contact.do_not_contact = True
         await add_suppression(session, contact, reason="refusal")
         await cancel_queued(session, contact.id, reason="对方明确拒绝")
+        await outreach_queue_service.apply_contact_status_to_leads(
+            session,
+            contact,
+            OUTREACH_REFUSED,
+        )
         logger.info("联系人 #{} 明确拒绝，已加入永久免打扰", contact.id)
     else:
         contact.contact_state = OUTREACH_REPLIED
@@ -398,6 +601,11 @@ async def handle_incoming(
         contact.owner_type = OWNER_ACCOUNT
         contact.owner_account_id = account_id
         await cancel_queued(session, contact.id, reason="对方已回复，会话归属原账号")
+        await outreach_queue_service.apply_contact_status_to_leads(
+            session,
+            contact,
+            OUTREACH_REPLIED,
+        )
         logger.info("联系人 #{} 已回复，会话归属账号 #{}", contact.id, account_id)
 
     await session.commit()

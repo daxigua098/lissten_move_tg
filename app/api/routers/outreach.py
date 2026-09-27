@@ -26,6 +26,8 @@ from app.api.schemas.outreach import (
     OutreachTemplateCreate,
     OutreachTemplateUpdate,
     ParticipationRequest,
+    TaskDeleteRequest,
+    UnknownDeliveryConfirmRequest,
 )
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.outreach_capture import parse_reachable_routes
@@ -89,6 +91,16 @@ def _template(row: OutreachTemplate) -> dict[str, Any]:
 
 def _outreach_control_path(config: Any) -> Any:
     return config.path(config.runtime.outreach_control_file)
+
+
+def _csv_ints(raw: str | None) -> list[int] | None:
+    if not raw:
+        return None
+    try:
+        values = [int(item.strip()) for item in raw.split(",") if item.strip()]
+    except ValueError as exc:
+        raise ValidationFailedError("筛选 ID 必须是逗号分隔的整数") from exc
+    return values or None
 
 
 async def _open_outreach_client(config: Any, account: Any, factory: Any) -> Any:
@@ -173,7 +185,11 @@ def _contact(row: OutreachContact) -> dict[str, Any]:
     }
 
 
-def _task(row: OutreachTask, contact: OutreachContact | None) -> dict[str, Any]:
+def _task(
+    row: OutreachTask,
+    contact: OutreachContact | None,
+    lead: Lead | None = None,
+) -> dict[str, Any]:
     return {
         "id": row.id,
         "kind": row.kind,
@@ -185,7 +201,11 @@ def _task(row: OutreachTask, contact: OutreachContact | None) -> dict[str, Any]:
         "lead_id": row.lead_id,
         "account_id": row.account_id,
         "template_id": row.template_id,
+        "priority": row.priority,
+        "priority_reason": row.priority_reason,
         "scheduled_at": as_utc(row.scheduled_at),
+        "next_plan_at": as_utc(row.next_retry_at),
+        "source_title": lead.source_title if lead is not None else None,
         "sent_at": as_utc(row.sent_at),
         "attempt_count": row.attempt_count,
         "last_error": row.last_error,
@@ -340,14 +360,26 @@ async def list_tasks(
     total = int(await session.scalar(count_statement) or 0)
 
     contact_ids = {row.contact_id for row in rows}
+    lead_ids = {row.lead_id for row in rows if row.lead_id is not None}
     contacts: dict[int, OutreachContact] = {}
+    leads: dict[int, Lead] = {}
     if contact_ids:
         for contact in await session.scalars(
             select(OutreachContact).where(OutreachContact.id.in_(contact_ids))
         ):
             contacts[contact.id] = contact
+    if lead_ids:
+        for lead in await session.scalars(select(Lead).where(Lead.id.in_(lead_ids))):
+            leads[lead.id] = lead
     return {
-        "items": [_task(row, contacts.get(row.contact_id)) for row in rows],
+        "items": [
+            _task(
+                row,
+                contacts.get(row.contact_id),
+                leads.get(row.lead_id) if row.lead_id else None,
+            )
+            for row in rows
+        ],
         "total": total,
         "limit": limit,
         "offset": offset,
@@ -357,14 +389,62 @@ async def list_tasks(
 @router.post("/queue/plan")
 async def plan_queue(
     limit: int = Query(default=200, ge=1, le=2000),
+    route_ids: str | None = Query(default=None, description="逗号分隔的线路 ID"),
+    source_chat_ids: str | None = Query(default=None, description="逗号分隔的来源群 ID"),
+    keyword: str | None = Query(default=None, max_length=64),
+    only_hits: bool = Query(default=False),
+    authorized_only: bool = Query(default=False),
     identity: dict[str, Any] = Depends(current_identity),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """dry-run 调度：把可触达的线索排进队列（不发送）。"""
+    """把可触达的线索排进队列（不发送）。"""
     return await outreach_queue_service.plan_pending(
         session,
         tenant_id=tenant_scope_of(identity),
         limit=limit,
+        route_ids=_csv_ints(route_ids),
+        source_chat_ids=_csv_ints(source_chat_ids),
+        keyword=keyword,
+        only_hits=only_hits,
+        authorized_only=authorized_only,
+    )
+
+
+@router.get("/queue/preview")
+async def preview_queue(
+    limit: int = Query(default=200, ge=1, le=2000),
+    route_ids: str | None = Query(default=None),
+    source_chat_ids: str | None = Query(default=None),
+    keyword: str | None = Query(default=None, max_length=64),
+    only_hits: bool = Query(default=False),
+    authorized_only: bool = Query(default=False),
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """只读预演，不创建任务也不修改受阻状态。"""
+    return await outreach_queue_service.preview_pending(
+        session,
+        tenant_id=tenant_scope_of(identity),
+        limit=limit,
+        route_ids=_csv_ints(route_ids),
+        source_chat_ids=_csv_ints(source_chat_ids),
+        keyword=keyword,
+        only_hits=only_hits,
+        authorized_only=authorized_only,
+    )
+
+
+@router.post("/tasks/delete")
+async def delete_tasks(
+    payload: TaskDeleteRequest,
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """删除队列任务（单条 / 多选都走这里）。"""
+    return await outreach_queue_service.delete_tasks(
+        session,
+        payload.task_ids,
+        tenant_id=tenant_scope_of(identity),
     )
 
 
@@ -522,8 +602,15 @@ async def dispatch_queue(
     factory = getattr(request.app.state, "account_client_factory", None)
     clients: dict[int, Any] = {}
     results: list[dict[str, Any]] = []
+    blocked_reason = ""
     try:
         for _ in range(limit):
+            allowed, blocked_reason = await outreach_sender_service.enforce_send_window(
+                session,
+                tenant_id,
+            )
+            if not allowed:
+                break
             task = await outreach_queue_service.next_ready_task(session, tenant_id)
             if task is None:
                 break
@@ -553,7 +640,10 @@ async def dispatch_queue(
                 await client.disconnect()
 
     sent = sum(1 for item in results if item.get("status") == "SENT")
-    return {"sent": sent, "results": results}
+    response: dict[str, Any] = {"sent": sent, "results": results}
+    if blocked_reason:
+        response["blocked_reason"] = blocked_reason
+    return response
 
 
 @router.get("/runtime/status")
@@ -660,7 +750,36 @@ async def task_detail(
     lead_id = task.lead_id or (contact.first_lead_id if contact is not None else None)
     lead = await session.get(Lead, lead_id) if lead_id else None
     return {
-        "task": _task(task, contact),
+        "task": _task(task, contact, lead),
         "contact": _contact(contact) if contact is not None else None,
         "lead": _lead(lead) if lead is not None else None,
     }
+
+
+@router.post("/tasks/{task_id}/confirm-delivery")
+async def confirm_delivery(
+    task_id: int,
+    payload: UnknownDeliveryConfirmRequest,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """人工确认「待核实」任务是否已经送达。"""
+    task = await session.get(OutreachTask, task_id)
+    if task is None:
+        raise NotFoundError("任务不存在")
+    return await outreach_sender_service.confirm_unknown_delivery(
+        session,
+        task=task,
+        delivered=payload.delivered,
+    )
+
+
+@router.post("/tasks/{task_id}/retry")
+async def retry_task(
+    task_id: int,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """人工重试临时失败的发送任务。"""
+    task = await session.get(OutreachTask, task_id)
+    if task is None:
+        raise NotFoundError("任务不存在")
+    return await outreach_sender_service.retry_failed_task(session, task=task)

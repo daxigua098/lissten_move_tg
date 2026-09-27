@@ -27,6 +27,10 @@ class OutreachSettingsUpdate(BaseModel):
     handoff_bot_id: int | None = Field(default=None, ge=1)
     working_hours: list[str] | None = None
     daily_pool_cap: int | None = Field(default=None, ge=1, le=100000)
+    only_authorized: bool | None = None
+    auto_queue_enabled: bool | None = None
+    max_lead_age_days: int | None = Field(default=None, ge=0, le=3650)
+    timezone: str | None = Field(default=None, min_length=1, max_length=64)
     kill_switch: bool | None = None
     delete_session_on_account_delete: bool | None = None
 
@@ -76,3 +80,15 @@ class ParticipationRequest(BaseModel):
 
     account_ids: list[int] = Field(min_length=1, max_length=200)
     enabled: bool = True
+
+
+class TaskDeleteRequest(BaseModel):
+    """删除队列任务（单条或批量）。"""
+
+    task_ids: list[int] = Field(min_length=1, max_length=500)
+
+
+class UnknownDeliveryConfirmRequest(BaseModel):
+    """人工核实结果不确定的发送任务。"""
+
+    delivered: bool

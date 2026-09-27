@@ -168,6 +168,12 @@ class Lead(TenantOwnedMixin, TimestampMixin, Base):
         Index("ix_leads_tenant_created_at", "tenant_id", "created_at"),
         Index("ix_leads_tenant_delivered", "tenant_id", "delivered"),
         Index(
+            "ix_leads_tenant_plan_ready",
+            "tenant_id",
+            "outreach_status",
+            "next_plan_at",
+        ),
+        Index(
             "ix_leads_tenant_sender_keyword_created",
             "tenant_id",
             "sender_tg_id",
@@ -213,6 +219,16 @@ class Lead(TenantOwnedMixin, TimestampMixin, Base):
         String(32),
         default=OUTREACH_WAITING_SENDER_ACCOUNT,
         index=True,
+    )
+    # 生成队列的运行态：受阻原因和下次可再次检查的时间
+    last_plan_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_block_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    next_plan_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     capture_reason: Mapped[str] = mapped_column(String(255), default="")
     route_owner_account_id: Mapped[int | None] = mapped_column(

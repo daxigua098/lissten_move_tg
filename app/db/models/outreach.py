@@ -190,6 +190,7 @@ TASK_FAILED = "FAILED"
 TASK_BLOCKED = "BLOCKED"
 TASK_REFUSED = "REFUSED"
 TASK_CANCELLED = "CANCELLED"
+TASK_UNKNOWN_DELIVERY = "UNKNOWN_DELIVERY"
 TASK_STATUSES = (
     TASK_QUEUED,
     TASK_ASSIGNED,
@@ -199,6 +200,7 @@ TASK_STATUSES = (
     TASK_BLOCKED,
     TASK_REFUSED,
     TASK_CANCELLED,
+    TASK_UNKNOWN_DELIVERY,
 )
 TASK_STATUS_LABELS: dict[str, str] = {
     TASK_QUEUED: "排队中",
@@ -209,6 +211,7 @@ TASK_STATUS_LABELS: dict[str, str] = {
     TASK_BLOCKED: "已阻塞",
     TASK_REFUSED: "已拒绝",
     TASK_CANCELLED: "已取消",
+    TASK_UNKNOWN_DELIVERY: "待核实",
 }
 
 
@@ -343,6 +346,10 @@ class OutreachSettings(TimestampMixin, Base):
     # JSON 数组 [开始, 结束]；空表示不限制
     working_hours: Mapped[str] = mapped_column(Text, default="[]")
     daily_pool_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    only_authorized: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_queue_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    max_lead_age_days: Mapped[int | None] = mapped_column(Integer, default=30)
+    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Shanghai")
     kill_switch: Mapped[bool] = mapped_column(Boolean, default=False)
     delete_session_on_account_delete: Mapped[bool] = mapped_column(Boolean, default=False)
 
@@ -354,6 +361,12 @@ class OutreachTask(TenantOwnedMixin, TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("dedupe_key", name="uq_outreach_tasks_dedupe_key"),
         Index("ix_outreach_tasks_tenant_status_plan", "tenant_id", "status", "scheduled_at"),
+        Index(
+            "ix_outreach_tasks_tenant_status_priority",
+            "tenant_id",
+            "status",
+            "priority",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -367,6 +380,8 @@ class OutreachTask(TenantOwnedMixin, TimestampMixin, Base):
     )
     kind: Mapped[str] = mapped_column(String(16), default=TASK_FIRST_CONTACT)
     status: Mapped[str] = mapped_column(String(16), default=TASK_QUEUED, index=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    priority_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     account_id: Mapped[int | None] = mapped_column(
         ForeignKey("tg_accounts.id", ondelete="SET NULL"),
         nullable=True,

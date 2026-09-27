@@ -107,7 +107,7 @@ async def test_peer_reference_only_lead_is_blocked(admin_client) -> None:
         assert reason == outreach_queue_service.BLOCK_NO_CONTACT
 
 
-async def test_message_contact_counts_as_reachable(admin_client) -> None:
+async def test_phone_only_lead_is_blocked(admin_client) -> None:
     from app.db.session import session_scope
     from app.services import outreach_queue_service
 
@@ -118,6 +118,27 @@ async def test_message_contact_counts_as_reachable(admin_client) -> None:
             reachable_routes="[]",
             contacts='{"phones": ["13800001111"], "wechats": [], "usernames": []}',
             phone="13800001111",
+        )
+        session.add(lead)
+        await session.commit()
+        await session.refresh(lead)
+
+        task, reason = await outreach_queue_service.enqueue_lead(session, lead)
+
+        assert task is None
+        assert reason == outreach_queue_service.BLOCK_NO_CONTACT
+
+
+async def test_message_username_counts_as_reachable(admin_client) -> None:
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        lead = _lead(
+            sender_tg_id=990005,
+            sender_username=None,
+            reachable_routes="[]",
+            contacts='{"phones": [], "wechats": [], "usernames": ["from_message"]}',
         )
         session.add(lead)
         await session.commit()
@@ -359,3 +380,279 @@ async def test_task_detail_returns_lead_info(admin_client) -> None:
     assert body["lead"]["keyword"] == "体育"
     assert body["lead"]["source_title"] == "测试来源群"
     assert "USERNAME" in body["lead"]["reachable_routes"]
+
+
+async def test_delete_single_task_resets_and_allows_replan(admin_client) -> None:
+    """单条删除：只排过队的联系人与线索退回可再生成状态。"""
+    from app.db.models import Lead, OutreachContact, OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        session.add(_lead(sender_tg_id=990300, message_id=301))
+        await session.commit()
+        await outreach_queue_service.plan_pending(session, tenant_id=1, limit=50)
+
+        task = await session.scalar(select(OutreachTask))
+        assert task is not None
+        task_id, contact_id, lead_id = task.id, task.contact_id, task.lead_id
+
+        result = await outreach_queue_service.delete_tasks(session, [task_id], tenant_id=1)
+        assert result["deleted"] == 1
+
+        contact = await session.get(OutreachContact, contact_id)
+        lead = await session.get(Lead, lead_id)
+        assert contact is not None and contact.contact_state == "WAITING_SENDER_ACCOUNT"
+        assert lead is not None and lead.outreach_status == "WAITING_SENDER_ACCOUNT"
+        left = await session.scalar(select(func.count()).select_from(OutreachTask))
+        assert left == 0
+
+        # 退回后还能重新生成
+        again = await outreach_queue_service.plan_pending(session, tenant_id=1, limit=50)
+        assert again["created"] == 1
+
+
+async def test_delete_tasks_api_keeps_others(admin_client) -> None:
+    from app.db.models import OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        session.add(_lead(sender_tg_id=990301, message_id=302))
+        session.add(_lead(sender_tg_id=990302, message_id=303))
+        await session.commit()
+        await outreach_queue_service.plan_pending(session, tenant_id=1, limit=50)
+        tasks = list(await session.scalars(select(OutreachTask).order_by(OutreachTask.id)))
+        assert len(tasks) == 2
+        keep_id, drop_id = tasks[1].id, tasks[0].id
+
+    response = await admin_client.post(
+        "/api/outreach/tasks/delete",
+        headers=_headers(),
+        json={"task_ids": [drop_id]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deleted"] == 1
+
+    async with session_scope() as session:
+        remaining = list(await session.scalars(select(OutreachTask)))
+        assert [item.id for item in remaining] == [keep_id]
+
+
+async def test_same_person_uses_highest_priority_lead(admin_client) -> None:
+    """同一人多条 Lead：明确邀请 + 命中关键词优先。"""
+    from app.core.outreach_capture import CONSENT_EXPLICIT_DM_INVITE
+    from app.db.models import OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        normal = _lead(sender_tg_id=991001, message_id=401, sender_username="normal")
+        strong = _lead(
+            sender_tg_id=991001,
+            message_id=402,
+            sender_username="strong",
+            keyword="体育",
+            score=0.9,
+            consent_type=CONSENT_EXPLICIT_DM_INVITE,
+        )
+        session.add_all([normal, strong])
+        await session.commit()
+        await session.refresh(normal)
+        await session.refresh(strong)
+
+        result = await outreach_queue_service.plan_pending(session, tenant_id=1, limit=20)
+        assert result["created"] == 1
+        assert result["scanned_contacts"] == 1
+        task = await session.scalar(select(OutreachTask))
+        assert task is not None
+        assert task.lead_id == strong.id
+        assert task.priority > 0
+        assert "明确邀请" in (task.priority_reason or "")
+
+
+async def test_same_person_falls_back_to_sendable_sibling(admin_client) -> None:
+    """最高优先线索没有用户名时，继续寻找同一个人的可发送线索。"""
+    from app.core.outreach_capture import CONSENT_EXPLICIT_DM_INVITE
+    from app.db.models import OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        unsendable = _lead(
+            sender_tg_id=991009,
+            message_id=410,
+            sender_username=None,
+            consent_type=CONSENT_EXPLICIT_DM_INVITE,
+            keyword="体育",
+        )
+        sendable = _lead(sender_tg_id=991009, message_id=411, sender_username="usable")
+        session.add_all([unsendable, sendable])
+        await session.commit()
+        await session.refresh(unsendable)
+        await session.refresh(sendable)
+
+        result = await outreach_queue_service.plan_pending(session, tenant_id=1, limit=20)
+
+        assert result["created"] == 1
+        task = await session.scalar(select(OutreachTask))
+        assert task is not None and task.lead_id == sendable.id
+
+
+async def test_plan_filters_and_preview_do_not_mutate(admin_client) -> None:
+    from app.db.models import Lead, OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        wanted = _lead(sender_tg_id=991002, message_id=403, keyword="体育")
+        ignored = _lead(sender_tg_id=991003, message_id=404, keyword="财经")
+        session.add_all([wanted, ignored])
+        await session.commit()
+        await session.refresh(wanted)
+        await session.refresh(ignored)
+
+        preview = await outreach_queue_service.plan_pending(
+            session,
+            tenant_id=1,
+            limit=20,
+            keyword="体育",
+            dry_run=True,
+        )
+        assert preview["created"] == 1
+        assert int(await session.scalar(select(func.count()).select_from(OutreachTask)) or 0) == 0
+        left = await session.get(Lead, wanted.id)
+        assert left is not None and left.outreach_status == "WAITING_SENDER_ACCOUNT"
+
+        actual = await outreach_queue_service.plan_pending(
+            session,
+            tenant_id=1,
+            limit=20,
+            keyword="体育",
+        )
+        assert actual["created"] == 1
+        task = await session.scalar(select(OutreachTask))
+        assert task is not None and task.lead_id == wanted.id
+
+
+async def test_blocked_lead_records_retry_time(admin_client) -> None:
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        lead = _lead(
+            sender_tg_id=991004,
+            message_id=405,
+            sender_username=None,
+            contacts=EMPTY_CONTACTS,
+            reachable_routes="[]",
+        )
+        session.add(lead)
+        await session.commit()
+        await session.refresh(lead)
+
+        result = await outreach_queue_service.plan_pending(session, tenant_id=1, limit=20)
+
+        assert result["created"] == 0
+        await session.refresh(lead)
+        assert lead.last_block_reason == outreach_queue_service.BLOCK_NO_CONTACT
+        assert lead.last_plan_checked_at is not None
+        assert lead.next_plan_at is not None
+
+
+async def test_only_authorized_setting_blocks_none(admin_client) -> None:
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service, outreach_settings_service
+
+    async with session_scope() as session:
+        await outreach_settings_service.update_settings(session, 1, only_authorized=True)
+        session.add(_lead(sender_tg_id=991005, message_id=406))
+        await session.commit()
+
+        result = await outreach_queue_service.plan_pending(session, tenant_id=1, limit=20)
+
+        assert result["created"] == 0
+        assert result["blocked"][0]["reason"] == outreach_queue_service.BLOCK_CONSENT
+
+
+async def test_clear_queue_preserves_terminal_history(admin_client) -> None:
+    from app.db.models import OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        session.add(_lead(sender_tg_id=991006, message_id=407))
+        await session.commit()
+        await outreach_queue_service.plan_pending(session, tenant_id=1, limit=20)
+        task = await session.scalar(select(OutreachTask))
+        assert task is not None
+        task.status = "SENT"
+        await session.commit()
+
+        result = await outreach_queue_service.clear_queue(session, tenant_id=1)
+
+        assert result["deleted_tasks"] == 0
+        assert await session.get(OutreachTask, task.id) is not None
+
+
+async def test_preview_and_settings_api(admin_client) -> None:
+    from app.db.models import OutreachTask
+    from app.db.session import session_scope
+
+    async with session_scope() as session:
+        session.add(_lead(sender_tg_id=991007, message_id=408, keyword="体育"))
+        await session.commit()
+
+    preview = await admin_client.get(
+        "/api/outreach/queue/preview",
+        headers=_headers(),
+        params={"keyword": "体育", "limit": 20},
+    )
+    assert preview.status_code == 200
+    assert preview.json()["created"] == 1
+    async with session_scope() as session:
+        assert int(await session.scalar(select(func.count()).select_from(OutreachTask)) or 0) == 0
+
+    updated = await admin_client.patch(
+        "/api/outreach/settings",
+        headers=_headers(),
+        json={
+            "only_authorized": True,
+            "auto_queue_enabled": True,
+            "max_lead_age_days": 7,
+            "timezone": "UTC",
+        },
+    )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["only_authorized"] is True
+    assert body["auto_queue_enabled"] is True
+    assert body["max_lead_age_days"] == 7
+    assert body["timezone"] == "UTC"
+
+    invalid = await admin_client.patch(
+        "/api/outreach/settings",
+        headers=_headers(),
+        json={"max_lead_age_days": 15},
+    )
+    assert invalid.status_code == 400
+
+
+async def test_auto_queue_tick_uses_enabled_settings(admin_client, api_config) -> None:
+    from app.db.models import OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_settings_service
+    from app.services.runtime_service import RuntimeService
+
+    async with session_scope() as session:
+        await outreach_settings_service.update_settings(session, 1, auto_queue_enabled=True)
+        session.add(_lead(sender_tg_id=991008, message_id=409))
+        await session.commit()
+
+    service = RuntimeService(api_config)
+    created = await service._auto_queue_tick()
+
+    assert created == 1
+    async with session_scope() as session:
+        assert int(await session.scalar(select(func.count()).select_from(OutreachTask)) or 0) == 1

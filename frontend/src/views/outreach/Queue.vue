@@ -1,8 +1,8 @@
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
-import { onMounted, ref } from "vue";
+import { nextTick, onMounted, reactive, ref } from "vue";
 
-import { outreachApi } from "../../api";
+import { outreachApi, routesApi, sourcesApi } from "../../api";
 
 const loading = ref(false);
 const runtime = ref({ paused: false });
@@ -13,6 +13,20 @@ const planResult = ref(null);
 const detailVisible = ref(false);
 const detailLoading = ref(false);
 const detail = ref(null);
+const tableRef = ref(null);
+const selectedTasks = ref([]);
+const routeOptions = ref([]);
+const sourceOptions = ref([]);
+const previewResult = ref(null);
+const planning = ref(false);
+const filters = reactive({
+  route_ids: [],
+  source_chat_ids: [],
+  keyword: "",
+  only_hits: false,
+  authorized_only: false,
+  limit: 200,
+});
 
 async function load() {
   loading.value = true;
@@ -26,6 +40,8 @@ async function load() {
     capacity.value = cap.data;
     rows.value = tasks.data.items;
     total.value = tasks.data.total;
+    await nextTick();
+    selectAll(); // 生成 / 刷新后默认全选
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -34,14 +50,119 @@ async function load() {
 }
 
 async function plan() {
+  planning.value = true;
   try {
-    const { data } = await outreachApi.planQueue();
+    const { data } = await outreachApi.planQueue(queueParams());
     planResult.value = data;
-    ElMessage.success(`已扫描 ${data.scanned} 条，入队 ${data.created} 条`);
-    load();
+    ElMessage.success(
+      `扫描 ${data.scanned_contacts} 人，入队 ${data.created} 条，受阻 ${data.blocked_contacts} 人`,
+    );
+    await Promise.all([load(), loadPreview()]);
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    planning.value = false;
+  }
+}
+
+function queueParams() {
+  return {
+    limit: filters.limit,
+    route_ids: filters.route_ids.length ? filters.route_ids.join(",") : undefined,
+    source_chat_ids: filters.source_chat_ids.length
+      ? filters.source_chat_ids.join(",")
+      : undefined,
+    keyword: filters.keyword || undefined,
+    only_hits: filters.only_hits || undefined,
+    authorized_only: filters.authorized_only || undefined,
+  };
+}
+
+async function loadPreview() {
+  try {
+    const { data } = await outreachApi.previewQueue(queueParams());
+    previewResult.value = data;
   } catch (error) {
     ElMessage.error(error.message);
   }
+}
+
+async function loadOptions() {
+  try {
+    const [routes, sources] = await Promise.all([
+      routesApi.list({ limit: 200 }),
+      sourcesApi.list({ limit: 200 }),
+    ]);
+    routeOptions.value = routes.data.items;
+    sourceOptions.value = sources.data.items;
+  } catch {
+    routeOptions.value = [];
+    sourceOptions.value = [];
+  }
+}
+
+async function refreshAll() {
+  await Promise.all([load(), loadPreview()]);
+}
+
+async function confirmUnknown(row, delivered) {
+  try {
+    await outreachApi.confirmDelivery(row.id, delivered);
+    ElMessage.success(delivered ? "已确认送达" : "已确认未送达并重新排队");
+    await Promise.all([load(), loadPreview()]);
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function retryTask(row) {
+  try {
+    await outreachApi.retryTask(row.id);
+    ElMessage.success("已重新排队");
+    await Promise.all([load(), loadPreview()]);
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+function selectAll() {
+  for (const row of rows.value) {
+    tableRef.value?.toggleRowSelection(row, true);
+  }
+}
+
+function clearSelection() {
+  tableRef.value?.clearSelection();
+}
+
+function toggleSelectAll() {
+  if (selectedTasks.value.length) {
+    clearSelection();
+  } else {
+    selectAll();
+  }
+}
+
+async function deleteTasks(taskIds) {
+  if (!taskIds.length) return;
+  try {
+    await ElMessageBox.confirm(
+      `确认删除 ${taskIds.length} 条队列任务？只排过队、还没联系过的线索会退回「待生成」，可再次生成。`,
+      "删除队列任务",
+      { type: "warning", confirmButtonText: "删除", cancelButtonText: "取消" },
+    );
+    const { data } = await outreachApi.deleteTasks(taskIds);
+    ElMessage.success(`已删除 ${data.deleted} 条任务`);
+    load();
+  } catch (error) {
+    if (error?.message && !error.message.includes("cancel")) {
+      ElMessage.error(error.message);
+    }
+  }
+}
+
+function removeOne(row) {
+  deleteTasks([row.id]);
 }
 
 async function openDetail(row) {
@@ -137,7 +258,10 @@ function fmt(value) {
   return value ? new Date(value).toLocaleString("zh-CN") : "-";
 }
 
-onMounted(load);
+onMounted(async () => {
+  await Promise.all([load(), loadOptions()]);
+  await loadPreview();
+});
 </script>
 
 <template>
@@ -146,14 +270,79 @@ onMounted(load);
       <h2 class="page-title">冷触达队列</h2>
       <span class="card-hint">共 {{ total }} 条任务</span>
       <div class="spacer" />
-      <el-button size="small" type="primary" :loading="loading" @click="plan">生成队列</el-button>
+      <el-button size="small" type="primary" :loading="planning" @click="plan">生成队列</el-button>
       <el-button size="small" :loading="loading" @click="dispatch">立即发送一条</el-button>
+      <el-button size="small" @click="toggleSelectAll">
+        {{ selectedTasks.length ? `取消全选（${selectedTasks.length}）` : "全选" }}
+      </el-button>
+      <el-button
+        size="small"
+        type="danger"
+        plain
+        :disabled="!selectedTasks.length"
+        @click="deleteTasks(selectedTasks.map((row) => row.id))"
+      >
+        删除选中
+      </el-button>
       <el-button size="small" type="danger" plain @click="clearQueue">清空队列</el-button>
       <el-button size="small" @click="toggleRuntime">
         {{ runtime.paused ? "恢复冷触达" : "暂停冷触达" }}
       </el-button>
-      <el-button size="small" @click="load">刷新</el-button>
+      <el-button size="small" @click="refreshAll">刷新</el-button>
     </div>
+
+    <el-card shadow="never" class="panel">
+      <div class="filters">
+        <el-select
+          v-model="filters.route_ids"
+          size="small"
+          multiple
+          collapse-tags
+          clearable
+          placeholder="全部线路"
+          style="width: 210px"
+        >
+          <el-option
+            v-for="item in routeOptions"
+            :key="item.id"
+            :label="item.name || `线路 ${item.id}`"
+            :value="item.id"
+          />
+        </el-select>
+        <el-select
+          v-model="filters.source_chat_ids"
+          size="small"
+          multiple
+          collapse-tags
+          clearable
+          placeholder="全部来源群"
+          style="width: 220px"
+        >
+          <el-option
+            v-for="item in sourceOptions"
+            :key="item.id"
+            :label="item.name || item.title || item.username || `来源 ${item.id}`"
+            :value="item.id"
+          />
+        </el-select>
+        <el-input
+          v-model="filters.keyword"
+          size="small"
+          placeholder="关键词"
+          clearable
+          style="width: 150px"
+          @keyup.enter="loadPreview"
+        />
+        <el-checkbox v-model="filters.only_hits" size="small">只看命中</el-checkbox>
+        <el-checkbox v-model="filters.authorized_only" size="small">只看有授权</el-checkbox>
+        <el-input-number v-model="filters.limit" size="small" :min="1" :max="2000" />
+        <el-button size="small" @click="loadPreview">预览</el-button>
+        <span class="card-hint">
+          预计可生成 {{ previewResult?.created ?? "-" }} 人，受阻
+          {{ previewResult?.blocked_contacts ?? "-" }} 人
+        </span>
+      </div>
+    </el-card>
 
     <el-alert
       v-if="runtime.paused"
@@ -192,7 +381,17 @@ onMounted(load);
       :description="planResult.blocked.map((item) => `${item.label}：${item.count}`).join('；')"
     />
 
-    <el-table v-loading="loading" :data="rows" size="small" border class="panel">
+    <el-table
+      ref="tableRef"
+      v-loading="loading"
+      :data="rows"
+      size="small"
+      border
+      class="panel"
+      row-key="id"
+      @selection-change="(value) => (selectedTasks = value)"
+    >
+      <el-table-column type="selection" width="42" />
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column label="类型" width="90">
         <template #default="{ row }">{{ row.kind === "follow_up" ? "跟进" : "首条" }}</template>
@@ -201,6 +400,10 @@ onMounted(load);
         <template #default="{ row }">
           <el-tag size="small">{{ row.status_label }}</el-tag>
         </template>
+      </el-table-column>
+      <el-table-column prop="priority" label="优先级" width="80" />
+      <el-table-column label="来源群" min-width="130">
+        <template #default="{ row }">{{ row.source_title || "-" }}</template>
       </el-table-column>
       <el-table-column label="联系人" min-width="180">
         <template #default="{ row }">
@@ -213,9 +416,34 @@ onMounted(load);
       <el-table-column label="计划时间" width="170">
         <template #default="{ row }">{{ fmt(row.scheduled_at) }}</template>
       </el-table-column>
+      <el-table-column label="下一步时间" width="170">
+        <template #default="{ row }">{{ fmt(row.next_plan_at) }}</template>
+      </el-table-column>
       <el-table-column prop="attempt_count" label="尝试" width="70" />
       <el-table-column label="最近错误" min-width="180">
         <template #default="{ row }">{{ row.last_error || "-" }}</template>
+      </el-table-column>
+      <el-table-column label="操作" width="170" fixed="right">
+        <template #default="{ row }">
+          <template v-if="row.status === 'UNKNOWN_DELIVERY'">
+            <el-button size="small" link type="success" @click="confirmUnknown(row, true)">
+              已送达
+            </el-button>
+            <el-button size="small" link type="warning" @click="confirmUnknown(row, false)">
+              未送达
+            </el-button>
+          </template>
+          <el-button
+            v-if="row.status === 'FAILED'"
+            size="small"
+            link
+            type="warning"
+            @click="retryTask(row)"
+          >
+            重试
+          </el-button>
+          <el-button size="small" link type="danger" @click="removeOne(row)">删除</el-button>
+        </template>
       </el-table-column>
     </el-table>
 
@@ -227,7 +455,11 @@ onMounted(load);
               {{ detail.task.kind === "follow_up" ? "跟进" : "首条招呼" }}
             </el-descriptions-item>
             <el-descriptions-item label="状态">{{ detail.task.status_label }}</el-descriptions-item>
+            <el-descriptions-item label="优先级">
+              {{ detail.task.priority }} · {{ detail.task.priority_reason || "-" }}
+            </el-descriptions-item>
             <el-descriptions-item label="计划时间">{{ fmt(detail.task.scheduled_at) }}</el-descriptions-item>
+            <el-descriptions-item label="下一步时间">{{ fmt(detail.task.next_plan_at) }}</el-descriptions-item>
             <el-descriptions-item label="尝试次数">{{ detail.task.attempt_count }}</el-descriptions-item>
             <el-descriptions-item label="最近错误">{{ detail.task.last_error || "-" }}</el-descriptions-item>
           </el-descriptions>

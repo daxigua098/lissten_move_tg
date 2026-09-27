@@ -288,6 +288,28 @@ async def test_strict_capture_requires_explicit_invite(db, fake_delivery_client)
     assert len(fake_delivery_client.sent) == 1
 
 
+async def test_peer_reference_only_is_not_captured(db, fake_delivery_client) -> None:
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(db)
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐", username=None, access_hash=123456),
+        [route],
+    )
+
+    async with session_scope() as session:
+        _rows, total = await lead_service.list_leads(session)
+    assert total == 0
+    assert fake_delivery_client.sent == []
+
+
 async def test_global_suppression_blocks_capture(db, fake_delivery_client) -> None:
     from app.db.models import ContactSuppression
     from app.db.session import session_scope

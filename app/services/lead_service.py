@@ -23,7 +23,9 @@ from app.core.outreach_capture import (
     OUTREACH_REPLIED,
     OUTREACH_WAITING_SENDER_ACCOUNT,
     ROUTE_PEER_REFERENCE,
+    ROUTE_PHONE,
     ROUTE_SHARED_GROUP,
+    ROUTE_USERNAME,
     consent_satisfies_capture,
     detect_consent_type,
     detect_reachable_routes,
@@ -73,6 +75,11 @@ async def evaluate_capture_eligibility(
     )
     if not routes:
         return CaptureDecision(False, "NO_REACHABLE_ROUTE")
+    # 冷私聊必须能明确找到人：发送者自己的用户名或手机号。
+    # PEER_REFERENCE / SHARED_GROUP 只能证明监听账号见过对方，卡面也可能显示“未提供”，
+    # 因此不能单独构成入库条件。
+    if ROUTE_USERNAME not in routes and ROUTE_PHONE not in routes:
+        return CaptureDecision(False, "NO_DIRECT_CONTACT")
 
     suppressed = await session.scalar(
         select(ContactSuppression.id).where(

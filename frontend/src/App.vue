@@ -1,6 +1,6 @@
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
-import { computed } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { authApi } from "./api";
@@ -63,6 +63,50 @@ const expiryHint = computed(() => {
   return String(auth.expiresAt).slice(0, 10);
 });
 
+// P4-04 / P4-05：到期与停用的顶部横幅（页面只读提示 + 到期前 3 天提醒）
+const expiryBanner = computed(() => {
+  if (!auth.isMember) return null;
+  if (auth.tenantStatus === "expired") {
+    return {
+      type: "error",
+      title: "账号已过期，功能已停止",
+      description:
+        "线路、TG 账号与线索都还在。续费之后到「运行总览」点「启动」，功能才会恢复。",
+    };
+  }
+  if (auth.tenantStatus === "suspended") {
+    return {
+      type: "error",
+      title: "账号已停用，功能已停止",
+      description: "请联系你的上级解停；解停后到「运行总览」点「启动」恢复功能。",
+    };
+  }
+  const days = auth.daysLeft;
+  if (days !== null && days >= 0 && days <= 3) {
+    return {
+      type: "warning",
+      title: days === 0 ? "账号今天到期" : `账号还有 ${days} 天到期`,
+      description: "到期当天 23:59:59 起所有功能自动停止（搬运与监听一起停），请提前续费。",
+    };
+  }
+  return null;
+});
+
+// 身份里的 tenant_status 只是登录那一刻的快照，而到期是"到点就断"的；
+// 每次切页重新校验一次，横幅与只读提示才能及时出现
+async function refreshIdentity() {
+  if (!auth.isAuthenticated) return;
+  try {
+    const { data } = await authApi.check();
+    auth.update(data);
+  } catch {
+    // 校验失败交给拦截器统一处理（401 会跳登录页）
+  }
+}
+
+onMounted(refreshIdentity);
+watch(() => route.fullPath, refreshIdentity);
+
 // 当前加载的前端产物文件名，用来判断页面是不是最新构建
 const pageVersion = import.meta.url.split("/").pop();
 
@@ -117,6 +161,15 @@ function logoutAll() {
     </el-aside>
 
     <el-container>
+      <el-alert
+        v-if="expiryBanner"
+        class="expiry-banner"
+        :type="expiryBanner.type"
+        :title="expiryBanner.title"
+        :description="expiryBanner.description"
+        :closable="false"
+        show-icon
+      />
       <el-header class="shell-header">
         <span class="page-title">{{ route.name === "dashboard" ? "运行总览" : "" }}</span>
         <div class="header-right">
@@ -203,6 +256,10 @@ function logoutAll() {
   font-size: 11px;
   opacity: 0.6;
   word-break: break-all;
+}
+
+.expiry-banner {
+  border-radius: 0;
 }
 
 .shell-header {

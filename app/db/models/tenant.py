@@ -28,6 +28,12 @@ TENANT_STATUS_EXPIRED = "expired"
 TENANT_STATUS_SUSPENDED = "suspended"
 TENANT_STATUSES = (TENANT_STATUS_ACTIVE, TENANT_STATUS_EXPIRED, TENANT_STATUS_SUSPENDED)
 
+# 租户运行开关的停止原因（P4）：手工停止 / 到期强停 / 停用强停
+STOP_REASON_MANUAL = "manual"
+STOP_REASON_EXPIRED = "expired"
+STOP_REASON_SUSPENDED = "suspended"
+STOP_REASONS = (STOP_REASON_MANUAL, STOP_REASON_EXPIRED, STOP_REASON_SUSPENDED)
+
 # 自营租户固定主键：存量业务数据迁移时全部挂到它下面，永不过期
 SELF_TENANT_ID = 1
 SELF_TENANT_NAME = "自营"
@@ -74,6 +80,23 @@ class Tenant(TimestampMixin, Base):
     quota_type: Mapped[str] = mapped_column(String(8), default=QUOTA_NONE, index=True)
     # 是否还占着这 1 个额度：到期释放靠它做幂等，续期靠它判断要不要再扣
     quota_held: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 首次判定为过期的时刻（追溯用；重复执行靠 quota_held 与 status 幂等）
+    expired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # 停用时刻与操作者（平台或上级代理停的）
+    suspended_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    suspended_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    suspended_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 租户运行总开关（P4）：默认关；自营租户迁移时置 true。
+    # 与"运行时不热加载"无关——它只挂在投递路径上判断，所以启停是立即生效的
+    runtime_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 最近一次停止的原因：manual / expired / suspended
+    runtime_stop_reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

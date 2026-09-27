@@ -2,6 +2,7 @@
 
 from app.db.base import Base, TimestampMixin, utc_now
 from app.db.models.job import (
+    JOB_CANCELLED,
     JOB_FAILED,
     JOB_PENDING,
     JOB_PROCESSING,
@@ -164,6 +165,10 @@ from app.db.models.telegram import (
 from app.db.models.tenant import (
     SELF_TENANT_ID,
     SELF_TENANT_NAME,
+    STOP_REASON_EXPIRED,
+    STOP_REASON_MANUAL,
+    STOP_REASON_SUSPENDED,
+    STOP_REASONS,
     TENANT_KIND_MEMBER,
     TENANT_KIND_SELF,
     TENANT_KINDS,
@@ -222,6 +227,7 @@ __all__ = [
     "DISCOVER_MANUAL",
     "DISCOVER_SOURCES",
     "DeliveryJob",
+    "JOB_CANCELLED",
     "JOB_FAILED",
     "JOB_PENDING",
     "JOB_PROCESSING",
@@ -305,6 +311,10 @@ __all__ = [
     "SOURCE_KIND_LOCAL",
     "SOURCE_KIND_REMOTE",
     "SOURCE_SITES",
+    "STOP_REASON_EXPIRED",
+    "STOP_REASON_MANUAL",
+    "STOP_REASON_SUSPENDED",
+    "STOP_REASONS",
     "STATE_ACTIVE",
     "STATE_BANNED",
     "STATE_LEFT",

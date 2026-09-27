@@ -19,6 +19,27 @@ const ROLE_LABELS = {
   owner: "会员",
 };
 
+// 到期切点是 Asia/Shanghai 的当天 23:59:59，剩余天数也按这个时区的自然日算
+const EXPIRE_TZ = "Asia/Shanghai";
+
+const TENANT_STATUS_LABELS = { active: "正常", expired: "已过期", suspended: "已停用" };
+
+function localDay(iso) {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  try {
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: EXPIRE_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(date);
+  } catch {
+    return date.toISOString().slice(0, 10);
+  }
+}
+
 function loadStored() {
   try {
     return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null") || {};
@@ -67,9 +88,22 @@ export const auth = reactive({
     return this.isPlatform && this.role === "super_admin";
   },
 
-  /** 到期 / 停用后全站进只读态（P4 落地，P2 恒为 active） */
+  /** 到期 / 停用后全站进只读态（P4-04） */
   get isReadOnly() {
     return this.tenantStatus !== "active";
+  },
+
+  get tenantStatusLabel() {
+    return TENANT_STATUS_LABELS[this.tenantStatus] || this.tenantStatus;
+  },
+
+  /** 剩余自然日；未设置有效期（永不过期）返回 null，已过期返回负数 */
+  get daysLeft() {
+    const target = localDay(this.expiresAt);
+    if (!target) return null;
+    const today = localDay(new Date().toISOString());
+    if (!today) return null;
+    return Math.round((Date.parse(target) - Date.parse(today)) / 86400000);
   },
 
   get roleLabel() {

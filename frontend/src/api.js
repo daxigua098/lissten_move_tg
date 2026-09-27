@@ -36,6 +36,11 @@ http.interceptors.response.use(
       if (window.location.pathname !== "/change-password") {
         window.location.replace("/change-password");
       }
+    } else if (status === 403 && code === "TENANT_INACTIVE") {
+      // P4：账号到期 / 停用后后端会拦下写操作，前端立刻切只读态并弹出横幅
+      auth.update({
+        tenant_status: error.response?.data?.tenant_status || "expired",
+      });
     }
 
     const normalized = new Error(detail);
@@ -180,6 +185,8 @@ export const jobsApi = {
 export const runtimeApi = {
   status: () => http.get("/api/runtime/status"),
   start: () => http.post("/api/runtime/start"),
+  // 一键启动：打开租户运行开关 + 把所有线路恢复启用（P4-06）
+  startAll: () => http.post("/api/runtime/start-all"),
   restart: () => http.post("/api/runtime/restart"),
   pause: () => http.post("/api/runtime/pause"),
   resume: () => http.post("/api/runtime/resume"),

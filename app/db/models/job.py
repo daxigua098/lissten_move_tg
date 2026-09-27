@@ -27,6 +27,8 @@ JOB_SUCCESS = "success"
 JOB_RETRYING = "retrying"
 JOB_FAILED = "failed"
 JOB_SKIPPED = "skipped"
+# 租户到期 / 停用强停时，排队中的任务统一置为「已取消」（P4 到期强停）
+JOB_CANCELLED = "cancelled"
 JOB_STATUSES = (
     JOB_PENDING,
     JOB_PROCESSING,
@@ -34,6 +36,7 @@ JOB_STATUSES = (
     JOB_RETRYING,
     JOB_FAILED,
     JOB_SKIPPED,
+    JOB_CANCELLED,
 )
 
 

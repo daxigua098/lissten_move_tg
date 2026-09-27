@@ -20,6 +20,7 @@ from app.core.errors import (
     PermissionDeniedError,
     RateLimitedError,
     SelfOperationError,
+    TenantExpiredError,
     UserExistsError,
     ValidationFailedError,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "PermissionDeniedError",
     "RateLimitedError",
     "SelfOperationError",
+    "TenantExpiredError",
     "UserExistsError",
     "ValidationFailedError",
     "register_exception_handlers",

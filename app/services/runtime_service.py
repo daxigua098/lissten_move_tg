@@ -57,6 +57,7 @@ from app.services import (
     resource_join_service,
     resource_probe_service,
     resource_service,
+    tenant_runtime_service,
     tg_account_service,
 )
 
@@ -411,6 +412,9 @@ class RuntimeService:
             fresh = await session.get(Route, route.id)
             if fresh is None or not fresh.enabled:
                 continue
+            # P4-03：租户到期 / 停用后连"监听入库"也一起停，不是只停投递
+            if not await tenant_runtime_service.is_runtime_allowed(session, fresh.tenant_id):
+                continue
             config = load_a_config(fresh.a_config)
             kept = [
                 view
@@ -492,6 +496,9 @@ class RuntimeService:
             for route in routes:
                 fresh = await session.get(Route, route.id)
                 if fresh is None or not fresh.enabled:
+                    continue
+                # P4-03：同上，租户停了就不再采集线索
+                if not await tenant_runtime_service.is_runtime_allowed(session, fresh.tenant_id):
                     continue
                 config = load_b_config(fresh.b_config)
                 if config.skip_bots and sender.is_bot:
@@ -864,6 +871,15 @@ class RuntimeService:
             if route is None:
                 await delivery_service.skip_job(session, job, reason="线路已删除")
                 return 1
+            # P4-03 第一层：投递前再判一次租户开关与到期状态。
+            # 必须是"每次投递都算"，不能挂在启动注册那一步（否则到期后还能发）。
+            if not await tenant_runtime_service.is_runtime_allowed(session, route.tenant_id):
+                await delivery_service.cancel_job(
+                    session,
+                    job,
+                    reason="账号已停止运行，投递任务已取消",
+                )
+                return 1
             source_chat = await session.get(TenantChat, route.source_chat_id)
             target_chat = await session.get(TenantChat, job.target_chat_id)
             if source_chat is None or target_chat is None:
@@ -1007,10 +1023,16 @@ def _lock_holder_pid(lock_path: Any) -> int | None:
     return value if _pid_alive(value) else None
 
 
-async def pending_route_ids(session: Any, config: AppConfig) -> list[int] | None:
+async def pending_route_ids(
+    session: Any,
+    config: AppConfig,
+    *,
+    tenant_id: int | None = None,
+) -> list[int] | None:
     """启用中、但没被正在运行的运行时接管的线路 ID。
 
     None 表示判断不出来（运行时没在跑，或心跳还是旧格式）——界面据此不做提醒。
+    ``tenant_id`` 非空时只算该租户的线路（会员不该看到别人的线路号）。
     """
     from sqlalchemy import select
 
@@ -1021,7 +1043,10 @@ async def pending_route_ids(session: Any, config: AppConfig) -> list[int] | None
     registered = routes.get("ids")
     if not _runtime_is_alive(config) or registered is None:
         return None
-    enabled = list(await session.scalars(select(Route.id).where(Route.enabled.is_(True))))
+    statement = select(Route.id).where(Route.enabled.is_(True))
+    if tenant_id is not None:
+        statement = statement.where(Route.tenant_id == tenant_id)
+    enabled = list(await session.scalars(statement))
     return sorted(set(enabled) - set(registered))
 
 

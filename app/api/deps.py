@@ -23,6 +23,7 @@ from app.core.errors import (
     AuthRequiredError,
     PasswordChangeRequiredError,
     PermissionDeniedError,
+    TenantExpiredError,
 )
 from app.core.security import compare_token
 from app.db.base import as_utc
@@ -42,6 +43,7 @@ from app.services import (
     session_service,
     tenant_module_service,
     tenant_service,
+    tenant_status_service,
     user_service,
 )
 
@@ -52,6 +54,19 @@ PASSWORD_CHANGE_ALLOWED_PATHS = {
     "/api/auth/logout-all",
     "/api/auth/check",
 }
+
+WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# 账号过期 / 停用后仍然允许的写操作：
+# - ``/api/auth/*``：登录、改密、登出，否则用户进不来也出不去；
+# - ``/api/agent/*``：代理给过期客户续期、解停、划拨（会员走不到这里，代理身份不受本守卫约束）；
+# - 导出一律是 GET（``/api/leads/export.csv``），所以不需要额外白名单。
+EXPIRY_WRITE_ALLOWED_PREFIXES = ("/api/auth/",)
+
+
+def expiry_write_allowed(path: str) -> bool:
+    """过期 / 停用状态下仍然放行的写路径。"""
+    return path.startswith(EXPIRY_WRITE_ALLOWED_PREFIXES)
 
 
 async def session_dependency() -> AsyncIterator[AsyncSession]:
@@ -97,9 +112,12 @@ async def _member_context(session: AsyncSession, user: User) -> dict[str, Any]:
         return context
     tenant = await tenant_service.get_tenant(session, user.tenant_id)
     if tenant is not None:
-        context["tenant_status"] = tenant.status
+        # P4-01：状态**现算**，不看数据库里那个可能滞后的 status 字段
+        context["tenant_status"] = tenant_status_service.effective_status(tenant)
         expires = as_utc(tenant.expires_at)
         context["expires_at"] = expires.isoformat() if expires else None
+        context["tenant_runtime_enabled"] = bool(tenant.runtime_enabled)
+        context["tenant_stop_reason"] = tenant.runtime_stop_reason
     context["modules"] = await tenant_module_service.list_modules(session, user.tenant_id)
     limit = await tenant_module_service.get_limits(session, user.tenant_id)
     context["limits"] = tenant_module_service.limits_to_payload(limit)
@@ -152,6 +170,15 @@ async def current_identity(
 
     if identity is None:
         raise AuthRequiredError()
+    # P4-02：账号过期 / 停用后只能看，写操作一律 403（白名单除外）。
+    # 判定放在这里，所有走身份依赖的接口自动生效，不会散落到各路由漏网。
+    if (
+        identity["account_type"] == ACCOUNT_TYPE_MEMBER
+        and identity["tenant_status"] != TENANT_STATUS_ACTIVE
+        and request.method in WRITE_METHODS
+        and not expiry_write_allowed(request.url.path)
+    ):
+        raise TenantExpiredError(extra={"tenant_status": identity["tenant_status"]})
     # 内置管理员的密码在服务器 .env 管理，不参与网页强制改密（否则会死锁进不去）
     if (
         identity["must_change_password"]

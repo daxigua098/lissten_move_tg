@@ -19,6 +19,7 @@ from app.core.telegram_client import (
 )
 from app.db.base import utc_now
 from app.db.models import (
+    JOB_CANCELLED,
     JOB_FAILED,
     JOB_PENDING,
     JOB_PROCESSING,
@@ -123,6 +124,43 @@ async def skip_job(session: AsyncSession, job: DeliveryJob, *, reason: str) -> D
     await session.commit()
     await session.refresh(job)
     return job
+
+
+async def cancel_job(session: AsyncSession, job: DeliveryJob, *, reason: str) -> DeliveryJob:
+    """把任务标记为取消（P4 强停：租户已过期 / 停用，投递前挡下）。"""
+    job.status = JOB_CANCELLED
+    job.last_error = reason[:500]
+    job.next_retry_at = None
+    await session.commit()
+    await session.refresh(job)
+    return job
+
+
+async def cancel_tenant_jobs(
+    session: AsyncSession,
+    *,
+    tenant_id: int,
+    reason: str,
+    commit: bool = True,
+) -> int:
+    """取消某租户排队中的全部任务（``pending`` / ``retrying``）。
+
+    ``processing`` 的任务无法中途打断，靠投递前的实时校验挡下（见
+    :mod:`app.services.tenant_runtime_service`）。
+    """
+    from sqlalchemy import update
+
+    result = await session.execute(
+        update(DeliveryJob)
+        .where(
+            DeliveryJob.tenant_id == tenant_id,
+            DeliveryJob.status.in_((JOB_PENDING, JOB_RETRYING)),
+        )
+        .values(status=JOB_CANCELLED, next_retry_at=None, last_error=reason[:500])
+    )
+    if commit:
+        await session.commit()
+    return int(result.rowcount or 0)
 
 
 async def mark_failure(
@@ -327,7 +365,15 @@ async def job_stats(session: AsyncSession) -> dict[str, int]:
     rows = await session.execute(
         select(DeliveryJob.status, func.count(DeliveryJob.id)).group_by(DeliveryJob.status)
     )
-    known = (JOB_PENDING, JOB_RETRYING, JOB_SUCCESS, JOB_FAILED, JOB_SKIPPED)
+    known = (
+        JOB_PENDING,
+        JOB_RETRYING,
+        JOB_PROCESSING,
+        JOB_SUCCESS,
+        JOB_FAILED,
+        JOB_SKIPPED,
+        JOB_CANCELLED,
+    )
     stats = {status: 0 for status in known}
     for status, count in rows.all():
         stats[str(status)] = int(count)

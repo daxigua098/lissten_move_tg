@@ -94,6 +94,14 @@ class PermissionDeniedError(AppError):
     default_detail = "当前角色无此操作权限"
 
 
+class TenantExpiredError(AppError):
+    """账号已过期 / 已停用：只读可用，写操作一律 403（P4-02）。"""
+
+    status_code = 403
+    code = "TENANT_INACTIVE"
+    default_detail = "账号已过期或已停用，功能已停止，请联系你的上级续费或解停"
+
+
 class NotFoundError(AppError):
     """资源不存在。"""
 

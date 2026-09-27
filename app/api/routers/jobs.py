@@ -23,6 +23,7 @@ STATUS_LABEL = {
     "retrying": "重试中",
     "failed": "失败",
     "skipped": "已跳过",
+    "cancelled": "已取消",
 }
 
 

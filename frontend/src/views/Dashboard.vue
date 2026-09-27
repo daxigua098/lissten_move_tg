@@ -40,6 +40,17 @@ const heartbeatText = computed(() => {
 
 const isPaused = computed(() => Boolean(status.value?.runtime?.paused));
 
+// P4：会员的租户运行状态（功能是否在跑、为什么停）。平台账号没有租户块。
+const tenant = computed(() => status.value?.tenant || null);
+const tenantStopped = computed(() => Boolean(tenant.value) && tenant.value.status !== "active");
+const runtimeOff = computed(
+  () =>
+    auth.isMember &&
+    tenant.value !== null &&
+    tenant.value.status === "active" &&
+    !tenant.value.runtime_enabled,
+);
+
 // 会员看得到自己开了哪些功能块，省得对着菜单猜
 const moduleText = computed(() => {
   const names = auth.modules.map((code) => MODULE_LABELS[code] || code);
@@ -49,16 +60,30 @@ const moduleText = computed(() => {
 async function act(action) {
   busy.value = true;
   try {
+    if (action === "startAll") {
+      // 续期 / 解停之后的一键恢复：开租户开关 + 把线路全部启用
+      const { data } = await runtimeApi.startAll();
+      ElMessage.success(`已启动，恢复 ${data.enabled_routes ?? 0} 条线路`);
+      if (data.need_restart) {
+        ElMessage.warning("有新线路还没被运行时接管，请再点一次「重启」让它开始采集");
+      }
+      await load();
+      return;
+    }
     const { data } = await runtimeApi[action]();
     if (action === "start" || action === "restart") {
       const info = data.start || {};
-      if (info.started) {
+      if (auth.isMember && action === "start") {
+        ElMessage.success("已启动，功能会立即恢复（最多几秒）");
+      } else if (info.started) {
         ElMessage.success(`运行时已启动（PID ${info.pid}）`);
       } else if (info.reason === "already_running") {
         ElMessage.info("运行时已经在运行了");
       } else {
         ElMessage.error(info.hint || "运行时启动失败，详见 data/runtime.stderr.log");
       }
+    } else if (action === "stop" && auth.isMember) {
+      ElMessage.success("已停止本账号的全部功能（随时可以再启动）");
     } else {
       ElMessage.success(
         { pause: "已暂停投递", resume: "已恢复投递", stop: "已请求停止运行时" }[action] || "已执行",
@@ -87,6 +112,19 @@ async function act(action) {
           <div class="card-hint">后台账号</div>
           <div class="stat-value">{{ status?.counts?.users ?? "-" }}</div>
           <div class="card-hint">启用超管 {{ status?.counts?.active_super_admins ?? "-" }}</div>
+        </el-card>
+      </el-col>
+      <el-col v-if="auth.isMember" :xs="12" :sm="8" :md="6">
+        <el-card shadow="never">
+          <div class="card-hint">账号状态</div>
+          <div class="stat-value">{{ tenant?.label || auth.tenantStatusLabel }}</div>
+          <div class="card-hint">
+            {{
+              tenant?.runtime_enabled
+                ? "功能运行中"
+                : tenant?.stop_reason_label || "功能已停止"
+            }}
+          </div>
         </el-card>
       </el-col>
       <el-col :xs="12" :sm="8" :md="6">
@@ -129,18 +167,80 @@ async function act(action) {
         <span>运行时控制</span>
       </template>
       <div class="runtime-actions">
-        <el-button type="primary" :loading="busy" @click="act('start')">启动</el-button>
-        <el-button :loading="busy" @click="act('restart')">重启</el-button>
-        <el-button :loading="busy" @click="act(isPaused ? 'resume' : 'pause')">
+        <el-button
+          type="primary"
+          :loading="busy"
+          :disabled="auth.isReadOnly"
+          @click="act('start')"
+        >
+          启动
+        </el-button>
+        <el-button
+          v-if="auth.isMember"
+          type="primary"
+          plain
+          :loading="busy"
+          :disabled="auth.isReadOnly"
+          @click="act('startAll')"
+        >
+          一键启动全部功能
+        </el-button>
+        <el-button
+          :loading="busy"
+          :disabled="auth.isReadOnly"
+          @click="act('restart')"
+        >
+          重启
+        </el-button>
+        <el-button
+          v-if="auth.isPlatform"
+          :loading="busy"
+          @click="act(isPaused ? 'resume' : 'pause')"
+        >
           {{ isPaused ? "恢复投递" : "暂停投递" }}
         </el-button>
-        <el-button type="danger" plain :loading="busy" @click="act('stop')">停止</el-button>
+        <el-button
+          type="danger"
+          plain
+          :loading="busy"
+          :disabled="auth.isReadOnly"
+          @click="act('stop')"
+        >
+          停止
+        </el-button>
         <span class="card-hint">心跳 {{ heartbeatText }}</span>
       </div>
       <p class="card-hint runtime-note">
         运行时不热加载配置：改完线路、接收目标或广告策略后，点「重启」才生效。
       </p>
+      <p v-if="auth.isMember" class="card-hint runtime-note">
+        「启动 / 停止」管的是本账号的全部功能（搬运、监听一起停），
+        不影响别人；到期或用完试用后会自动停止，续费后回来点「启动」即可。
+      </p>
     </el-card>
+
+    <el-alert
+      v-if="tenantStopped"
+      class="panel"
+      type="error"
+      :closable="false"
+      show-icon
+      :title="tenant?.status === 'suspended' ? '账号已停用，功能已停止' : '账号已过期，功能已停止'"
+      :description="
+        tenant?.stop_reason_label ||
+        '续费 / 解停之后，到本页点「启动」或「一键启动全部功能」才会恢复。'
+      "
+    />
+
+    <el-alert
+      v-else-if="runtimeOff"
+      class="panel"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="功能当前处于停止状态"
+      description="线路、TG 账号与配置都保留着。点上面的「启动」（或「一键启动全部功能」）即可恢复搬运与监听。"
+    />
 
     <el-alert
       v-if="(status?.counts?.leads?.undelivered ?? 0) > 0"
@@ -180,6 +280,12 @@ async function act(action) {
         </el-descriptions-item>
         <el-descriptions-item v-if="auth.isMember" label="账号有效期">
           {{ auth.expiresAt ? String(auth.expiresAt).slice(0, 10) : "未设置（由平台在开通时填写）" }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="auth.isMember" label="剩余天数">
+          {{ auth.daysLeft === null ? "不限" : auth.daysLeft <= 0 ? "已到期" : `${auth.daysLeft} 天` }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="auth.isMember" label="功能状态">
+          {{ tenant?.runtime_enabled ? "运行中" : tenant?.stop_reason_label || "已停止" }}
         </el-descriptions-item>
       </el-descriptions>
     </el-card>

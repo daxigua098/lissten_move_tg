@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -41,7 +43,7 @@ from app.core.config import AppConfig, load_config
 from app.core.demo_client import demo_account_client_factory, demo_bot_client_factory
 from app.core.paths import ensure_dir
 from app.db.session import dispose_database, get_session_factory, init_database
-from app.services import user_service
+from app.services import tenant_runtime_service, user_service
 from app.services.upload_service import uploads_directory
 
 
@@ -65,11 +67,51 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_database(config)
     try:
         await _warn_if_no_super_admin()
-        yield
+        # 停机期间到期的租户，启动时先补一次巡检（幂等，重复跑没关系）
+        await sweep_expired_once()
+        sweep_task = asyncio.create_task(_expiry_sweep_loop())
+        try:
+            yield
+        finally:
+            sweep_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sweep_task
     finally:
         # 池化过执行账号连接，退出前要断开
         await close_account_clients()
         await dispose_database()
+
+
+async def sweep_expired_once() -> None:
+    """跑一次到期巡检：强停、释放额度、取消在途任务（幂等）。"""
+    from app.db.session import session_scope
+
+    try:
+        async with session_scope() as session:
+            summary = await tenant_runtime_service.sweep_once(session)
+    except Exception as exc:  # noqa: BLE001 - 巡检失败不能拖垮接口
+        logger.warning("到期巡检失败：{}", exc)
+        return
+    if summary["expired"] or summary["suspended"]:
+        logger.info(
+            "到期巡检：新到期 {} 个、新停用 {} 个，释放额度 {} 笔，取消任务 {} 条",
+            len(summary["expired"]),
+            len(summary["suspended"]),
+            len(summary["released"]),
+            summary["cancelled_jobs"],
+        )
+
+
+async def _expiry_sweep_loop() -> None:
+    """每 60 秒巡检一次（P4-03 第二层）。
+
+    只有 API 进程跑这一个巡检，运行时进程不跑——两个进程同时释放额度会重复加额度
+    （P3 的幂等靠 ``quota_held``，但它不是并发安全的）。投递路径的实时过滤与巡检
+    互不依赖，所以少一个巡检者不影响"到点就停"。
+    """
+    while True:
+        await asyncio.sleep(tenant_runtime_service.SWEEP_INTERVAL_SECONDS)
+        await sweep_expired_once()
 
 
 async def _warn_if_no_super_admin() -> None:

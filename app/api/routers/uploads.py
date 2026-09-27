@@ -6,7 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 
-from app.api.deps import require_role
+from app.api.deps import require_member_or_platform
 from app.core.config import AppConfig
 from app.core.errors import ValidationFailedError
 from app.db.models import ROLE_SUB_ADMIN
@@ -15,7 +15,7 @@ from app.services import upload_service
 router = APIRouter(
     prefix="/api/uploads",
     tags=["uploads"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))],
 )
 
 

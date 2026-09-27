@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_role, session_dependency
+from app.api.deps import require_member_or_platform, session_dependency
 from app.api.schemas.telegram import (
     AccountCreateRequest,
     AccountUpdateRequest,
@@ -25,7 +25,7 @@ from app.services import tg_account_service, tg_login_service
 router = APIRouter(
     prefix="/api/accounts",
     tags=["accounts"],
-    dependencies=[Depends(require_role(ROLE_SUPER_ADMIN))],
+    dependencies=[Depends(require_member_or_platform(ROLE_SUPER_ADMIN))],
 )
 
 

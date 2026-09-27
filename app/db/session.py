@@ -100,6 +100,7 @@ async def create_schema(engine: AsyncEngine | None = None) -> None:
     async with target.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
         await connection.run_sync(_seed_self_tenant)
+        await connection.run_sync(_seed_plan_templates)
 
 
 def _seed_self_tenant(connection: Connection) -> None:
@@ -116,6 +117,48 @@ def _seed_self_tenant(connection: Connection) -> None:
         ),
         {"tenant_id": SELF_TENANT_ID, "name": SELF_TENANT_NAME},
     )
+
+
+# 预置功能包模板：(code, name, kind, modules, limits)
+_PLAN_TEMPLATE_SEEDS: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        "trial_carry",
+        "1 天试用（搬运）",
+        "trial",
+        '["carry"]',
+        '{"max_routes": 1, "allow_export": false}',
+    ),
+    (
+        "trial_monitor",
+        "1 天试用（监听）",
+        "trial",
+        '["monitor"]',
+        '{"max_routes": 1, "allow_export": false}',
+    ),
+    ("standard", "常规开通", "standard", "[]", "{}"),
+    ("full", "全功能", "standard", '["carry", "monitor", "discovery"]', "{}"),
+)
+
+
+def _seed_plan_templates(connection: Connection) -> None:
+    """插入预置功能包模板（幂等，与迁移 0020 的 seed 保持一致）。"""
+    for code, name, kind, modules, limits in _PLAN_TEMPLATE_SEEDS:
+        connection.execute(
+            text(
+                "INSERT INTO plan_templates "
+                "(code, name, kind, modules, limits, enabled, created_at, updated_at) "
+                "SELECT :code, :name, :kind, :modules, :limits, 1, "
+                "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
+                "WHERE NOT EXISTS (SELECT 1 FROM plan_templates WHERE code = :code)"
+            ),
+            {
+                "code": code,
+                "name": name,
+                "kind": kind,
+                "modules": modules,
+                "limits": limits,
+            },
+        )
 
 
 def _is_sqlite(url: str) -> bool:

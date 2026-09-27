@@ -7,7 +7,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import bearer_token, current_identity, session_dependency
+from app.api.deps import (
+    bearer_token,
+    build_user_identity,
+    current_identity,
+    session_dependency,
+)
 from app.api.schemas.auth import LoginRequest, PasswordChangeRequest
 from app.core.config import AppConfig
 from app.core.errors import AccountLockedError, AuthRequiredError, InvalidCredentialsError
@@ -20,6 +25,26 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 def _client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
+
+
+# 身份契约字段：登录响应与 /api/auth/check 必须完全一致，避免前端两套解析
+IDENTITY_FIELDS = (
+    "username",
+    "role",
+    "account_type",
+    "tenant_id",
+    "tenant_status",
+    "expires_at",
+    "modules",
+    "limits",
+    "must_change_password",
+    "is_builtin",
+)
+
+
+def identity_payload(identity: dict[str, Any]) -> dict[str, Any]:
+    """从身份字典里挑出对外字段。"""
+    return {key: identity.get(key) for key in IDENTITY_FIELDS}
 
 
 @router.post("/login")
@@ -86,26 +111,20 @@ async def login(
         success=True,
     )
 
+    # 登录响应与 /api/auth/check 共用同一套身份契约（含 account_type/modules/limits）。
+    # 注意：`expires_at` 是**账号有效期**（会员到期日），会话令牌的过期时间单独叫
+    # `session_expires_at`，两者不能混用——原先 `expires_at` 表示令牌过期，已改名。
     return {
         "token": token,
-        "expires_at": as_utc(expires_at).isoformat(),
-        "username": user.username,
-        "role": user.role,
-        "must_change_password": user.must_change_password,
-        "is_builtin": user.is_builtin,
+        "session_expires_at": as_utc(expires_at).isoformat(),
+        **identity_payload(await build_user_identity(session, user)),
     }
 
 
 @router.get("/check")
 async def check(identity: dict[str, Any] = Depends(current_identity)) -> dict[str, Any]:
     """校验当前会话。"""
-    return {
-        "authenticated": True,
-        "username": identity["username"],
-        "role": identity["role"],
-        "must_change_password": identity["must_change_password"],
-        "is_builtin": identity["is_builtin"],
-    }
+    return {"authenticated": True, **identity_payload(identity)}
 
 
 @router.post("/logout")

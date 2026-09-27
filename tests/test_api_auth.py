@@ -23,7 +23,15 @@ async def test_login_success_returns_token(admin_client) -> None:
     assert body["must_change_password"] is False
     assert body["is_builtin"] is True
     assert len(body["token"]) > 20
-    assert body["expires_at"].endswith("+00:00")
+    # 会话令牌的过期时间叫 session_expires_at；expires_at 是账号有效期（会员到期日）
+    assert body["session_expires_at"].endswith("+00:00")
+    assert body["expires_at"] is None
+    # 身份契约：登录响应必须与 /api/auth/check 一致
+    assert body["account_type"] == "platform"
+    assert body["tenant_id"] is None
+    assert body["tenant_status"] == "active"
+    assert set(body["modules"]) == {"carry", "monitor", "discovery"}
+    assert body["limits"] == {}
 
 
 async def test_login_with_wrong_password_uses_uniform_message(admin_client) -> None:

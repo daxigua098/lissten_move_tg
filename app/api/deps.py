@@ -1,4 +1,14 @@
-"""鉴权依赖：会话或 API Token → 身份字典 → 角色校验。"""
+"""鉴权依赖：会话或 API Token → 身份字典 → 角色与功能块校验。
+
+三类账号共用同一张登录页，靠身份字典里的 ``account_type`` 分流：
+
+- ``platform``：平台自用账号，不受功能块限制；
+- ``agent``：代理账号，**纯开号面板**，访问任何业务接口一律 403；
+- ``member``：会员账号，按 ``tenant_modules`` 逐块放行。
+
+功能块之外还有一层"基础能力"（登录、改密、TG 账号、机器人、运行总览），
+对所有会员恒开，用 ``require_member_or_platform`` 表达。
+"""
 
 from __future__ import annotations
 
@@ -15,9 +25,25 @@ from app.core.errors import (
     PermissionDeniedError,
 )
 from app.core.security import compare_token
-from app.db.models import ROLE_RANK, ROLE_SUPER_ADMIN
+from app.db.base import as_utc
+from app.db.models import (
+    ACCOUNT_TYPE_AGENT,
+    ACCOUNT_TYPE_MEMBER,
+    ACCOUNT_TYPE_PLATFORM,
+    MODULES,
+    ROLE_RANK,
+    ROLE_SUB_ADMIN,
+    ROLE_SUPER_ADMIN,
+    TENANT_STATUS_ACTIVE,
+    User,
+)
 from app.db.session import get_session_factory
-from app.services import session_service, user_service
+from app.services import (
+    session_service,
+    tenant_module_service,
+    tenant_service,
+    user_service,
+)
 
 # 强制改密期间仍然允许访问的接口
 PASSWORD_CHANGE_ALLOWED_PATHS = {
@@ -42,6 +68,64 @@ def bearer_token(authorization: str | None) -> str:
     return authorization[len("Bearer ") :].strip()
 
 
+def _platform_identity(username: str, *, user_id: int | None) -> dict[str, Any]:
+    """平台账号身份：不受功能块限制，返回全部功能块。"""
+    return {
+        "username": username,
+        "role": ROLE_SUPER_ADMIN,
+        "must_change_password": False,
+        "is_builtin": False,
+        "user_id": user_id,
+        "account_type": ACCOUNT_TYPE_PLATFORM,
+        "tenant_id": None,
+        "tenant_status": TENANT_STATUS_ACTIVE,
+        "expires_at": None,
+        "modules": list(MODULES),
+        "limits": {},
+    }
+
+
+async def _member_context(session: AsyncSession, user: User) -> dict[str, Any]:
+    """会员账号的租户上下文：状态、有效期、功能块与用量限制。"""
+    context: dict[str, Any] = {
+        "tenant_status": TENANT_STATUS_ACTIVE,
+        "expires_at": None,
+        "modules": [],
+        "limits": {},
+    }
+    if user.tenant_id is None:
+        return context
+    tenant = await tenant_service.get_tenant(session, user.tenant_id)
+    if tenant is not None:
+        context["tenant_status"] = tenant.status
+        expires = as_utc(tenant.expires_at)
+        context["expires_at"] = expires.isoformat() if expires else None
+    context["modules"] = await tenant_module_service.list_modules(session, user.tenant_id)
+    limit = await tenant_module_service.get_limits(session, user.tenant_id)
+    context["limits"] = tenant_module_service.limits_to_payload(limit)
+    return context
+
+
+async def build_user_identity(session: AsyncSession, user: User) -> dict[str, Any]:
+    """把账号行展开成完整身份字典。"""
+    identity: dict[str, Any] = {
+        "username": user.username,
+        "role": user.role,
+        "must_change_password": user.must_change_password,
+        "is_builtin": user.is_builtin,
+        "user_id": user.id,
+        "account_type": user.account_type,
+        "tenant_id": user.tenant_id,
+        "tenant_status": TENANT_STATUS_ACTIVE,
+        "expires_at": None,
+        "modules": list(MODULES) if user.account_type == ACCOUNT_TYPE_PLATFORM else [],
+        "limits": {},
+    }
+    if user.account_type == ACCOUNT_TYPE_MEMBER:
+        identity.update(await _member_context(session, user))
+    return identity
+
+
 async def current_identity(
     request: Request,
     authorization: str | None = Header(default=None),
@@ -57,26 +141,14 @@ async def current_identity(
         and config.secrets.admin_api_token
         and compare_token(token, config.secrets.admin_api_token)
     ):
-        identity = {
-            "username": "api-token",
-            "role": ROLE_SUPER_ADMIN,
-            "must_change_password": False,
-            "is_builtin": False,
-            "user_id": None,
-        }
+        identity = _platform_identity("api-token", user_id=None)
     elif token:
         record = await session_service.find_web_session(session, token)
         if record is not None:
             # 角色以数据库当前值为准，改权限后立即生效
             user = await user_service.get_user_by_username(session, record.username)
             if user is not None and user.enabled:
-                identity = {
-                    "username": user.username,
-                    "role": user.role,
-                    "must_change_password": user.must_change_password,
-                    "is_builtin": user.is_builtin,
-                    "user_id": user.id,
-                }
+                identity = await build_user_identity(session, user)
 
     if identity is None:
         raise AuthRequiredError()
@@ -92,12 +164,73 @@ async def current_identity(
     return identity
 
 
+def _account_type(identity: dict[str, Any]) -> str:
+    """取账号类型；缺省按平台账号处理（兼容仅给了角色的旧身份）。"""
+    return str(identity.get("account_type") or ACCOUNT_TYPE_PLATFORM)
+
+
 def require_role(minimum: str):
-    """生成角色守卫依赖：等级不足即 403。"""
+    """生成角色守卫依赖：等级不足即 403（只在平台账号内部继续使用）。"""
     required = ROLE_RANK[minimum]
 
     async def checker(identity: dict[str, Any] = Depends(current_identity)) -> None:
         if ROLE_RANK.get(str(identity.get("role")), 0) < required:
+            raise PermissionDeniedError()
+
+    return checker
+
+
+async def require_platform(identity: dict[str, Any] = Depends(current_identity)) -> None:
+    """仅平台账号可访问（平台后台全部接口）。"""
+    if _account_type(identity) != ACCOUNT_TYPE_PLATFORM:
+        raise PermissionDeniedError()
+
+
+async def require_agent_or_platform(
+    identity: dict[str, Any] = Depends(current_identity),
+) -> None:
+    """代理工作台接口：代理账号或平台账号可访问。"""
+    if _account_type(identity) not in (ACCOUNT_TYPE_AGENT, ACCOUNT_TYPE_PLATFORM):
+        raise PermissionDeniedError()
+
+
+def _platform_allows(identity: dict[str, Any], minimum_role: str | None) -> bool:
+    """平台账号沿用原有角色等级；``None`` 表示不设门槛。"""
+    if minimum_role is None:
+        return True
+    return ROLE_RANK.get(str(identity.get("role")), 0) >= ROLE_RANK[minimum_role]
+
+
+def require_member_or_platform(minimum_role: str | None = ROLE_SUB_ADMIN):
+    """生成「基础能力」守卫：平台账号或会员账号可访问，代理账号一律 403。
+
+    基础能力 = 登录 / 改密 / TG 账号 / 机器人 / 运行总览 / 线路骨架。
+    平台账号在这里**仍然沿用内部角色分级**（默认 sub_admin 起），
+    否则平台自己的 viewer 会因为"功能块概念不适用"而拿到额外权限。
+    """
+
+    async def checker(identity: dict[str, Any] = Depends(current_identity)) -> None:
+        account_type = _account_type(identity)
+        if account_type == ACCOUNT_TYPE_AGENT:
+            raise PermissionDeniedError()
+        if account_type == ACCOUNT_TYPE_PLATFORM and not _platform_allows(identity, minimum_role):
+            raise PermissionDeniedError()
+
+    return checker
+
+
+def require_module(module: str, minimum_role: str | None = ROLE_SUB_ADMIN):
+    """生成功能块守卫：平台账号按角色放行，代理 403，会员查 ``tenant_modules``。"""
+
+    async def checker(identity: dict[str, Any] = Depends(current_identity)) -> None:
+        account_type = _account_type(identity)
+        if account_type == ACCOUNT_TYPE_PLATFORM:
+            if not _platform_allows(identity, minimum_role):
+                raise PermissionDeniedError()
+            return
+        if account_type == ACCOUNT_TYPE_AGENT:
+            raise PermissionDeniedError()
+        if module not in identity.get("modules", []):
             raise PermissionDeniedError()
 
     return checker

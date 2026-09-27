@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import current_identity, require_role, session_dependency
+from app.api.deps import require_platform, require_role, session_dependency
 from app.db.base import as_utc
 from app.db.models import ROLE_SUPER_ADMIN
 from app.services import audit_service, login_history_service
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/api", tags=["logs"])
 
 @router.get(
     "/login-history",
-    dependencies=[Depends(require_role(ROLE_SUPER_ADMIN))],
+    dependencies=[Depends(require_platform), Depends(require_role(ROLE_SUPER_ADMIN))],
 )
 async def login_history(
     limit: int = Query(default=100, ge=1, le=500),
@@ -53,7 +53,7 @@ async def login_history(
     }
 
 
-@router.get("/audit", dependencies=[Depends(current_identity)])
+@router.get("/audit", dependencies=[Depends(require_platform)])
 async def audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
     offset: int = Query(default=0, ge=0),

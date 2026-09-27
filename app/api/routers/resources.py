@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import current_identity, require_role, session_dependency
+from app.api.deps import current_identity, require_module, session_dependency
 from app.api.schemas.resource import (
     DirectorySyncRequest,
     DirectoryTaskRequest,
@@ -29,7 +29,7 @@ from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status
 from app.core.telegram_client import ChatProfile
 from app.db.base import utc_now
-from app.db.models import JOIN_PENDING, ROLE_SUB_ADMIN
+from app.db.models import JOIN_PENDING, MODULE_DISCOVERY
 from app.services import (
     chat_service,
     chat_sync_service,
@@ -45,7 +45,7 @@ from app.services import (
 router = APIRouter(
     prefix="/api/resources",
     tags=["resources"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_module(MODULE_DISCOVERY))],
 )
 
 

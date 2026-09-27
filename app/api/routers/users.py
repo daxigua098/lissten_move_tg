@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import current_identity, require_role, session_dependency
+from app.api.deps import current_identity, require_platform, require_role, session_dependency
 from app.api.schemas.user import UserCreateRequest, UserUpdateRequest
 from app.core.config import AppConfig
 from app.core.errors import NotFoundError
@@ -18,7 +18,7 @@ from app.services import session_service, user_service
 router = APIRouter(
     prefix="/api/users",
     tags=["users"],
-    dependencies=[Depends(require_role(ROLE_SUPER_ADMIN))],
+    dependencies=[Depends(require_platform), Depends(require_role(ROLE_SUPER_ADMIN))],
 )
 
 

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_role, session_dependency
+from app.api.deps import require_member_or_platform, session_dependency
 from app.api.routers.chats import page, serialize_chat
 from app.api.schemas.chat import TagBatchRequest, TargetAddRequest, TargetUpdateRequest
 from app.core.config import AppConfig
@@ -18,7 +18,7 @@ from app.services import chat_service, chat_sync_service, route_service
 router = APIRouter(
     prefix="/api/targets",
     tags=["targets"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))],
 )
 
 

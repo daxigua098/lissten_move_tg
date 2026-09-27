@@ -20,7 +20,15 @@ from app.core.errors import (
     ValidationFailedError,
 )
 from app.core.security import dummy_verify, hash_password, verify_password
-from app.db.models import ROLE_RANK, ROLE_SUPER_ADMIN, User
+from app.db.models import (
+    ACCOUNT_TYPE_MEMBER,
+    ACCOUNT_TYPE_PLATFORM,
+    ACCOUNT_TYPES,
+    ROLE_OWNER,
+    ROLE_RANK,
+    ROLE_SUPER_ADMIN,
+    User,
+)
 
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9._-]{3,64}$")
 _LETTER_PATTERN = re.compile(r"[A-Za-z]")
@@ -103,15 +111,34 @@ async def create_user(
     *,
     username: str,
     password: str,
-    role: str = "viewer",
+    role: str | None = None,
+    account_type: str = ACCOUNT_TYPE_PLATFORM,
+    parent_user_id: int | None = None,
     display_name: str | None = None,
     is_builtin: bool = False,
     must_change_password: bool = True,
 ) -> User:
-    """创建账号（内置管理员与子管理员共用）。"""
+    """创建账号（平台账号、代理账号与会员账号共用）。
+
+    - 平台 / 代理账号：``role`` 必须在 ``ROLE_RANK`` 里，默认 ``viewer``；
+    - 会员账号：一人一号，``role`` 固定 ``owner``，传别的值会被强制改写。
+    """
     name = validate_username(username)
-    if role not in ROLE_RANK:
-        raise ValidationFailedError(f"角色必须是 {'/'.join(ROLE_RANK)} 之一")
+    if account_type not in ACCOUNT_TYPES:
+        raise ValidationFailedError(f"账号类型必须是 {'/'.join(ACCOUNT_TYPES)} 之一")
+
+    if account_type == ACCOUNT_TYPE_MEMBER:
+        resolved_role = ROLE_OWNER
+    else:
+        resolved_role = role or "viewer"
+        if resolved_role not in ROLE_RANK:
+            raise ValidationFailedError(f"角色必须是 {'/'.join(ROLE_RANK)} 之一")
+
+    if parent_user_id is not None:
+        parent = await get_user(session, parent_user_id)
+        if parent is None:
+            raise NotFoundError("上级账号不存在")
+
     validate_password(password, min_length=config.security.password_min_length)
     if await get_user_by_username(session, name) is not None:
         raise UserExistsError()
@@ -119,7 +146,9 @@ async def create_user(
     user = User(
         username=name,
         password_hash=hash_password(password),
-        role=role,
+        role=resolved_role,
+        account_type=account_type,
+        parent_user_id=parent_user_id,
         display_name=(display_name or "").strip() or None,
         is_builtin=is_builtin,
         must_change_password=must_change_password,

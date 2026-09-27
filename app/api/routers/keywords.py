@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_role, session_dependency
+from app.api.deps import require_module, session_dependency
 from app.api.schemas.lead import (
     KeywordCreateRequest,
     KeywordGroupCreateRequest,
@@ -16,13 +16,13 @@ from app.api.schemas.lead import (
     KeywordUpdateRequest,
 )
 from app.core.keyword_matcher import match_text
-from app.db.models import ROLE_SUB_ADMIN
+from app.db.models import MODULE_MONITOR
 from app.services import keyword_service
 
 router = APIRouter(
     prefix="/api/keyword-groups",
     tags=["keywords"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_module(MODULE_MONITOR))],
 )
 
 
@@ -141,7 +141,7 @@ async def add_keyword(
 keyword_router = APIRouter(
     prefix="/api/keywords",
     tags=["keywords"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_module(MODULE_MONITOR))],
 )
 
 

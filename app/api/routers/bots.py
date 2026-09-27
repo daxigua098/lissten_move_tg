@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_role, session_dependency
+from app.api.deps import require_member_or_platform, session_dependency
 from app.api.schemas.telegram import BotCreateRequest, BotUpdateRequest
 from app.core.config import AppConfig
 from app.db.base import as_utc
@@ -17,7 +17,7 @@ from app.services import bot_service
 router = APIRouter(
     prefix="/api/bots",
     tags=["bots"],
-    dependencies=[Depends(require_role(ROLE_SUPER_ADMIN))],
+    dependencies=[Depends(require_member_or_platform(ROLE_SUPER_ADMIN))],
 )
 
 

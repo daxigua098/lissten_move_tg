@@ -18,6 +18,8 @@ ROLE_RANK: dict[str, int] = {
     ROLE_SUB_ADMIN: 2,
     ROLE_SUPER_ADMIN: 3,
 }
+# 会员账号固定这个角色（一人一号，没有内部权限差异），不参与 ROLE_RANK 比较
+ROLE_OWNER = "owner"
 
 # 账号类型：平台自用 / 代理 / 会员（多租户销售模型）
 ACCOUNT_TYPE_PLATFORM = "platform"
@@ -39,6 +41,13 @@ class User(TimestampMixin, Base):
     account_type: Mapped[str] = mapped_column(
         String(16),
         default=ACCOUNT_TYPE_PLATFORM,
+        index=True,
+    )
+    # 直属上级：代理的上级是代理或平台，会员的上级是开设它的代理。
+    # 代理树靠这个自引用表达，不限层级（递归查询在 service 层解决）。
+    parent_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
         index=True,
     )
     # 只有会员账号有租户；平台与代理账号为空。

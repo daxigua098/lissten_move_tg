@@ -8,14 +8,14 @@ from fastapi import APIRouter, Depends, Query
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_role, session_dependency
-from app.db.models import ROLE_SUB_ADMIN
+from app.api.deps import require_module, session_dependency
+from app.db.models import MODULE_MONITOR
 from app.services import lead_service
 
 router = APIRouter(
     prefix="/api/leads",
     tags=["leads"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_module(MODULE_MONITOR))],
 )
 
 

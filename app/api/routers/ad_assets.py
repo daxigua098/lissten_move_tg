@@ -7,17 +7,17 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_role, session_dependency
+from app.api.deps import require_module, session_dependency
 from app.api.schemas.route import AdAssetCreateRequest, AdAssetUpdateRequest
 from app.core.errors import NotFoundError
 from app.db.base import as_utc
-from app.db.models import ROLE_SUB_ADMIN, AdAsset, Route
+from app.db.models import MODULE_CARRY, AdAsset, Route
 from app.services import ad_asset_service
 
 router = APIRouter(
     prefix="/api/ad-assets",
     tags=["ad-assets"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_module(MODULE_CARRY))],
 )
 
 

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import current_identity, require_role, session_dependency
+from app.api.deps import current_identity, require_member_or_platform, session_dependency
 from app.core.errors import NotFoundError
 from app.db.base import as_utc
 from app.db.models import JOB_PENDING, ROLE_SUB_ADMIN, DeliveryJob, Route, TenantChat
@@ -116,7 +116,7 @@ async def job_stats(session: AsyncSession = Depends(session_dependency)) -> dict
 
 @router.post(
     "/retry-failed",
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))],
 )
 async def retry_failed(session: AsyncSession = Depends(session_dependency)) -> dict[str, Any]:
     """把所有失败任务重新排队。"""
@@ -124,7 +124,7 @@ async def retry_failed(session: AsyncSession = Depends(session_dependency)) -> d
     return {"retried": retried}
 
 
-@router.post("/{job_id}/retry", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+@router.post("/{job_id}/retry", dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))])
 async def retry_one(
     job_id: int,
     session: AsyncSession = Depends(session_dependency),
@@ -142,7 +142,7 @@ async def retry_one(
     return {"id": job.id, "status": job.status, "retried": True}
 
 
-@router.post("/{job_id}/skip", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+@router.post("/{job_id}/skip", dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))])
 async def skip_one(
     job_id: int,
     session: AsyncSession = Depends(session_dependency),

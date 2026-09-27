@@ -7,16 +7,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_role, session_dependency
+from app.api.deps import require_module, session_dependency
 from app.api.schemas.lead import HotKeywordPromoteRequest
 from app.core.errors import ConflictError
-from app.db.models import ROLE_SUB_ADMIN
+from app.db.models import MODULE_MONITOR
 from app.services import hot_keyword_service, keyword_service
 
 router = APIRouter(
     prefix="/api/hot-keywords",
     tags=["hot-keywords"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_module(MODULE_MONITOR))],
 )
 
 

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_role, session_dependency
+from app.api.deps import require_member_or_platform, session_dependency
 from app.core.config import AppConfig
 from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status
 from app.core.runtime_control import (
@@ -48,7 +48,7 @@ async def _snapshot(config: AppConfig, session: AsyncSession) -> dict[str, Any]:
     }
 
 
-@router.get("/status", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+@router.get("/status", dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))])
 async def runtime_status(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
@@ -58,7 +58,7 @@ async def runtime_status(
     return await _snapshot(config, session)
 
 
-@router.post("/pause", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+@router.post("/pause", dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))])
 async def pause(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
@@ -69,7 +69,7 @@ async def pause(
     return await _snapshot(config, session)
 
 
-@router.post("/start", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+@router.post("/start", dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))])
 async def start(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
@@ -80,7 +80,7 @@ async def start(
     return {**await _snapshot(config, session), "start": result}
 
 
-@router.post("/restart", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+@router.post("/restart", dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))])
 async def restart(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
@@ -91,7 +91,7 @@ async def restart(
     return {**await _snapshot(config, session), "start": result}
 
 
-@router.post("/resume", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+@router.post("/resume", dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))])
 async def resume(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
@@ -104,7 +104,7 @@ async def resume(
     return await _snapshot(config, session)
 
 
-@router.post("/stop", dependencies=[Depends(require_role(ROLE_SUB_ADMIN))])
+@router.post("/stop", dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))])
 async def stop(
     request: Request,
     session: AsyncSession = Depends(session_dependency),

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import current_identity, require_role, session_dependency
+from app.api.deps import current_identity, require_member_or_platform, session_dependency
 from app.api.routers.chats import TARGET_ROLE_LABEL
 from app.api.schemas.route import (
     EnabledUpdate,
@@ -26,7 +26,7 @@ from app.services import chat_service, route_service
 router = APIRouter(
     prefix="/api/routes",
     tags=["routes"],
-    dependencies=[Depends(require_role(ROLE_SUB_ADMIN))],
+    dependencies=[Depends(require_member_or_platform(ROLE_SUB_ADMIN))],
 )
 
 

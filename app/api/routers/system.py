@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import current_identity, session_dependency
+from app.api.deps import require_member_or_platform, session_dependency
 from app.core.config import AppConfig
 from app.core.heartbeat import heartbeat_age_seconds, read_status
 from app.core.runtime_control import read_control
@@ -20,7 +20,7 @@ from app.services import delivery_service, lead_service, runtime_service, user_s
 router = APIRouter(
     prefix="/api/system",
     tags=["system"],
-    dependencies=[Depends(current_identity)],
+    dependencies=[Depends(require_member_or_platform(None))],
 )
 
 

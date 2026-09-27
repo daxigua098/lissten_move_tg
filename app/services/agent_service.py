@@ -34,7 +34,7 @@ from app.db.models import (
     Tenant,
     User,
 )
-from app.services import quota_service, tenant_module_service
+from app.services import quota_service, reminder_service, tenant_module_service
 
 MAX_TREE_DEPTH = 20
 # 到期预警窗口：3 天内到期算"即将到期"
@@ -323,7 +323,12 @@ async def expiring_tenants(
         )
         items.append(payload)
     items.sort(key=lambda item: item["expires_at"] or moment)
-    return items[:limit]
+    items = items[:limit]
+    # P4-05：带上"已提醒阶段"，让工作台能看出这个客户催过没有
+    stages = await reminder_service.stages_by_tenant(session, [item["tenant_id"] for item in items])
+    for item in items:
+        item["reminded_stages"] = stages.get(item["tenant_id"], [])
+    return items
 
 
 async def _tenants_owner_users(

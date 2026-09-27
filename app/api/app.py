@@ -44,7 +44,7 @@ from app.core.config import AppConfig, load_config
 from app.core.demo_client import demo_account_client_factory, demo_bot_client_factory
 from app.core.paths import ensure_dir
 from app.db.session import dispose_database, get_session_factory, init_database
-from app.services import tenant_runtime_service, user_service
+from app.services import reminder_service, tenant_runtime_service, user_service
 from app.services.upload_service import uploads_directory
 
 
@@ -92,6 +92,16 @@ async def sweep_expired_once() -> None:
             summary = await tenant_runtime_service.sweep_once(session)
     except Exception as exc:  # noqa: BLE001 - 巡检失败不能拖垮接口
         logger.warning("到期巡检失败：{}", exc)
+        summary = None
+    try:
+        # P4-05：同一趟巡检里补到期提醒（幂等，一个阶段只提醒一次）
+        async with session_scope() as session:
+            reminders = await reminder_service.sweep(session)
+        if reminders["count"]:
+            logger.info("到期提醒：新生成 {} 条", reminders["count"])
+    except Exception as exc:  # noqa: BLE001 - 提醒失败不影响强停
+        logger.warning("到期提醒生成失败：{}", exc)
+    if summary is None:
         return
     if summary["expired"] or summary["suspended"]:
         logger.info(

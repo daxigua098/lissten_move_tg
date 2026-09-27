@@ -42,6 +42,7 @@ from app.db.models import (
 from app.services import (
     agent_service,
     quota_service,
+    reminder_service,
     tenant_module_service,
     tenant_status_service,
 )
@@ -212,6 +213,18 @@ async def _today_stats(
     return {"opened": opened, "renewed": renewed}
 
 
+async def _attach_reminders(
+    session: AsyncSession,
+    items: list[dict[str, Any]],
+) -> None:
+    """就地补上 ``reminded_stages``（P4-05 的"已提醒"标记）。"""
+    if not items:
+        return
+    stages = await reminder_service.stages_by_tenant(session, [item["tenant_id"] for item in items])
+    for item in items:
+        item["reminded_stages"] = stages.get(item["tenant_id"], [])
+
+
 async def overview(
     session: AsyncSession,
     *,
@@ -262,6 +275,7 @@ async def overview(
             )
         )
     expiring_items.sort(key=lambda item: item["expires_at"] or _FAR_FUTURE)
+    await _attach_reminders(session, expiring_items)
 
     quotas = await _quotas_by_user(session, [agent.id for agent in agents])
     alerts: list[dict[str, Any]] = []
@@ -530,6 +544,7 @@ async def expiry_board(
     counts: dict[str, int] = {}
     for key, items in buckets.items():
         items.sort(key=lambda item: (item["expires_at"] or _FAR_FUTURE, item["user_id"]))
+        await _attach_reminders(session, items)
         counts[key] = len(items)
         payload[key] = {
             "key": key,

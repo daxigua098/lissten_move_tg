@@ -64,6 +64,15 @@ from app.db.models.quota import (
     AgentQuota,
     QuotaLedger,
 )
+from app.db.models.reminder import (
+    AUDIENCE_AGENT,
+    AUDIENCE_MEMBER,
+    AUDIENCES,
+    CHANNEL_INAPP,
+    CHANNEL_TELEGRAM,
+    CHANNELS,
+    TenantReminder,
+)
 from app.db.models.resource import (
     CONTENT_RATINGS,
     DISCOVER_DIRECTORY,
@@ -337,6 +346,12 @@ __all__ = [
     "TRANSFER_MODE_FORWARD",
     "TRANSFER_MODES",
     "AdAsset",
+    "AUDIENCE_AGENT",
+    "AUDIENCE_MEMBER",
+    "AUDIENCES",
+    "CHANNELS",
+    "CHANNEL_INAPP",
+    "CHANNEL_TELEGRAM",
     "AgentQuota",
     "QuotaLedger",
     "AuditLog",
@@ -371,6 +386,7 @@ __all__ = [
     "Tenant",
     "TenantLimit",
     "TenantModule",
+    "TenantReminder",
     "TenantOwnedMixin",
     "TimestampMixin",
     "User",

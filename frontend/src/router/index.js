@@ -9,6 +9,7 @@ import Leads from "../views/Leads.vue";
 import Login from "../views/Login.vue";
 import OpsTabs from "../views/OpsTabs.vue";
 import OverviewTabs from "../views/OverviewTabs.vue";
+import PlatformConsole from "../views/PlatformConsole.vue";
 import ResourceTabs from "../views/ResourceTabs.vue";
 import SystemTabs from "../views/SystemTabs.vue";
 
@@ -22,6 +23,13 @@ const routes = [
   { path: "/change-password", name: "change-password", component: ChangePassword },
   { path: "/", name: "dashboard", component: OverviewTabs },
   { path: "/agent", name: "agent", component: AgentConsole, meta: { accountType: "agent" } },
+  // 平台后台：只有平台超管能进，会员与代理一律打回自己的首页
+  {
+    path: "/platform",
+    name: "platform",
+    component: PlatformConsole,
+    meta: { role: "super_admin", platformOnly: true },
+  },
   // 合并后的入口；子页面用 ?tab= 定位
   {
     path: "/config",

@@ -16,7 +16,7 @@ from typing import Any
 from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import NotDirectSubordinateError, NotFoundError
+from app.core.errors import NotDirectSubordinateError, NotFoundError, ValidationFailedError
 from app.db.base import as_utc
 from app.db.models import (
     ACCOUNT_TYPE_AGENT,
@@ -365,21 +365,23 @@ async def module_summary(session: AsyncSession, tenant_id: int | None) -> list[s
     return tenant_module_service.module_labels(modules)
 
 
-async def set_subordinate_enabled(
+async def _apply_account_enabled(
     session: AsyncSession,
     *,
+    target: User,
     actor: User,
-    user_id: int,
     enabled: bool,
+    reason: str | None = None,
     suspend_tenant: bool = True,
+    commit: bool = True,
 ) -> dict[str, Any]:
-    """停用 / 解停直属下级。
+    """停用 / 解停一个账号，并留下"谁在什么时候为什么停的"。
 
     停用会员时顺手把租户置为 ``suspended``（P4 的服务端守卫据此拒绝写操作），
     解停时若已过期则维持 ``expired``，否则回到 ``active``。设置与数据都保留，
     只是功能被关掉——会员登录后需要自己手动启动线路才会恢复。
     """
-    target = await get_direct_subordinate(session, actor=actor, user_id=user_id)
+    moment = datetime.now(UTC)
     target.enabled = bool(enabled)
     tenant = None
     if target.account_type == ACCOUNT_TYPE_MEMBER and target.tenant_id is not None:
@@ -387,14 +389,22 @@ async def set_subordinate_enabled(
     if tenant is not None and suspend_tenant:
         if not enabled:
             tenant.status = TENANT_STATUS_SUSPENDED
+            # 停用要留痕：否则事后查不出是谁、什么时候、为什么停的（P5-02/P5-03）
+            tenant.suspended_at = moment
+            tenant.suspended_by = actor.username
+            tenant.suspended_reason = (reason or "").strip() or None
         else:
-            expired = _member_state(tenant, now=datetime.now(UTC))["expired"]
+            expired = _member_state(tenant, now=moment)["expired"]
             tenant.status = TENANT_STATUS_EXPIRED if expired else TENANT_STATUS_ACTIVE
+            tenant.suspended_at = None
+            tenant.suspended_by = None
+            tenant.suspended_reason = None
     await session.flush()
-    await session.commit()
-    await session.refresh(target)
-    if tenant is not None:
-        await session.refresh(tenant)
+    if commit:
+        await session.commit()
+        await session.refresh(target)
+        if tenant is not None:
+            await session.refresh(tenant)
     return {
         "account": serialize_subordinate(
             target,
@@ -402,7 +412,57 @@ async def set_subordinate_enabled(
             is_direct=True,
             tenant=tenant,
             quota=None,
-            now=datetime.now(UTC),
+            now=moment,
         ),
         "revoked_sessions": 0 if enabled else -1,
     }
+
+
+async def set_subordinate_enabled(
+    session: AsyncSession,
+    *,
+    actor: User,
+    user_id: int,
+    enabled: bool,
+    reason: str | None = None,
+    suspend_tenant: bool = True,
+) -> dict[str, Any]:
+    """停用 / 解停**直属下级**；隔层账号一律 403。"""
+    target = await get_direct_subordinate(session, actor=actor, user_id=user_id)
+    return await _apply_account_enabled(
+        session,
+        target=target,
+        actor=actor,
+        enabled=enabled,
+        reason=reason,
+        suspend_tenant=suspend_tenant,
+    )
+
+
+async def set_account_enabled(
+    session: AsyncSession,
+    *,
+    actor: User,
+    target: User,
+    enabled: bool,
+    reason: str | None = None,
+    suspend_tenant: bool = True,
+) -> dict[str, Any]:
+    """平台后台停用 / 解停**任意**账号（不限层级，P5-02 / P5-03）。
+
+    与代理侧唯一的差别是**不做"直属"校验**——平台是账号树的根，管的是全体。
+    停用代理只影响他能不能登录开号，名下已开会员照常跑到各自到期日；
+    停用会员则功能全停、额度**不释放**（额度只在实际到期时回到代理账上）。
+    """
+    if target.id == actor.id:
+        raise ValidationFailedError("不能停用自己的账号")
+    if target.account_type not in (ACCOUNT_TYPE_AGENT, ACCOUNT_TYPE_MEMBER):
+        raise ValidationFailedError("只能停用代理或会员账号")
+    return await _apply_account_enabled(
+        session,
+        target=target,
+        actor=actor,
+        enabled=enabled,
+        reason=reason,
+        suspend_tenant=suspend_tenant,
+    )

@@ -29,6 +29,7 @@ from app.api.routers import (
     leads,
     logs,
     meta,
+    platform,
     resources,
     routes,
     runtime,
@@ -167,6 +168,7 @@ def create_app(
     app.include_router(accounts.router)
     app.include_router(bots.router)
     app.include_router(agent.router)
+    app.include_router(platform.router)
     app.include_router(sources.router)
     app.include_router(targets.router)
     app.include_router(routes.router)

@@ -81,6 +81,7 @@ class EnableRequest(BaseModel):
     """停用 / 解停直属下级。"""
 
     enabled: bool
+    reason: str | None = Field(default=None, max_length=255)
 
 
 class AdjustRequest(BaseModel):

@@ -37,6 +37,9 @@ const menuItems = computed(() => {
     return items;
   }
   const items = [{ index: "/", label: "运行总览" }];
+  if (auth.isSuperAdmin) {
+    items.push({ index: "/platform", label: "平台后台" });
+  }
   if (canOperate.value) {
     items.push({ index: "/config", label: "线路配置" });
     items.push({ index: "/library", label: "词库" });

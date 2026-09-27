@@ -135,6 +135,7 @@ async def _create_member_account(
     display_name: str | None,
     quota_type: str,
     note: str | None,
+    owner_agent: User | None = None,
 ) -> tuple[User, Tenant, str]:
     """建「登录账号 + 会员租户」这一对，不提交。
 
@@ -143,7 +144,10 @@ async def _create_member_account(
     ``users.tenant_id``，这样两个方向的外键都是先有的那个。
     """
     password_value = password or generate_password()
-    owner_agent_id = actor.id if _is_agent(actor) else None
+    # 归属代理：平台后台可以指定「这个会员挂在哪个代理名下」，额度就从那个代理账上扣
+    owner_agent_id = (
+        owner_agent.id if owner_agent is not None else (actor.id if _is_agent(actor) else None)
+    )
     user = await user_service.build_user(
         session,
         config,
@@ -235,10 +239,16 @@ async def open_member(
     modules: list[str] | None = None,
     template_code: str | None = None,
     note: str | None = None,
+    owner_agent: User | None = None,
     commit: bool = True,
 ) -> dict[str, Any]:
-    """开一个正式会员（代理扣 1 个会员额度；平台开号不占额度）。"""
+    """开一个正式会员。
+
+    额度从 **payer** 账上扣 1 个——指定归属代理时扣那个代理的，否则扣代理自己的；
+    平台直开（没有归属代理）不占任何额度，记 ``quota_type='none'``。
+    """
     wanted, limits = await _resolve_plan(session, template_code=template_code, modules=modules)
+    payer = owner_agent if owner_agent is not None else (actor if _is_agent(actor) else None)
     user, tenant, password_value = await _create_member_account(
         session,
         config,
@@ -247,8 +257,9 @@ async def open_member(
         days=days,
         password=password,
         display_name=display_name,
-        quota_type=QUOTA_MEMBER if _is_agent(actor) else QUOTA_NONE,
+        quota_type=QUOTA_MEMBER if payer is not None else QUOTA_NONE,
         note=note,
+        owner_agent=payer,
     )
     await _apply_plan(
         session,
@@ -257,11 +268,11 @@ async def open_member(
         limits=limits,
         granted_by=actor.username,
     )
-    if _is_agent(actor):
+    if payer is not None:
         await quota_service.consume(
             session,
-            actor=actor,
-            subject=actor,
+            actor=payer,
+            subject=payer,
             quota_type=QUOTA_MEMBER,
             action=ACTION_OPEN_MEMBER,
             related_tenant_id=tenant.id,
@@ -583,6 +594,42 @@ async def renew(
         await session.commit()
         await session.refresh(tenant)
     return {"tenant": serialize_tenant(tenant)}
+
+
+async def set_plan(
+    session: AsyncSession,
+    *,
+    actor: User,
+    tenant: Tenant,
+    modules: list[str] | None = None,
+    template_code: str | None = None,
+    commit: bool = True,
+) -> dict[str, Any]:
+    """改功能包（P5-03）：只改授权清单与用量限制，不动到期日与运行开关。
+
+    前端菜单与接口守卫读的都是 ``tenant_modules``，所以改完立即生效；
+    已经配好的 TG 账号、机器人、线路、线索一律保留。
+    """
+    if tenant.kind != TENANT_KIND_MEMBER:
+        raise ValidationFailedError("只有会员租户可以改功能包")
+    wanted, limits = await _resolve_plan(session, template_code=template_code, modules=modules)
+    await _apply_plan(
+        session,
+        tenant_id=tenant.id,
+        modules=wanted,
+        limits=limits,
+        granted_by=actor.username,
+    )
+    await session.flush()
+    if commit:
+        await session.commit()
+        await session.refresh(tenant)
+    return {
+        "tenant": serialize_tenant(tenant),
+        "modules": wanted,
+        "module_labels": tenant_module_service.module_labels(wanted),
+        "limits": limits,
+    }
 
 
 def expires_within(expires_at: datetime | None, days: int) -> bool:

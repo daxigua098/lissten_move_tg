@@ -384,4 +384,5 @@ async def enable_subordinate(
         actor=actor,
         user_id=user_id,
         enabled=payload.enabled,
+        reason=payload.reason,
     )

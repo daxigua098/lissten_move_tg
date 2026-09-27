@@ -81,6 +81,29 @@ export const agentApi = {
   setEnabled: (id, enabled) => http.post(`/api/agent/${id}/enable`, { enabled }),
 };
 
+// 平台后台（P5）：只有平台账号可访问，代理与会员一律 403
+export const platformApi = {
+  overview: (params) => http.get("/api/platform/overview", { params }),
+  agents: (params) => http.get("/api/platform/agents", { params }),
+  agentTree: (id) => http.get(`/api/platform/agents/${id}/tree`),
+  members: (params) => http.get("/api/platform/members", { params }),
+  openMember: (payload) => http.post("/api/platform/members", payload),
+  renewMember: (id, payload) => http.post(`/api/platform/members/${id}/renew`, payload),
+  setPlan: (id, payload) => http.post(`/api/platform/members/${id}/plan`, payload),
+  setEnabled: (id, payload) => http.post(`/api/platform/accounts/${id}/enable`, payload),
+  adjust: (id, payload) => http.post(`/api/platform/accounts/${id}/adjust`, payload),
+  expiry: (params) => http.get("/api/platform/expiry", { params }),
+  ledger: (params) => http.get("/api/platform/ledger", { params }),
+  ledgerExportUrl: (params) => {
+    const query = new URLSearchParams(
+      Object.entries(params || {}).filter(
+        ([, value]) => value !== undefined && value !== null && value !== "",
+      ),
+    );
+    return `/api/platform/ledger.csv?${query.toString()}`;
+  },
+};
+
 export const usersApi = {
   list: (params) => http.get("/api/users", { params }),
   create: (payload) => http.post("/api/users", payload),

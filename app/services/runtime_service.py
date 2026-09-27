@@ -42,8 +42,8 @@ from app.db.models import (
     DISCOVER_LINK,
     LISTEN_MODE_ALL,
     SENDER_MODE_BOT,
-    Chat,
     Route,
+    TenantChat,
 )
 from app.db.session import session_scope
 from app.services import (
@@ -276,7 +276,7 @@ class RuntimeService:
                 bucket.setdefault(route.business_type, []).append(route)
             source_entities: dict[int, int] = {}
             for chat_id in sources:
-                chat = await session.get(Chat, chat_id)
+                chat = await session.get(TenantChat, chat_id)
                 if chat is not None and chat.tg_id:
                     source_entities[chat_id] = int(chat.tg_id)
 
@@ -504,7 +504,7 @@ class RuntimeService:
                 if len(text) < config.min_text_length:
                     continue
 
-                source_chat = await session.get(Chat, fresh.source_chat_id)
+                source_chat = await session.get(TenantChat, fresh.source_chat_id)
                 if source_chat is None or not source_chat.tg_id:
                     continue
                 if config.skip_admins and await self._is_admin(
@@ -713,7 +713,7 @@ class RuntimeService:
         )
         pushed = 0
         for chat_id in target_ids:
-            target_chat = await session.get(Chat, chat_id)
+            target_chat = await session.get(TenantChat, chat_id)
             if target_chat is None or not target_chat.tg_id:
                 continue
             try:
@@ -864,8 +864,8 @@ class RuntimeService:
             if route is None:
                 await delivery_service.skip_job(session, job, reason="线路已删除")
                 return 1
-            source_chat = await session.get(Chat, route.source_chat_id)
-            target_chat = await session.get(Chat, job.target_chat_id)
+            source_chat = await session.get(TenantChat, route.source_chat_id)
+            target_chat = await session.get(TenantChat, job.target_chat_id)
             if source_chat is None or target_chat is None:
                 await delivery_service.skip_job(session, job, reason="源或目标已删除")
                 return 1

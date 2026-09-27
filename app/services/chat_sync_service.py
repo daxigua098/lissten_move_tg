@@ -24,7 +24,7 @@ from app.core.telegram_client import (
     profile_from_entity,
     session_file_path,
 )
-from app.db.models import Chat, TgAccount
+from app.db.models import TenantChat, TgAccount
 from app.services import chat_service, tg_account_service
 
 
@@ -205,7 +205,7 @@ async def ensure_chat_from_input(
     join: bool = False,
     account_id: int | None = None,
     client_factory: Any = None,
-) -> Chat:
+) -> TenantChat:
     """把用户粘贴的链接/标识解析并登记到群组池，返回聊天对象。"""
     try:
         target = resolve_target(raw_input)
@@ -247,7 +247,7 @@ async def _profile_for_target(
 async def check_targets_access(
     session: AsyncSession,
     config: AppConfig,
-    chats: list[Chat],
+    chats: list[TenantChat],
     *,
     client_factory: Any = None,
     account_id: int | None = None,

@@ -134,7 +134,7 @@ class Lead(TenantOwnedMixin, TimestampMixin, Base):
         index=True,
     )
     source_chat_id: Mapped[int | None] = mapped_column(
-        ForeignKey("chats.id", ondelete="SET NULL"),
+        ForeignKey("tenant_chats.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )

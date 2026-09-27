@@ -118,8 +118,9 @@ from app.db.models.telegram import (
     TARGET_ROLE_CONTENT,
     TARGET_ROLE_LEAD,
     TARGET_ROLES,
-    Chat,
+    ChatDirectory,
     ControlBot,
+    TenantChat,
     TgAccount,
 )
 from app.db.models.tenant import (
@@ -258,7 +259,7 @@ __all__ = [
     "AdAsset",
     "AuditLog",
     "Base",
-    "Chat",
+    "ChatDirectory",
     "ControlBot",
     "LoginHistory",
     "Keyword",
@@ -282,6 +283,7 @@ __all__ = [
     "TENANT_STATUS_EXPIRED",
     "TENANT_STATUS_SUSPENDED",
     "TENANT_STATUSES",
+    "TenantChat",
     "TgAccount",
     "TgResource",
     "Tenant",

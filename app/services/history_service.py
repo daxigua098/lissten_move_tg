@@ -22,7 +22,7 @@ from app.core.telegram_client import (
     message_view_from_telethon,
     resolve_entity,
 )
-from app.db.models import Chat, Route, RouteTarget, RouteTargetProgress
+from app.db.models import Route, RouteTarget, RouteTargetProgress, TenantChat
 from app.services import delivery_service
 
 
@@ -192,7 +192,7 @@ async def sync_all_routes(
 
     results: list[dict[str, Any]] = []
     for route in routes:
-        source = await session.get(Chat, route.source_chat_id)
+        source = await session.get(TenantChat, route.source_chat_id)
         if source is None or not source.tg_id:
             results.append({"route": route.name, "error": "监听源不存在"})
             continue

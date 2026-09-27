@@ -119,7 +119,7 @@ async def test_demo_pipeline_end_to_end(demo_client, demo_config) -> None:
 
     from app.core.demo_client import DemoAccountClient
     from app.core.route_config import load_a_config
-    from app.db.models import AdAsset, Chat
+    from app.db.models import AdAsset, TenantChat
     from app.db.session import session_scope
     from app.services import delivery_service, history_service, route_service
 
@@ -155,8 +155,8 @@ async def test_demo_pipeline_end_to_end(demo_client, demo_config) -> None:
             job = await delivery_service.next_ready_job(session)
             if job is None:
                 break
-            source_chat = await session.get(Chat, job.source_chat_id)
-            target_chat = await session.get(Chat, job.target_chat_id)
+            source_chat = await session.get(TenantChat, job.source_chat_id)
+            target_chat = await session.get(TenantChat, job.target_chat_id)
             await delivery_service.deliver_job(
                 session,
                 demo_config,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.db.models import Chat
+from app.db.models import TenantChat
 from app.services import chat_service
 
 CHAT_TYPE_LABEL = {
@@ -19,7 +19,7 @@ TARGET_ROLE_LABEL = {
 }
 
 
-def serialize_chat(chat: Chat) -> dict[str, Any]:
+def serialize_chat(chat: TenantChat) -> dict[str, Any]:
     """聊天对象的统一对外结构。"""
     return {
         "id": chat.id,
@@ -47,7 +47,7 @@ def serialize_chat(chat: Chat) -> dict[str, Any]:
     }
 
 
-def page(items: list[Chat], total: int, limit: int, offset: int) -> dict[str, Any]:
+def page(items: list[TenantChat], total: int, limit: int, offset: int) -> dict[str, Any]:
     """分页响应。"""
     return {
         "items": [serialize_chat(item) for item in items],

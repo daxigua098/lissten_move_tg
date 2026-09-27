@@ -23,11 +23,11 @@ from app.db.models import (
     SENDER_MODE_ACCOUNT,
     SENDER_MODES,
     TARGET_ROLE_CONTENT,
-    Chat,
     ControlBot,
     Route,
     RouteTarget,
     RouteTargetProgress,
+    TenantChat,
     TgAccount,
 )
 
@@ -316,7 +316,7 @@ async def update_route(
     if route is None:
         raise NotFoundError("线路不存在")
 
-    targets_to_sync: list[Chat] | None = None
+    targets_to_sync: list[TenantChat] | None = None
     if target_chat_ids is not None:
         unique_target_ids = list(dict.fromkeys(target_chat_ids))
         targets_to_sync = await _require_targets(session, unique_target_ids)
@@ -527,7 +527,7 @@ async def sync_route_bundle_sources(
         session.add(created)
         await session.flush()
         for target in await list_route_targets(session, template.id):
-            chat = await session.get(Chat, target.target_chat_id)
+            chat = await session.get(TenantChat, target.target_chat_id)
             if chat is not None:
                 await _add_target_row(session, created.id, chat)
         added += 1
@@ -564,7 +564,7 @@ async def delete_route_bundle(session: AsyncSession, route_id: int) -> dict[str,
 async def _replace_route_targets(
     session: AsyncSession,
     route_id: int,
-    chats: list[Chat],
+    chats: list[TenantChat],
 ) -> dict[str, int]:
     """把一条线路的接收目标替换成给定集合，保留仍被选中目标的水位线。"""
     wanted = {chat.id for chat in chats}
@@ -741,7 +741,7 @@ async def reset_target_progress(
 async def _add_target_row(
     session: AsyncSession,
     route_id: int,
-    chat: Chat,
+    chat: TenantChat,
 ) -> RouteTarget:
     row = RouteTarget(
         route_id=route_id,
@@ -774,8 +774,8 @@ async def _get_target_row(
     )
 
 
-async def _require_source(session: AsyncSession, chat_id: int) -> Chat:
-    chat = await session.get(Chat, chat_id)
+async def _require_source(session: AsyncSession, chat_id: int) -> TenantChat:
+    chat = await session.get(TenantChat, chat_id)
     if chat is None:
         raise NotFoundError("监听源不存在")
     if not chat.is_source:
@@ -783,19 +783,19 @@ async def _require_source(session: AsyncSession, chat_id: int) -> Chat:
     return chat
 
 
-async def _require_sources(session: AsyncSession, chat_ids: list[int]) -> list[Chat]:
-    chats: list[Chat] = []
+async def _require_sources(session: AsyncSession, chat_ids: list[int]) -> list[TenantChat]:
+    chats: list[TenantChat] = []
     for chat_id in chat_ids:
         chats.append(await _require_source(session, chat_id))
     return chats
 
 
-async def _require_targets(session: AsyncSession, chat_ids: list[int]) -> list[Chat]:
+async def _require_targets(session: AsyncSession, chat_ids: list[int]) -> list[TenantChat]:
     if not chat_ids:
         raise ValidationFailedError("请至少选择一个接收目标")
-    chats: list[Chat] = []
+    chats: list[TenantChat] = []
     for chat_id in chat_ids:
-        chat = await session.get(Chat, chat_id)
+        chat = await session.get(TenantChat, chat_id)
         if chat is None:
             raise NotFoundError("接收目标不存在")
         if not chat.is_target:
@@ -827,7 +827,7 @@ def _decode(raw: str | None) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _default_name(source: Chat, target: Chat) -> str:
+def _default_name(source: TenantChat, target: TenantChat) -> str:
     source_name = source.title or source.username or f"源{source.id}"
     target_name = target.title or target.username or f"目标{target.id}"
     return f"{source_name} → {target_name}"

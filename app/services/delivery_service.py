@@ -26,9 +26,9 @@ from app.db.models import (
     JOB_SKIPPED,
     JOB_SUCCESS,
     AdAsset,
-    Chat,
     DeliveryJob,
     Route,
+    TenantChat,
 )
 
 DEFAULT_MAX_ATTEMPTS = 5
@@ -202,8 +202,8 @@ async def deliver_job(
     job: DeliveryJob,
     route: Route,
     client: Any,
-    source_chat: Chat,
-    target_chat: Chat,
+    source_chat: TenantChat,
+    target_chat: TenantChat,
     a_config: ACarryConfig,
     ad_asset: AdAsset | None = None,
     source_entity: Any = None,
@@ -283,7 +283,7 @@ async def _send_ad_message(
     client: Any,
     target_entity: Any,
     route: Route,
-    source_chat: Chat,
+    source_chat: TenantChat,
     ad_asset: AdAsset,
 ) -> None:
     text = render_ad_text(

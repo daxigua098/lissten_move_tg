@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import current_identity, require_role, session_dependency
 from app.core.errors import NotFoundError
 from app.db.base import as_utc
-from app.db.models import JOB_PENDING, ROLE_SUB_ADMIN, Chat, DeliveryJob, Route
+from app.db.models import JOB_PENDING, ROLE_SUB_ADMIN, DeliveryJob, Route, TenantChat
 from app.services import delivery_service
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -29,9 +29,9 @@ STATUS_LABEL = {
 async def _titles(session: AsyncSession, chat_ids: set[int]) -> dict[int, str]:
     if not chat_ids:
         return {}
-    rows = await session.scalars(select(Chat).where(Chat.id.in_(chat_ids)))
+    rows = await session.scalars(select(TenantChat).where(TenantChat.id.in_(chat_ids)))
 
-    def display(item: Chat) -> str:
+    def display(item: TenantChat) -> str:
         return item.display_name or item.title or item.username or f"#{item.id}"
 
     return {item.id: display(item) for item in rows}

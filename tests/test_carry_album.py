@@ -8,7 +8,7 @@ from conftest import fake_message
 
 from app.core.content_cleaner import MessageView
 from app.core.route_config import ACarryConfig
-from app.db.models import Chat, DeliveryJob, Route
+from app.db.models import DeliveryJob, Route, TenantChat
 from app.db.session import session_scope
 from app.services import chat_service, delivery_service, history_service, route_service
 from app.services.runtime_service import RuntimeService
@@ -194,8 +194,8 @@ async def test_delivering_album_sends_once(db, fake_delivery_client) -> None:
     async with session_scope() as session:
         job = await delivery_service.next_ready_job(session)
         route = await session.get(Route, route_id)
-        source_chat = await session.get(Chat, source_id)
-        target_chat = await session.get(Chat, target_id)
+        source_chat = await session.get(TenantChat, source_id)
+        target_chat = await session.get(TenantChat, target_id)
         await delivery_service.deliver_job(
             session,
             db,

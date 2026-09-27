@@ -15,8 +15,8 @@ from app.db.models import (
     JOB_RETRYING,
     JOB_SUCCESS,
     AdAsset,
-    Chat,
     DeliveryJob,
+    TenantChat,
 )
 from app.db.session import session_scope
 from app.services import chat_service, delivery_service, route_service
@@ -188,8 +188,8 @@ async def test_deliver_job_success_with_ad(
     async with session_scope() as session:
         job = await session.get(DeliveryJob, job_id)
         route = await route_service.get_route(session, route_id)
-        source_chat = await session.get(Chat, source_id)
-        target_chat = await session.get(Chat, target_ids[0])
+        source_chat = await session.get(TenantChat, source_id)
+        target_chat = await session.get(TenantChat, target_ids[0])
         ad_asset = await session.get(AdAsset, asset_id)
 
         await delivery_service.deliver_job(
@@ -237,8 +237,8 @@ async def test_deliver_job_failure_marks_retry(db, fake_delivery_client) -> None
     async with session_scope() as session:
         job = await session.get(DeliveryJob, job_id)
         route = await route_service.get_route(session, route_id)
-        source_chat = await session.get(Chat, source_id)
-        target_chat = await session.get(Chat, target_ids[0])
+        source_chat = await session.get(TenantChat, source_id)
+        target_chat = await session.get(TenantChat, target_ids[0])
         await delivery_service.deliver_job(
             session,
             db,
@@ -335,8 +335,8 @@ async def test_repost_mode_uses_cleaned_caption(db, fake_delivery_client) -> Non
     async with session_scope() as session:
         job = await session.get(DeliveryJob, job_id)
         route = await route_service.get_route(session, route_id)
-        source_chat = await session.get(Chat, source_id)
-        target_chat = await session.get(Chat, target_ids[0])
+        source_chat = await session.get(TenantChat, source_id)
+        target_chat = await session.get(TenantChat, target_ids[0])
         await delivery_service.deliver_job(
             session,
             db,
@@ -376,8 +376,8 @@ async def test_album_job_forwards_all_media_in_one_call(db, fake_delivery_client
     async with session_scope() as session:
         job = await session.get(DeliveryJob, job_id)
         route = await route_service.get_route(session, route_id)
-        source_chat = await session.get(Chat, source_id)
-        target_chat = await session.get(Chat, target_ids[0])
+        source_chat = await session.get(TenantChat, source_id)
+        target_chat = await session.get(TenantChat, target_ids[0])
         await delivery_service.deliver_job(
             session,
             db,
@@ -422,8 +422,8 @@ async def test_album_repost_mode_sends_as_one_album(db, fake_delivery_client) ->
     async with session_scope() as session:
         job = await session.get(DeliveryJob, job_id)
         route = await route_service.get_route(session, route_id)
-        source_chat = await session.get(Chat, source_id)
-        target_chat = await session.get(Chat, target_ids[0])
+        source_chat = await session.get(TenantChat, source_id)
+        target_chat = await session.get(TenantChat, target_ids[0])
         await delivery_service.deliver_job(
             session,
             db,

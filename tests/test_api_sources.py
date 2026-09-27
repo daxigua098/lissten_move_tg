@@ -12,7 +12,7 @@ def _headers() -> dict[str, str]:
 
 async def test_sync_migrates_upgraded_group_to_new_id(chat_client, fake_account_client) -> None:
     """基础群升级成超级群后，同步要把本地记录迁到新 id（引用与水位线保留）。"""
-    from app.db.models import Chat
+    from app.db.models import TenantChat
     from app.db.session import session_scope
     from app.services import chat_service
 
@@ -30,7 +30,7 @@ async def test_sync_migrates_upgraded_group_to_new_id(chat_client, fake_account_
     listing = (await chat_client.get("/api/sources/available", headers=_headers())).json()["items"]
     chat_id = next(item["id"] for item in listing if item["tg_id"] == 6001)
     async with session_scope() as session:
-        chat = await session.get(Chat, chat_id)
+        chat = await session.get(TenantChat, chat_id)
         await chat_service.set_target(session, chat, role="lead")
 
     # SimpleNamespace 不可哈希，用一个小对象当 migrated_to（替身按对象查表）
@@ -49,7 +49,7 @@ async def test_sync_migrates_upgraded_group_to_new_id(chat_client, fake_account_
     assert response.status_code == 200
     assert response.json()["migrated"] == 1
     async with session_scope() as session:
-        moved = await session.get(Chat, chat_id)
+        moved = await session.get(TenantChat, chat_id)
     assert moved.tg_id == 7001
     assert moved.chat_type == "supergroup"
     assert moved.title == "升级后的群"

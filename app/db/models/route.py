@@ -84,7 +84,7 @@ class Route(TenantOwnedMixin, TimestampMixin, Base):
     # bundle_id 串起来（水位线按「线路+目标」存，一个源一行才准确）。
     bundle_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     source_chat_id: Mapped[int] = mapped_column(
-        ForeignKey("chats.id", ondelete="CASCADE"),
+        ForeignKey("tenant_chats.id", ondelete="CASCADE"),
         index=True,
     )
     business_type: Mapped[str] = mapped_column(String(2), default=BUSINESS_CARRY, index=True)
@@ -132,7 +132,7 @@ class RouteTarget(TenantOwnedMixin, TimestampMixin, Base):
         index=True,
     )
     target_chat_id: Mapped[int] = mapped_column(
-        ForeignKey("chats.id", ondelete="CASCADE"),
+        ForeignKey("tenant_chats.id", ondelete="CASCADE"),
         index=True,
     )
     target_role: Mapped[str] = mapped_column(String(16), default="content")
@@ -151,7 +151,7 @@ class RouteTargetProgress(TenantOwnedMixin, TimestampMixin, Base):
         primary_key=True,
     )
     target_chat_id: Mapped[int] = mapped_column(
-        ForeignKey("chats.id", ondelete="CASCADE"),
+        ForeignKey("tenant_chats.id", ondelete="CASCADE"),
         primary_key=True,
     )
     last_delivered_message_id: Mapped[int] = mapped_column(BigInteger, default=0)

@@ -644,7 +644,7 @@ onMounted(loadAll);
             <el-table-column label="名下会员" width="100">
               <template #default="{ row }">{{ row.subtree_members }}</template>
             </el-table-column>
-            <el-table-column label="额度" min-width="260">
+            <el-table-column label="额度" min-width="200">
               <template #default="{ row }">{{ quotaText(row) }}</template>
             </el-table-column>
             <el-table-column label="状态" width="90">
@@ -654,7 +654,8 @@ onMounted(loadAll);
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="360">
+            <!-- 操作列固定在最右边：窗口窄的时候表格会左右滚，但「编辑 / 删除」永远看得见 -->
+            <el-table-column label="操作" width="220" fixed="right">
               <template #default="{ row }">
                 <el-button
                   size="small"
@@ -672,8 +673,8 @@ onMounted(loadAll);
                 >
                   回收
                 </el-button>
-                <el-button size="small" @click="openAdjust(row)">调账</el-button>
-                <el-button size="small" @click="showTree(row)">下级树</el-button>
+                <el-button size="small" link @click="openAdjust(row)">调账</el-button>
+                <el-button size="small" link @click="showTree(row)">下级树</el-button>
                 <el-button
                   size="small"
                   :type="row.enabled ? 'danger' : 'primary'"
@@ -814,7 +815,7 @@ onMounted(loadAll);
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="280">
+            <el-table-column label="操作" width="280" fixed="right">
               <template #default="{ row }">
                 <el-button size="small" type="primary" @click="openRenew(row)">续期</el-button>
                 <el-button size="small" @click="openPlan(row)">改功能包</el-button>

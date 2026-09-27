@@ -28,6 +28,7 @@ from app.api.schemas.outreach import (
     ParticipationRequest,
 )
 from app.core.errors import NotFoundError, ValidationFailedError
+from app.core.outreach_capture import parse_reachable_routes
 from app.core.runtime_control import is_paused, set_paused
 from app.db.base import as_utc
 from app.db.models import (
@@ -36,6 +37,7 @@ from app.db.models import (
     ROLE_SUB_ADMIN,
     TASK_STATUS_LABELS,
     TEMPLATE_KIND_LABELS,
+    Lead,
     OutreachContact,
     OutreachTask,
     OutreachTemplate,
@@ -112,6 +114,39 @@ async def _open_outreach_client(config: Any, account: Any, factory: Any) -> Any:
         api_hash=api_hash,
         session_path=session_path,
     )
+
+
+def _lead(row: Lead) -> dict[str, Any]:
+    """线索详情：监听抓取到的东西都在这里。"""
+    contacts: dict[str, Any] = {}
+    try:
+        payload = json.loads(row.contacts or "{}")
+        if isinstance(payload, dict):
+            contacts = payload
+    except json.JSONDecodeError:
+        contacts = {}
+    return {
+        "id": row.id,
+        "source_title": row.source_title,
+        "message_id": row.message_id,
+        "message_at": as_utc(row.message_at),
+        "sender_tg_id": row.sender_tg_id,
+        "sender_username": row.sender_username,
+        "sender_name": row.sender_name,
+        "phone": row.phone,
+        "wechat": row.wechat,
+        "contacts": contacts,
+        "keyword": row.keyword,
+        "matched_mode": row.matched_mode,
+        "score": row.score,
+        "text": row.text,
+        "reachable_routes": parse_reachable_routes(row.reachable_routes),
+        "consent_type": row.consent_type,
+        "capture_reason": row.capture_reason,
+        "delivered": row.delivered,
+        "delivered_at": as_utc(row.delivered_at),
+        "created_at": as_utc(row.created_at),
+    }
 
 
 def _contact(row: OutreachContact) -> dict[str, Any]:
@@ -610,3 +645,22 @@ async def set_accounts_participation(
         enabled=payload.enabled,
         tenant_id=tenant_scope_of(identity),
     )
+
+
+@router.get("/tasks/{task_id}/detail")
+async def task_detail(
+    task_id: int,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """队列单条详情：任务 + 联系人 + 监听抓取到的来源线索。"""
+    task = await session.get(OutreachTask, task_id)
+    if task is None:
+        raise NotFoundError("任务不存在")
+    contact = await session.get(OutreachContact, task.contact_id)
+    lead_id = task.lead_id or (contact.first_lead_id if contact is not None else None)
+    lead = await session.get(Lead, lead_id) if lead_id else None
+    return {
+        "task": _task(task, contact),
+        "contact": _contact(contact) if contact is not None else None,
+        "lead": _lead(lead) if lead is not None else None,
+    }

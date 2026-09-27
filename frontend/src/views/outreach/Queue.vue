@@ -10,6 +10,9 @@ const capacity = ref(null);
 const rows = ref([]);
 const total = ref(0);
 const planResult = ref(null);
+const detailVisible = ref(false);
+const detailLoading = ref(false);
+const detail = ref(null);
 
 async function load() {
   loading.value = true;
@@ -39,6 +42,41 @@ async function plan() {
   } catch (error) {
     ElMessage.error(error.message);
   }
+}
+
+async function openDetail(row) {
+  detailVisible.value = true;
+  detailLoading.value = true;
+  detail.value = null;
+  try {
+    const { data } = await outreachApi.taskDetail(row.id);
+    detail.value = data;
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    detailLoading.value = false;
+  }
+}
+
+function routeLabels(routes) {
+  const labels = {
+    USERNAME: "用户名",
+    PHONE: "手机号",
+    PEER_REFERENCE: "监听账号见过",
+    SHARED_GROUP: "同群关系",
+  };
+  if (!routes?.length) return "无";
+  return routes.map((item) => labels[item] || item).join(" / ");
+}
+
+function consentLabel(value) {
+  const labels = {
+    NONE: "无（冷触达）",
+    EXPLICIT_DM_INVITE: "对方邀请私聊",
+    PRIOR_REPLY: "以前回复过",
+    MEMBER_CONSENT: "会员授权",
+  };
+  return labels[value] || value || "-";
 }
 
 async function clearQueue() {
@@ -164,9 +202,11 @@ onMounted(load);
           <el-tag size="small">{{ row.status_label }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="联系人" min-width="160">
+      <el-table-column label="联系人" min-width="180">
         <template #default="{ row }">
-          {{ row.contact_name || "-" }}
+          <el-button link type="primary" @click="openDetail(row)">
+            {{ row.contact_name || row.contact_tg_user_id || "-" }}
+          </el-button>
           <span class="card-hint">{{ row.contact_tg_user_id || "" }}</span>
         </template>
       </el-table-column>
@@ -178,6 +218,100 @@ onMounted(load);
         <template #default="{ row }">{{ row.last_error || "-" }}</template>
       </el-table-column>
     </el-table>
+
+    <el-drawer v-model="detailVisible" title="队列详情（含监听抓取信息）" size="560px">
+      <div v-loading="detailLoading">
+        <template v-if="detail">
+          <el-descriptions :column="1" border size="small" title="任务">
+            <el-descriptions-item label="任务类型">
+              {{ detail.task.kind === "follow_up" ? "跟进" : "首条招呼" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="状态">{{ detail.task.status_label }}</el-descriptions-item>
+            <el-descriptions-item label="计划时间">{{ fmt(detail.task.scheduled_at) }}</el-descriptions-item>
+            <el-descriptions-item label="尝试次数">{{ detail.task.attempt_count }}</el-descriptions-item>
+            <el-descriptions-item label="最近错误">{{ detail.task.last_error || "-" }}</el-descriptions-item>
+          </el-descriptions>
+
+          <el-descriptions
+            v-if="detail.contact"
+            class="panel"
+            :column="1"
+            border
+            size="small"
+            title="联系人"
+          >
+            <el-descriptions-item label="昵称">{{ detail.contact.display_name || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="用户名">{{ detail.contact.username || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="TG 用户 ID">{{ detail.contact.tg_user_id }}</el-descriptions-item>
+            <el-descriptions-item label="手机号">{{ detail.contact.phone || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="状态">
+              {{ detail.contact.state_label }} / 回复：{{ detail.contact.reply_state || "-" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="首次联系">{{ fmt(detail.contact.first_contact_at) }}</el-descriptions-item>
+            <el-descriptions-item label="跨账号锁至">
+              {{ fmt(detail.contact.global_lock_until) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="免打扰">
+              {{ detail.contact.do_not_contact ? "是" : "否" }}
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <el-descriptions
+            v-if="detail.lead"
+            class="panel"
+            :column="1"
+            border
+            size="small"
+            title="监听抓取到的信息"
+          >
+            <el-descriptions-item label="来源群">{{ detail.lead.source_title || "-" }}</el-descriptions-item>
+            <el-descriptions-item label="发言时间">{{ fmt(detail.lead.message_at) }}</el-descriptions-item>
+            <el-descriptions-item label="消息 ID">{{ detail.lead.message_id }}</el-descriptions-item>
+            <el-descriptions-item label="发言人">
+              {{ detail.lead.sender_name || "-" }}
+              <span class="card-hint">
+                {{ detail.lead.sender_username ? `@${detail.lead.sender_username}` : "" }}
+                {{ detail.lead.sender_tg_id || "" }}
+              </span>
+            </el-descriptions-item>
+            <el-descriptions-item label="命中关键词">
+              {{ detail.lead.keyword || "（全量入库）" }}
+              <span class="card-hint">
+                {{ detail.lead.matched_mode }} {{ detail.lead.score ? `· 评分 ${detail.lead.score}` : "" }}
+              </span>
+            </el-descriptions-item>
+            <el-descriptions-item label="可触达路径">
+              {{ routeLabels(detail.lead.reachable_routes) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="授权依据">
+              {{ consentLabel(detail.lead.consent_type) }}
+            </el-descriptions-item>
+            <el-descriptions-item label="抓取判定">
+              {{ detail.lead.capture_reason || "-" }}
+            </el-descriptions-item>
+            <el-descriptions-item label="联系方式">
+              手机：{{ detail.lead.phone || "-" }} / 微信：{{ detail.lead.wechat || "-" }}
+              <span class="card-hint">
+                {{ (detail.lead.contacts.usernames || []).join(" ") }}
+              </span>
+            </el-descriptions-item>
+            <el-descriptions-item label="原文">
+              <div class="lead-text">{{ detail.lead.text || "-" }}</div>
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <el-alert
+            v-else
+            class="panel"
+            type="info"
+            :closable="false"
+            show-icon
+            title="没有关联的监听线索"
+            description="这条任务可能是手工加入或来源线索已被清理。"
+          />
+        </template>
+      </div>
+    </el-drawer>
 
     <el-alert
       class="panel"
@@ -193,5 +327,10 @@ onMounted(load);
 <style scoped>
 .panel {
   margin-top: 12px;
+}
+
+.lead-text {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

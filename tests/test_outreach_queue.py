@@ -315,3 +315,47 @@ async def test_clear_queue_api(admin_client) -> None:
     response = await admin_client.post("/api/outreach/queue/clear", headers=_headers())
     assert response.status_code == 200
     assert response.json()["deleted_tasks"] == 1
+
+
+async def test_task_detail_returns_lead_info(admin_client) -> None:
+    """队列里点联系人：要能看到监听抓取到的来源线索。"""
+    from app.db.models import OutreachContact, OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        lead = _lead(
+            sender_tg_id=990200,
+            message_id=201,
+            text="想做体育项目，有意私信我",
+            keyword="体育",
+            source_title="测试来源群",
+        )
+        session.add(lead)
+        await session.commit()
+        await session.refresh(lead)
+        await outreach_queue_service.plan_pending(session, tenant_id=1, limit=50)
+
+        contact = await session.scalar(
+            select(OutreachContact).where(OutreachContact.tg_user_id == 990200)
+        )
+        assert contact is not None
+        task = await session.scalar(
+            select(OutreachTask).where(OutreachTask.contact_id == contact.id)
+        )
+        assert task is not None
+        task_id = task.id
+
+    response = await admin_client.get(
+        f"/api/outreach/tasks/{task_id}/detail",
+        headers=_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["task"]["status"] == "QUEUED"
+    assert body["contact"]["tg_user_id"] == 990200
+    assert body["lead"]["text"] == "想做体育项目，有意私信我"
+    assert body["lead"]["keyword"] == "体育"
+    assert body["lead"]["source_title"] == "测试来源群"
+    assert "USERNAME" in body["lead"]["reachable_routes"]

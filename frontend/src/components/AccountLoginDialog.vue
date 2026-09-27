@@ -15,56 +15,28 @@ const stage = ref("idle");
 const busy = ref(false);
 const result = ref(null);
 const form = reactive({ code: "", password: "", force_sms: false });
-// 自动取码：接码平台 / 2925 邮箱
+// 自动取码：接码平台 / 2925 邮箱（取到的码会填进输入框，可手动改）
 const mail = reactive({ user: "", password: "" });
 const fetching = ref("");
-const autoRunning = ref(false);
-const autoMessage = ref("");
-let autoTimer = null;
+const platformBusy = ref(false);
+const platformMessage = ref("");
 
-function stopAuto() {
-  if (autoTimer) {
-    clearInterval(autoTimer);
-    autoTimer = null;
-  }
-  autoRunning.value = false;
-}
-
-async function pollAuto() {
+async function startPlatformLogin() {
+  platformBusy.value = true;
+  platformMessage.value = "正在让 Telegram 发送验证码…";
   try {
-    const { data } = await accountsApi.autoLoginStatus();
-    const item = data.items.find((row) => row.account_id === props.account.id);
-    if (!item) return;
-    autoMessage.value = `${item.stage_label}：${item.message}`;
-    if (item.status === "pending") return;
-    stopAuto();
-    if (item.status === "success") {
-      stage.value = "active";
-      result.value = {};
-      ElMessage.success("已通过接码平台登录成功");
-      emit("logged-in");
-    } else {
-      ElMessage.error(item.message || "自动登录失败");
+    await sendCode();
+    if (stage.value !== "code_sent") {
+      platformMessage.value = "验证码没发出去，请检查手机号或稍后重试";
+      return;
     }
+    platformMessage.value = "正在从接码平台取码，取到会自动填进下面（也可以自己手动输入）";
+    await fetchCode("logincode");
+    platformMessage.value = "取码完成：确认或修改后点「提交」完成登录";
   } catch (error) {
-    stopAuto();
     ElMessage.error(error.message);
-  }
-}
-
-async function startAutoLogin() {
-  autoRunning.value = true;
-  autoMessage.value = "正在提交自动登录…";
-  try {
-    await accountsApi.autoLogin([props.account.id]);
-    ElMessage.success("已开始自动登录，正在等接码平台返回验证码");
-    stopAuto();
-    autoRunning.value = true;
-    autoTimer = setInterval(pollAuto, 3000);
-    pollAuto();
-  } catch (error) {
-    stopAuto();
-    ElMessage.error(error.message);
+  } finally {
+    platformBusy.value = false;
   }
 }
 
@@ -120,7 +92,6 @@ watch(
 );
 
 async function close(force = false) {
-  stopAuto();
   if (!force && props.account && ["code_sent", "password_required"].includes(stage.value)) {
     try {
       await accountsApi.loginCancel(props.account.id);
@@ -153,6 +124,11 @@ async function submitCode() {
   try {
     const { data } = await accountsApi.loginVerify(props.account.id, form.code.trim());
     if (data.status === "password_required") {
+      if (form.password) {
+        // 二级密码已经填好（接码平台带回或人工输入）就直接提交，少一步点击
+        await submitPassword();
+        return;
+      }
       stage.value = "password_required";
       ElMessage.info("该账号开启了两步验证，请继续输入密码");
     } else {
@@ -209,13 +185,13 @@ async function submitPassword() {
         <p class="card-hint">点击下方按钮让 Telegram 发送登录验证码。</p>
         <el-checkbox v-model="form.force_sms">改用短信接收验证码（收不到 App 消息时勾选）</el-checkbox>
         <el-button type="primary" :loading="busy" @click="sendCode">发送验证码</el-button>
-        <el-button type="success" :loading="autoRunning" @click="startAutoLogin">
+        <el-button type="success" :loading="platformBusy" @click="startPlatformLogin">
           通过接码平台登录
         </el-button>
         <el-button v-if="account.has_code_url" size="small" @click="openPlatform">
           打开接码平台
         </el-button>
-        <p v-if="autoMessage" class="card-hint">{{ autoMessage }}</p>
+        <p v-if="platformMessage" class="card-hint">{{ platformMessage }}</p>
         <p v-if="account.code_host" class="card-hint">已绑定接码地址：{{ account.code_host }}</p>
         <p v-if="account.has_code || account.has_2fa" class="card-hint">
           已保存：
@@ -231,6 +207,14 @@ async function submitPassword() {
           v-model="form.code"
           size="large"
           placeholder="输入 Telegram 收到的验证码"
+          @keyup.enter="submitCode"
+        />
+        <el-input
+          v-model="form.password"
+          size="large"
+          type="password"
+          show-password
+          placeholder="二级密码（账号开了两步验证才需要）"
           @keyup.enter="submitCode"
         />
         <div class="code-sources">
@@ -252,7 +236,8 @@ async function submitPassword() {
           />
         </div>
         <p class="card-hint">
-          取到的验证码会填进上面的输入框；账号改绑邮箱后也可以直接手动输入验证码。
+          验证码 / 二级密码都可以直接手动输入；从接码平台或 2925 邮箱取到的码会自动填进上面，
+          确认或修改后点「提交」即可。
         </p>
         <div class="login-actions">
           <el-button link type="primary" :loading="busy" @click="sendCode">

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
+from app.db.models.tenant import TenantOwnedMixin
 
 # 执行账号状态
 ACCOUNT_PENDING = "pending_login"
@@ -29,13 +30,15 @@ TARGET_ROLE_LEAD = "lead"
 TARGET_ROLES = (TARGET_ROLE_CONTENT, TARGET_ROLE_LEAD)
 
 
-class TgAccount(TimestampMixin, Base):
+class TgAccount(TenantOwnedMixin, TimestampMixin, Base):
     """执行账号：真正执行采集与投递的 Telegram 用户账号。"""
 
     __tablename__ = "tg_accounts"
+    # 账号名只在租户内唯一：两个客户都可以有"主号"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_tg_accounts_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
     phone_masked: Mapped[str] = mapped_column(String(32))
     # 敏感字段以 Fernet 加密存储
     phone_enc: Mapped[str] = mapped_column(String(255))
@@ -56,13 +59,15 @@ class TgAccount(TimestampMixin, Base):
         return f"<TgAccount {self.name} status={self.status}>"
 
 
-class ControlBot(TimestampMixin, Base):
+class ControlBot(TenantOwnedMixin, TimestampMixin, Base):
     """控制 Bot：接收后台与群内指令、发送通知（不做采集与投递）。"""
 
     __tablename__ = "control_bots"
+    # 机器人名只在租户内唯一
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_control_bots_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
     bot_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bot_telegram_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     token_enc: Mapped[str] = mapped_column(String(255))

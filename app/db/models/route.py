@@ -18,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin, utc_now
+from app.db.models.tenant import TenantOwnedMixin
 
 # 业务类型与状态常量
 BUSINESS_CARRY = "A"
@@ -53,13 +54,15 @@ BACKFILL_DONE = "done"
 BACKFILL_FAILED = "failed"
 
 
-class AdAsset(TimestampMixin, Base):
+class AdAsset(TenantOwnedMixin, TimestampMixin, Base):
     """广告素材：文案 + 图片 + 链接按钮，线路引用它而不是各自维护文案。"""
 
     __tablename__ = "ad_assets"
+    # 素材名只在租户内唯一：客户 A 的"默认文案"不影响客户 B
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_ad_assets_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
     text: Mapped[str] = mapped_column(Text, default="")
     image_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
     link_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -70,7 +73,7 @@ class AdAsset(TimestampMixin, Base):
         return f"<AdAsset {self.name}>"
 
 
-class Route(TimestampMixin, Base):
+class Route(TenantOwnedMixin, TimestampMixin, Base):
     """线路：一条源到一组目标的搬运/监听规则。"""
 
     __tablename__ = "routes"
@@ -117,7 +120,7 @@ class Route(TimestampMixin, Base):
         return f"<Route {self.name} {self.business_type}>"
 
 
-class RouteTarget(TimestampMixin, Base):
+class RouteTarget(TenantOwnedMixin, TimestampMixin, Base):
     """线路的接收目标。"""
 
     __tablename__ = "route_targets"
@@ -138,7 +141,7 @@ class RouteTarget(TimestampMixin, Base):
     route: Mapped[Route] = relationship(back_populates="targets")
 
 
-class RouteTargetProgress(TimestampMixin, Base):
+class RouteTargetProgress(TenantOwnedMixin, TimestampMixin, Base):
     """目标级水位线：保证新增目标只补自己缺的，老目标不重复搬运。"""
 
     __tablename__ = "route_target_progress"

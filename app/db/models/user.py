@@ -4,15 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import (
-    Boolean,
-    CheckConstraint,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-)
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, utc_now
@@ -32,58 +24,6 @@ ACCOUNT_TYPE_PLATFORM = "platform"
 ACCOUNT_TYPE_AGENT = "agent"
 ACCOUNT_TYPE_MEMBER = "member"
 ACCOUNT_TYPES = (ACCOUNT_TYPE_PLATFORM, ACCOUNT_TYPE_AGENT, ACCOUNT_TYPE_MEMBER)
-
-# 租户类型与状态
-TENANT_KIND_SELF = "self"
-TENANT_KIND_MEMBER = "member"
-TENANT_KINDS = (TENANT_KIND_SELF, TENANT_KIND_MEMBER)
-
-TENANT_STATUS_ACTIVE = "active"
-TENANT_STATUS_EXPIRED = "expired"
-TENANT_STATUS_SUSPENDED = "suspended"
-TENANT_STATUSES = (TENANT_STATUS_ACTIVE, TENANT_STATUS_EXPIRED, TENANT_STATUS_SUSPENDED)
-
-# 自营租户固定主键：存量业务数据迁移时全部挂到它下面，永不过期
-SELF_TENANT_ID = 1
-SELF_TENANT_NAME = "自营"
-
-
-class Tenant(TimestampMixin, Base):
-    """租户：业务数据的唯一归属单位，会员账号与租户 1:1。"""
-
-    __tablename__ = "tenants"
-    __table_args__ = (
-        CheckConstraint(
-            "kind <> 'member' OR owner_user_id IS NOT NULL",
-            name="member_owner_required",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(64), unique=True)
-    kind: Mapped[str] = mapped_column(String(16), default=TENANT_KIND_MEMBER)
-    status: Mapped[str] = mapped_column(
-        String(16),
-        default=TENANT_STATUS_ACTIVE,
-        index=True,
-    )
-    # 有效期（UTC）；自营租户为 NULL 表示永不过期。P4 负责到期判定与强停
-    expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True),
-        nullable=True,
-        index=True,
-    )
-    # 该租户的登录账号：只有会员租户有值，且一个账号最多属于一个租户
-    owner_user_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-        unique=True,
-    )
-    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
-    def __repr__(self) -> str:  # pragma: no cover - 调试用
-        return f"<Tenant {self.id} {self.name} kind={self.kind} status={self.status}>"
 
 
 class User(TimestampMixin, Base):
@@ -137,6 +77,8 @@ class WebSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 登录后回填，便于按租户踢会话（P1 只记归属，不做隔离）
+    tenant_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
@@ -151,6 +93,8 @@ class LoginHistory(Base):
     user_agent: Mapped[str | None] = mapped_column(String(512), nullable=True)
     success: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 登录成功后回填，失败尝试为空
+    tenant_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,
@@ -169,6 +113,8 @@ class AuditLog(Base):
     path: Mapped[str] = mapped_column(String(512), index=True)
     status_code: Mapped[int] = mapped_column(Integer)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 写操作所属租户，便于筛选与对账
+    tenant_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=utc_now,

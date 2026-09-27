@@ -12,7 +12,7 @@ import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
 
-from sqlalchemy import event
+from sqlalchemy import Connection, event, text
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -91,10 +91,31 @@ async def session_scope() -> AsyncIterator[AsyncSession]:
 
 
 async def create_schema(engine: AsyncEngine | None = None) -> None:
-    """按 ORM 元数据建表（仅测试与本地演练，生产用 Alembic 迁移）。"""
+    """按 ORM 元数据建表（仅测试与本地演练，生产用 Alembic 迁移）。
+
+    建表后补一条自营租户：业务表的 `tenant_id` 非空且带外键，缺了它任何业务
+    写入都会被外键挡下。迁移路径里由 Alembic 负责插同一条数据。
+    """
     target = engine or get_engine()
     async with target.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
+        await connection.run_sync(_seed_self_tenant)
+
+
+def _seed_self_tenant(connection: Connection) -> None:
+    """插入自营租户（幂等）。"""
+    from app.db.models import SELF_TENANT_ID, SELF_TENANT_NAME
+
+    connection.execute(
+        text(
+            "INSERT INTO tenants "
+            "(id, name, kind, status, created_by, note, created_at, updated_at) "
+            "SELECT :tenant_id, :name, 'self', 'active', 'system', NULL, "
+            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
+            "WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE id = :tenant_id)"
+        ),
+        {"tenant_id": SELF_TENANT_ID, "name": SELF_TENANT_NAME},
+    )
 
 
 def _is_sqlite(url: str) -> bool:

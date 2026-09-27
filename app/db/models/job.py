@@ -18,6 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
+from app.db.models.tenant import TenantOwnedMixin
 
 # 投递状态
 JOB_PENDING = "pending"
@@ -36,7 +37,7 @@ JOB_STATUSES = (
 )
 
 
-class DeliveryJob(TimestampMixin, Base):
+class DeliveryJob(TenantOwnedMixin, TimestampMixin, Base):
     """一条「源消息 → 某个接收目标」的投递任务。"""
 
     __tablename__ = "delivery_jobs"

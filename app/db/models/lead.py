@@ -24,6 +24,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base, TimestampMixin
+from app.db.models.tenant import TenantOwnedMixin
 
 # 命中方式
 MATCH_CONTAINS = "contains"
@@ -40,16 +41,18 @@ GROUP_KIND_MERGE = "merge"
 GROUP_KINDS = (GROUP_KIND_KEYWORD, GROUP_KIND_EXCLUDE, GROUP_KIND_MERGE)
 
 
-class KeywordGroup(TimestampMixin, Base):
+class KeywordGroup(TenantOwnedMixin, TimestampMixin, Base):
     """词组：关键词组用来判断命中，排除词组用来挡掉噪声。
 
     同一种表结构：``kind`` 区分用途，一条 B 线可以多选引用多组，取并集。
     """
 
     __tablename__ = "keyword_groups"
+    # 词组名只在租户内唯一
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_keyword_groups_tenant_name"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(64), index=True)
     description: Mapped[str] = mapped_column(String(255), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     kind: Mapped[str] = mapped_column(
@@ -69,7 +72,7 @@ class KeywordGroup(TimestampMixin, Base):
         return len(self.keywords)
 
 
-class Keyword(TimestampMixin, Base):
+class Keyword(TenantOwnedMixin, TimestampMixin, Base):
     """关键词：主词 + 别名。
 
     「体育 → 篮球 / 乒乓球」这类语义相近，靠别名实现：主词是体育，
@@ -92,13 +95,17 @@ class Keyword(TimestampMixin, Base):
     group: Mapped[KeywordGroup] = relationship(back_populates="keywords")
 
 
-class MemberProfile(TimestampMixin, Base):
+class MemberProfile(TenantOwnedMixin, TimestampMixin, Base):
     """会员档案：同一个人在群里发言的汇总信息。"""
 
     __tablename__ = "member_profiles"
+    # 同一个人被两个客户分别监听到，各自建档案
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "tg_user_id", name="uq_member_profiles_tenant_tg_user"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    tg_user_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -114,7 +121,7 @@ class MemberProfile(TimestampMixin, Base):
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
-class Lead(TimestampMixin, Base):
+class Lead(TenantOwnedMixin, TimestampMixin, Base):
     """线索：一条被监听到、值得跟进的发言。"""
 
     __tablename__ = "leads"
@@ -155,7 +162,7 @@ class Lead(TimestampMixin, Base):
     target_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
-class HotKeyword(TimestampMixin, Base):
+class HotKeyword(TenantOwnedMixin, TimestampMixin, Base):
     """热门关键词：从监听到的会员发言里采词，按出现次数排名。
 
     用途是"发现用户在搜什么"，帮我们决定往词库里加什么词。
@@ -163,9 +170,11 @@ class HotKeyword(TimestampMixin, Base):
     """
 
     __tablename__ = "hot_keywords"
+    # 词频必须按租户分开统计，否则两个客户互相污染
+    __table_args__ = (UniqueConstraint("tenant_id", "token", name="uq_hot_keywords_tenant_token"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    token: Mapped[str] = mapped_column(String(64), index=True)
     count: Mapped[int] = mapped_column(Integer, default=0, index=True)
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     sources: Mapped[str] = mapped_column(Text, default="")

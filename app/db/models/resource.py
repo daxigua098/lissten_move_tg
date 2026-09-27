@@ -36,6 +36,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
+from app.db.models.tenant import TenantOwnedMixin
 
 # 资源状态机：候选 → 已探测 → 已采纳 → 已淘汰
 RESOURCE_CANDIDATE = "candidate"
@@ -112,16 +113,18 @@ SYNC_FAILED = "failed"
 SYNC_RESULTS = (SYNC_OK, SYNC_PARTIAL, SYNC_FAILED)
 
 
-class TgResource(TimestampMixin, Base):
+class TgResource(TenantOwnedMixin, TimestampMixin, Base):
     """一个公开群 / 频道资源。"""
 
     __tablename__ = "tg_resources"
+    # 两个客户可以各自发现自己的一份资源：tg_id 只在租户内唯一
+    __table_args__ = (UniqueConstraint("tenant_id", "tg_id", name="uq_tg_resources_tenant_tg_id"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # 去重键。**可空**：私密群的邀请链接在"还没加入"时拿不到数字 ID，
     # 先以 tg_id=NULL + invite_link 入库，加入成功后回填并按 tg_id 归一。
     # 唯一索引在 SQLite / PostgreSQL 下都允许多个 NULL，正好满足这个用法。
-    tg_id: Mapped[int | None] = mapped_column(BigInteger, unique=True, index=True, nullable=True)
+    tg_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     invite_link: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(128), default="")
@@ -216,7 +219,7 @@ class TgResource(TimestampMixin, Base):
         return f"<TgResource {self.tg_id} {self.title} {self.status}>"
 
 
-class ResourceProbeLog(TimestampMixin, Base):
+class ResourceProbeLog(TenantOwnedMixin, TimestampMixin, Base):
     """一次探测的指标快照。"""
 
     __tablename__ = "resource_probe_logs"
@@ -246,7 +249,7 @@ class ResourceProbeLog(TimestampMixin, Base):
     requests_used: Mapped[int] = mapped_column(Integer, default=0)
 
 
-class ResourceDiscoverTask(TimestampMixin, Base):
+class ResourceDiscoverTask(TenantOwnedMixin, TimestampMixin, Base):
     """目录同步任务：某个站点某个范围的定时同步（F-R24）。"""
 
     __tablename__ = "resource_discover_tasks"
@@ -272,10 +275,13 @@ class ResourceDiscoverTask(TimestampMixin, Base):
     last_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
     flood_waits: Mapped[int] = mapped_column(Integer, default=0)
 
-    __table_args__ = (UniqueConstraint("kind", "keyword", name="uq_discover_kind_keyword"),)
+    # 发现任务按租户独立
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "kind", "keyword", name="uq_discover_tenant_kind_keyword"),
+    )
 
 
-class ResourceDirectoryRun(TimestampMixin, Base):
+class ResourceDirectoryRun(TenantOwnedMixin, TimestampMixin, Base):
     """一次目录同步的记录（P-R05 的历史表 + 断点续抓的续点）。
 
     ``pages_done`` 既用于展示进度，也用于**断点续抓**：下次同步从
@@ -305,7 +311,7 @@ class ResourceDirectoryRun(TimestampMixin, Base):
     __table_args__ = (Index("ix_resource_directory_source_scope", "source", "scope"),)
 
 
-class ResourceJoinTask(TimestampMixin, Base):
+class ResourceJoinTask(TenantOwnedMixin, TimestampMixin, Base):
     """加群 / 退群队列。"""
 
     __tablename__ = "resource_join_tasks"
@@ -334,7 +340,7 @@ class ResourceJoinTask(TimestampMixin, Base):
     )
 
 
-class ResourceQuota(TimestampMixin, Base):
+class ResourceQuota(TenantOwnedMixin, TimestampMixin, Base):
     """按账号按天滚动的配额计数。"""
 
     __tablename__ = "resource_quotas"

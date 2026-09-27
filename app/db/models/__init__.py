@@ -122,15 +122,7 @@ from app.db.models.telegram import (
     ControlBot,
     TgAccount,
 )
-from app.db.models.user import (
-    ACCOUNT_TYPE_AGENT,
-    ACCOUNT_TYPE_MEMBER,
-    ACCOUNT_TYPE_PLATFORM,
-    ACCOUNT_TYPES,
-    ROLE_RANK,
-    ROLE_SUB_ADMIN,
-    ROLE_SUPER_ADMIN,
-    ROLE_VIEWER,
+from app.db.models.tenant import (
     SELF_TENANT_ID,
     SELF_TENANT_NAME,
     TENANT_KIND_MEMBER,
@@ -140,10 +132,21 @@ from app.db.models.user import (
     TENANT_STATUS_EXPIRED,
     TENANT_STATUS_SUSPENDED,
     TENANT_STATUSES,
+    Tenant,
+    TenantOwnedMixin,
+)
+from app.db.models.user import (
+    ACCOUNT_TYPE_AGENT,
+    ACCOUNT_TYPE_MEMBER,
+    ACCOUNT_TYPE_PLATFORM,
+    ACCOUNT_TYPES,
+    ROLE_RANK,
+    ROLE_SUB_ADMIN,
+    ROLE_SUPER_ADMIN,
+    ROLE_VIEWER,
     AuditLog,
     LoginHistory,
     SystemSetting,
-    Tenant,
     User,
     WebSession,
 )
@@ -282,6 +285,7 @@ __all__ = [
     "TgAccount",
     "TgResource",
     "Tenant",
+    "TenantOwnedMixin",
     "TimestampMixin",
     "User",
     "WebSession",

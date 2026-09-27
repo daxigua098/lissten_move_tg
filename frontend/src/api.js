@@ -165,6 +165,16 @@ export const outreachApi = {
   settings: () => http.get("/api/outreach/settings"),
   updateSettings: (payload) => http.patch("/api/outreach/settings", payload),
   capacity: () => http.get("/api/outreach/capacity"),
+  records: (params) => http.get("/api/outreach/records", { params }),
+  contactMessages: (id, params = {}) =>
+    http.get(`/api/outreach/contacts/${id}/messages`, { params }),
+  recordsExportUrl: (params) => {
+    const query = new URLSearchParams();
+    Object.entries(params || {}).forEach(([key, value]) => {
+      if (value !== undefined && value !== null && value !== "") query.append(key, value);
+    });
+    return `/api/outreach/records.csv?${query.toString()}`;
+  },
   previewQueue: (params = {}) => http.get("/api/outreach/queue/preview", { params }),
   planQueue: (params = {}) => http.post("/api/outreach/queue/plan", null, { params }),
   clearQueue: () => http.post("/api/outreach/queue/clear"),

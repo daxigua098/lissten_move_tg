@@ -6,10 +6,13 @@
 from __future__ import annotations
 
 import contextlib
+import csv
+import io
 import json
+from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +41,7 @@ from app.db.models import (
     CONTACT_STATE_LABELS,
     ROLE_SUB_ADMIN,
     TASK_STATUS_LABELS,
+    TASK_TRIGGER_MANUAL,
     TEMPLATE_KIND_LABELS,
     Lead,
     OutreachContact,
@@ -49,6 +53,7 @@ from app.services import (
     outreach_account_service,
     outreach_handoff_service,
     outreach_queue_service,
+    outreach_record_service,
     outreach_reply_service,
     outreach_sender_service,
     outreach_settings_service,
@@ -472,6 +477,132 @@ async def get_capacity(
     )
 
 
+@router.get("/records")
+async def list_send_records(
+    account_id: int | None = Query(default=None, ge=1),
+    contact_id: int | None = Query(default=None, ge=1),
+    status: str | None = Query(default=None, max_length=32),
+    message_kind: str | None = Query(default=None, max_length=32),
+    trigger_type: str | None = Query(default=None, max_length=16),
+    keyword: str | None = Query(default=None, max_length=200),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """发送记录：成功消息、失败与待核实任务的统一视图。"""
+    return await outreach_record_service.list_records(
+        session,
+        tenant_id=tenant_scope_of(identity),
+        account_id=account_id,
+        contact_id=contact_id,
+        status=status,
+        message_kind=message_kind,
+        trigger_type=trigger_type,
+        keyword=keyword,
+        start=start,
+        end=end,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/records.csv")
+async def export_send_records(
+    account_id: int | None = Query(default=None, ge=1),
+    contact_id: int | None = Query(default=None, ge=1),
+    status: str | None = Query(default=None, max_length=32),
+    message_kind: str | None = Query(default=None, max_length=32),
+    trigger_type: str | None = Query(default=None, max_length=16),
+    keyword: str | None = Query(default=None, max_length=200),
+    start: datetime | None = Query(default=None),
+    end: datetime | None = Query(default=None),
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> Response:
+    """发送记录 CSV 导出。"""
+    result = await outreach_record_service.list_records(
+        session,
+        tenant_id=tenant_scope_of(identity),
+        account_id=account_id,
+        contact_id=contact_id,
+        status=status,
+        message_kind=message_kind,
+        trigger_type=trigger_type,
+        keyword=keyword,
+        start=start,
+        end=end,
+        limit=5000,
+        offset=0,
+    )
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(
+        [
+            "发送时间",
+            "接收人昵称",
+            "用户名",
+            "TG用户ID",
+            "发送账号",
+            "消息类型",
+            "状态",
+            "触发方式",
+            "操作者",
+            "来源群",
+            "关键词",
+            "Telegram消息ID",
+            "发送内容",
+            "错误",
+        ]
+    )
+    for item in result["items"]:
+        writer.writerow(
+            [
+                item.get("sort_at") or "",
+                item.get("recipient_display_name") or item.get("contact_display_name") or "",
+                item.get("recipient_username") or item.get("contact_username") or "",
+                item.get("recipient_tg_user_id") or item.get("contact_tg_user_id") or "",
+                item.get("account_name") or "",
+                item.get("message_kind_label") or "",
+                item.get("status") or "",
+                item.get("trigger_label") or "",
+                item.get("triggered_by") or "",
+                item.get("source_title") or "",
+                item.get("keyword") or "",
+                item.get("tg_message_id") or "",
+                item.get("content") or "",
+                item.get("last_error") or "",
+            ]
+        )
+    return Response(
+        content=("\ufeff" + output.getvalue()).encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="outreach-records.csv"'},
+    )
+
+
+@router.get("/contacts/{contact_id}/messages")
+async def list_contact_messages(
+    contact_id: int,
+    limit: int = Query(default=200, ge=1, le=500),
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """联系人详情：完整出入站消息时间线。"""
+    tenant_id = tenant_scope_of(identity)
+    contact = await session.get(OutreachContact, contact_id)
+    if contact is None or contact.tenant_id != tenant_id:
+        raise NotFoundError("联系人不存在")
+    return await outreach_record_service.list_contact_messages(
+        session,
+        tenant_id=tenant_id,
+        contact_id=contact_id,
+        limit=limit,
+    )
+
+
 @router.post("/contacts/{contact_id}/takeover")
 async def takeover_contact(
     contact_id: int,
@@ -632,6 +763,8 @@ async def dispatch_queue(
                     task=task,
                     contact=contact,
                     config=config,
+                    trigger_type=TASK_TRIGGER_MANUAL,
+                    triggered_by=identity.get("username"),
                 )
             )
     finally:

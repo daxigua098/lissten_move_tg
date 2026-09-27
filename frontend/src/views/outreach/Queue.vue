@@ -258,6 +258,13 @@ function fmt(value) {
   return value ? new Date(value).toLocaleString("zh-CN") : "-";
 }
 
+function capacitySum(field) {
+  return (capacity.value?.account_details || []).reduce(
+    (total, item) => total + Number(item[field] || 0),
+    0,
+  );
+}
+
 onMounted(async () => {
   await Promise.all([load(), loadOptions()]);
   await loadPreview();
@@ -355,11 +362,29 @@ onMounted(async () => {
     />
 
     <el-row v-if="capacity" :gutter="12">
-      <el-col :span="6"><el-statistic title="今日可用冷聊总量" :value="capacity.today_available" /></el-col>
+      <el-col :span="6"><el-statistic title="今日还可发送" :value="capacity.today_available" /></el-col>
       <el-col :span="6"><el-statistic title="排队中" :value="capacity.queued" /></el-col>
       <el-col :span="6"><el-statistic title="冷却中账号" :value="capacity.cooling_accounts" /></el-col>
       <el-col :span="6"><el-statistic title="被限制账号" :value="capacity.limited_accounts" /></el-col>
     </el-row>
+
+    <el-alert
+      v-if="capacity"
+      class="panel"
+      type="info"
+      :closable="false"
+      show-icon
+      :title="`今日总额度 ${capacitySum('daily_cap')} / 已发 ${capacitySum('today_sent')} / 剩余 ${capacity.today_available}`"
+      :description="[
+        ...(capacity.account_details || []).map(
+          (item) =>
+            `账号 #${item.id} ${item.name}：${item.tier_label}，已发 ${item.today_sent}/${item.daily_cap}，剩余 ${item.remaining}${item.cooldown_until ? '，冷却中' : ''}`,
+        ),
+        ...(capacity.excluded_accounts || []).map(
+          (item) => `未计入 #${item.id} ${item.name}：${item.reason}`,
+        ),
+      ].join('；')"
+    />
 
     <el-alert
       v-if="capacity && capacity.estimated_days"

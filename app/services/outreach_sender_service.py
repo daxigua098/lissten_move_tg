@@ -29,6 +29,7 @@ from app.db.models import (
     DIRECTION_OUT,
     MESSAGE_GENERATED_AUTO,
     MESSAGE_GENERATED_CONTACT,
+    MESSAGE_KIND_REPLY,
     OWNER_ACCOUNT,
     REPLY_STATE_HUMAN,
     REPLY_STATE_REFUSED,
@@ -44,6 +45,7 @@ from app.db.models import (
     TASK_FOLLOW_UP,
     TASK_QUEUED,
     TASK_SENT,
+    TASK_TRIGGER_SCHEDULER,
     TASK_UNKNOWN_DELIVERY,
     TEMPLATE_SCOPE_PLATFORM,
     ContactSuppression,
@@ -287,10 +289,14 @@ async def send_task(
     contact: OutreachContact,
     now: datetime | None = None,
     config: AppConfig | None = None,
+    trigger_type: str = TASK_TRIGGER_SCHEDULER,
+    triggered_by: str | None = None,
 ) -> dict[str, Any]:
     """发送一条冷触达任务并记账。"""
     moment = now or utc_now()
     task.account_id = account.id
+    task.trigger_type = trigger_type
+    task.triggered_by = triggered_by
     settings = await outreach_settings_service.read_settings(session, contact.tenant_id)
     allowed, blocked_reason = await enforce_send_window(
         session,
@@ -358,11 +364,18 @@ async def send_task(
     session.add(
         OutreachMessage(
             tenant_id=contact.tenant_id,
+            task_id=task.id,
             contact_id=contact.id,
             account_id=account.id,
             direction=DIRECTION_OUT,
+            message_kind=task.kind,
             tg_message_id=_message_id(message),
             text=text,
+            recipient_username=contact.username,
+            recipient_display_name=contact.display_name,
+            recipient_tg_user_id=contact.tg_user_id,
+            media_path=template.media_path,
+            media_kind=template.media_kind,
             generated_by=MESSAGE_GENERATED_AUTO,
             sent_at=moment,
         )
@@ -503,6 +516,23 @@ async def confirm_unknown_delivery(
             tz_name=settings.get("timezone"),
             **params,
         )
+    session.add(
+        OutreachMessage(
+            tenant_id=contact.tenant_id,
+            task_id=task.id,
+            contact_id=contact.id,
+            account_id=account.id if account is not None else None,
+            direction=DIRECTION_OUT,
+            message_kind=task.kind,
+            tg_message_id=task.target_message_id or -task.id,
+            text=task.rendered_text or "",
+            recipient_username=contact.username,
+            recipient_display_name=contact.display_name,
+            recipient_tg_user_id=contact.tg_user_id,
+            generated_by=MESSAGE_GENERATED_AUTO,
+            sent_at=moment,
+        )
+    )
     await session.commit()
     return {"task_id": task.id, "status": task.status, "delivered": True}
 
@@ -575,8 +605,12 @@ async def handle_incoming(
             contact_id=contact.id,
             account_id=account_id,
             direction=DIRECTION_IN,
+            message_kind=MESSAGE_KIND_REPLY,
             tg_message_id=int(tg_message_id or 0),
             text=(text or "")[:4000],
+            recipient_username=contact.username,
+            recipient_display_name=contact.display_name,
+            recipient_tg_user_id=contact.tg_user_id,
             generated_by=MESSAGE_GENERATED_CONTACT,
             sent_at=moment,
         )

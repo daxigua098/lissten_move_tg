@@ -19,6 +19,7 @@ from app.db.base import as_utc, utc_now
 from app.db.models import (
     DIRECTION_OUT,
     MESSAGE_GENERATED_AUTO,
+    MESSAGE_KIND_AUTO_REPLY,
     REPLY_MODE_AUTO,
     REPLY_STATE_HUMAN,
     REPLY_STATE_REPLIED,
@@ -182,8 +183,14 @@ async def auto_reply(
             contact_id=contact.id,
             account_id=account.id,
             direction=DIRECTION_OUT,
+            message_kind=MESSAGE_KIND_AUTO_REPLY,
             tg_message_id=int(getattr(message, "id", 0) or 0),
             text=text,
+            recipient_username=contact.username,
+            recipient_display_name=contact.display_name,
+            recipient_tg_user_id=contact.tg_user_id,
+            media_path=template.media_path,
+            media_kind=template.media_kind,
             generated_by=MESSAGE_GENERATED_AUTO,
             sent_at=moment,
         )

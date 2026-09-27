@@ -42,6 +42,7 @@ from app.db.models import (
     BUSINESS_MONITOR,
     DISCOVER_LINK,
     SENDER_MODE_BOT,
+    TASK_TRIGGER_SCHEDULER,
     OutreachContact,
     OutreachSettings,
     Route,
@@ -256,6 +257,8 @@ class RuntimeService:
                     task=task,
                     contact=contact,
                     config=self.config,
+                    trigger_type=TASK_TRIGGER_SCHEDULER,
+                    triggered_by="runtime",
                 )
                 if result.get("status") == "SENT":
                     sent += 1

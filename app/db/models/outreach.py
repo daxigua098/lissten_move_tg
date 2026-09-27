@@ -214,6 +214,28 @@ TASK_STATUS_LABELS: dict[str, str] = {
     TASK_UNKNOWN_DELIVERY: "待核实",
 }
 
+# 任务触发方式：人工立即发送 / 后台调度 / 迁移前的历史任务
+TASK_TRIGGER_MANUAL = "manual"
+TASK_TRIGGER_SCHEDULER = "scheduler"
+TASK_TRIGGER_LEGACY = "legacy"
+TASK_TRIGGERS = (TASK_TRIGGER_MANUAL, TASK_TRIGGER_SCHEDULER, TASK_TRIGGER_LEGACY)
+
+# 消息类型：发送记录用它区分首触、跟进、自动回复和 Bot 转交
+MESSAGE_KIND_FIRST_CONTACT = TASK_FIRST_CONTACT
+MESSAGE_KIND_FOLLOW_UP = TASK_FOLLOW_UP
+MESSAGE_KIND_AUTO_REPLY = "auto_reply"
+MESSAGE_KIND_HANDOFF = "handoff"
+MESSAGE_KIND_REPLY = "reply"
+MESSAGE_KIND_LEGACY = "legacy"
+MESSAGE_KINDS = (
+    MESSAGE_KIND_FIRST_CONTACT,
+    MESSAGE_KIND_FOLLOW_UP,
+    MESSAGE_KIND_AUTO_REPLY,
+    MESSAGE_KIND_HANDOFF,
+    MESSAGE_KIND_REPLY,
+    MESSAGE_KIND_LEGACY,
+)
+
 
 class OutreachContact(TenantOwnedMixin, TimestampMixin, Base):
     """全局联系锁：一个用户一份档案，承载跨账号锁与会话归属。"""
@@ -380,6 +402,8 @@ class OutreachTask(TenantOwnedMixin, TimestampMixin, Base):
     )
     kind: Mapped[str] = mapped_column(String(16), default=TASK_FIRST_CONTACT)
     status: Mapped[str] = mapped_column(String(16), default=TASK_QUEUED, index=True)
+    trigger_type: Mapped[str] = mapped_column(String(16), default=TASK_TRIGGER_LEGACY)
+    triggered_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     priority: Mapped[int] = mapped_column(Integer, default=0)
     priority_reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     account_id: Mapped[int | None] = mapped_column(
@@ -430,6 +454,11 @@ class OutreachMessage(TenantOwnedMixin, TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("outreach_tasks.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     contact_id: Mapped[int] = mapped_column(
         ForeignKey("outreach_contacts.id", ondelete="CASCADE"),
         index=True,
@@ -443,8 +472,15 @@ class OutreachMessage(TenantOwnedMixin, TimestampMixin, Base):
         nullable=True,
     )
     direction: Mapped[str] = mapped_column(String(4))
+    message_kind: Mapped[str] = mapped_column(String(16), default=MESSAGE_KIND_LEGACY)
     tg_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
     text: Mapped[str] = mapped_column(Text, default="")
+    # 发送时快照；不随联系人后续改名或换用户名而变化
+    recipient_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    recipient_display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    recipient_tg_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    media_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    media_kind: Mapped[str | None] = mapped_column(String(16), nullable=True)
     generated_by: Mapped[str] = mapped_column(String(8), default=MESSAGE_GENERATED_AUTO)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 

@@ -692,10 +692,40 @@ async def capacity(session: AsyncSession, *, tenant_id: int) -> dict:
         )
     )
     available = 0
+    account_details: list[dict] = []
+    excluded_accounts: list[dict] = []
     for account in accounts:
         snapshot = await outreach_account_service.snapshot(session, account, tz_name=tz_name)
-        if snapshot["state"] not in (STATE_LIMITED, STATE_PAUSED, STATE_DISABLED):
+        eligible = account.status == ACCOUNT_ACTIVE and snapshot["state"] not in (
+            STATE_LIMITED,
+            STATE_PAUSED,
+            STATE_DISABLED,
+        )
+        detail = {
+            "id": account.id,
+            "name": account.name,
+            "status": account.status,
+            "state": snapshot["state"],
+            "state_label": snapshot["state_label"],
+            "tier": snapshot["tier"],
+            "tier_label": snapshot["tier_label"],
+            "daily_cap": snapshot["daily_cap"],
+            "today_sent": snapshot["today_sent"],
+            "remaining": snapshot["remaining"],
+            "cooldown_until": snapshot["cooldown_until"],
+        }
+        if eligible:
             available += int(snapshot["remaining"])
+            account_details.append(detail)
+        else:
+            reason = "账号未登录或不可用"
+            if account.status == ACCOUNT_ACTIVE and snapshot["state"] in (
+                STATE_LIMITED,
+                STATE_PAUSED,
+                STATE_DISABLED,
+            ):
+                reason = f"运营态为 {snapshot['state_label']}"
+            excluded_accounts.append({**detail, "reason": reason})
 
     day = outreach_account_service.local_day(tz_name=tz_name)
     sent_today = int(
@@ -739,4 +769,6 @@ async def capacity(session: AsyncSession, *, tenant_id: int) -> dict:
         else (0 if queued <= available else ceil(queued / available)),
         "daily_pool_cap": pool_cap,
         "timezone": tz_name,
+        "account_details": account_details,
+        "excluded_accounts": excluded_accounts,
     }

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -14,11 +16,12 @@ from app.api.schemas.telegram import (
     AccountUpdateRequest,
     AutoLoginRequest,
     AutoLoginStopRequest,
+    CodeFetchRequest,
     LoginCodeRequest,
     LoginPasswordRequest,
     LoginStartRequest,
 )
-from app.core import account_import
+from app.core import account_import, logincode, mail2925
 from app.core.config import AppConfig, ConfigError, load_config
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.telegram_client import session_file_path
@@ -30,6 +33,11 @@ from app.services import (
     tg_account_service,
     tg_login_service,
 )
+
+# 取码轮询节奏（测试可改小）
+CODE_FETCH_POLL_SECONDS = 5.0
+CODE_FETCH_FIRST_DELAY_SECONDS = 5.0
+CODE_FETCH_MAIL_POLL_SECONDS = 3.0
 
 router = APIRouter(
     prefix="/api/accounts",
@@ -287,6 +295,66 @@ async def auto_login_status() -> dict[str, Any]:
 async def stop_auto_login(payload: AutoLoginStopRequest) -> dict[str, Any]:
     """停止自动登录（留空表示全部）。"""
     return {"stopped": outreach_auto_login_service.stop(payload.account_ids or None)}
+
+
+@router.post("/{account_id}/code/fetch")
+async def fetch_login_code(
+    account_id: int,
+    payload: CodeFetchRequest,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """取登录验证码：接码平台或 2925 子邮箱（取到后仍可手动改）。"""
+    config: AppConfig = request.app.state.config
+    account = await tg_account_service.get_account(session, account_id)
+    if account is None:
+        raise NotFoundError("执行账号不存在")
+
+    if payload.source == "logincode":
+        code_url = (payload.code_url or "").strip() or tg_account_service.decrypt_code_url(
+            config, account
+        )
+        if not code_url:
+            raise ValidationFailedError("这个账号还没有接码地址，请粘贴一次取码链接")
+        http_get = getattr(request.app.state, "logincode_http_get", None)
+        service = await logincode.resolve_service(code_url, http_get=http_get)
+        result = await logincode.wait_for_code(
+            service,
+            http_get=http_get,
+            timeout=float(payload.timeout_seconds),
+            poll=CODE_FETCH_POLL_SECONDS,
+            first_delay=CODE_FETCH_FIRST_DELAY_SECONDS,
+        )
+        return {
+            "source": "logincode",
+            "code": result["login_code"],
+            "password": result["password"],
+            "account": result["account"],
+        }
+
+    mail_config = mail2925.normalize_config(payload.mail_user or "", payload.mail_pass or "")
+    phone, _api_id, _api_hash = tg_account_service.decrypt_credentials(config, account)
+    alias = mail2925.derive_alias(mail_config.main_email, phone)
+    fetcher = getattr(request.app.state, "mail2925_fetcher", None)
+    deadline = time.monotonic() + payload.timeout_seconds
+    while True:
+        if fetcher is not None:
+            found = await fetcher(mail_config, alias=alias)
+        else:
+            found = await mail2925.fetch_latest_code(mail_config, alias=alias)
+        if found.get("code"):
+            return {
+                "source": "mail2925",
+                "code": found["code"],
+                "password": "",
+                "alias": alias,
+                "subject": found.get("subject", ""),
+            }
+        if time.monotonic() >= deadline:
+            raise ValidationFailedError(
+                f"等待 2925 子邮箱（{alias}）验证码超时，请确认账号已改绑该邮箱，或手动输入验证码"
+            )
+        await asyncio.sleep(CODE_FETCH_MAIL_POLL_SECONDS)
 
 
 @router.post("/{account_id}/login/start")

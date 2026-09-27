@@ -15,6 +15,85 @@ const stage = ref("idle");
 const busy = ref(false);
 const result = ref(null);
 const form = reactive({ code: "", password: "", force_sms: false });
+// 自动取码：接码平台 / 2925 邮箱
+const mail = reactive({ user: "", password: "" });
+const fetching = ref("");
+const autoRunning = ref(false);
+const autoMessage = ref("");
+let autoTimer = null;
+
+function stopAuto() {
+  if (autoTimer) {
+    clearInterval(autoTimer);
+    autoTimer = null;
+  }
+  autoRunning.value = false;
+}
+
+async function pollAuto() {
+  try {
+    const { data } = await accountsApi.autoLoginStatus();
+    const item = data.items.find((row) => row.account_id === props.account.id);
+    if (!item) return;
+    autoMessage.value = `${item.stage_label}：${item.message}`;
+    if (item.status === "pending") return;
+    stopAuto();
+    if (item.status === "success") {
+      stage.value = "active";
+      result.value = {};
+      ElMessage.success("已通过接码平台登录成功");
+      emit("logged-in");
+    } else {
+      ElMessage.error(item.message || "自动登录失败");
+    }
+  } catch (error) {
+    stopAuto();
+    ElMessage.error(error.message);
+  }
+}
+
+async function startAutoLogin() {
+  autoRunning.value = true;
+  autoMessage.value = "正在提交自动登录…";
+  try {
+    await accountsApi.autoLogin([props.account.id]);
+    ElMessage.success("已开始自动登录，正在等接码平台返回验证码");
+    stopAuto();
+    autoRunning.value = true;
+    autoTimer = setInterval(pollAuto, 3000);
+    pollAuto();
+  } catch (error) {
+    stopAuto();
+    ElMessage.error(error.message);
+  }
+}
+
+async function fetchCode(source) {
+  if (source === "mail2925" && (!mail.user.trim() || !mail.password)) {
+    ElMessage.warning("请先填写 2925 主邮箱和密码");
+    return;
+  }
+  fetching.value = source;
+  try {
+    const payload = { source, timeout_seconds: 120 };
+    if (source === "mail2925") {
+      payload.mail_user = mail.user.trim();
+      payload.mail_pass = mail.password;
+    }
+    const { data } = await accountsApi.fetchLoginCode(props.account.id, payload);
+    form.code = data.code;
+    if (data.password) form.password = data.password;
+    ElMessage.success(
+      source === "logincode"
+        ? "已从接码平台取到验证码，确认或修改后再提交"
+        : `已从 ${data.alias} 取到验证码，确认或修改后再提交`,
+    );
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    fetching.value = "";
+  }
+}
 
 watch(
   () => props.modelValue,
@@ -27,6 +106,7 @@ watch(
 );
 
 async function close(force = false) {
+  stopAuto();
   if (!force && props.account && ["code_sent", "password_required"].includes(stage.value)) {
     try {
       await accountsApi.loginCancel(props.account.id);
@@ -115,6 +195,11 @@ async function submitPassword() {
         <p class="card-hint">点击下方按钮让 Telegram 发送登录验证码。</p>
         <el-checkbox v-model="form.force_sms">改用短信接收验证码（收不到 App 消息时勾选）</el-checkbox>
         <el-button type="primary" :loading="busy" @click="sendCode">发送验证码</el-button>
+        <el-button type="success" :loading="autoRunning" @click="startAutoLogin">
+          通过接码平台登录
+        </el-button>
+        <p v-if="autoMessage" class="card-hint">{{ autoMessage }}</p>
+        <p v-if="account.code_host" class="card-hint">已绑定接码地址：{{ account.code_host }}</p>
       </div>
 
       <div v-else-if="stage === 'code_sent'" class="login-step">
@@ -124,6 +209,27 @@ async function submitPassword() {
           placeholder="输入 Telegram 收到的验证码"
           @keyup.enter="submitCode"
         />
+        <div class="code-sources">
+          <el-button size="small" :loading="fetching === 'logincode'" @click="fetchCode('logincode')">
+            从接码平台取码
+          </el-button>
+          <el-button size="small" :loading="fetching === 'mail2925'" @click="fetchCode('mail2925')">
+            从 2925 邮箱取码
+          </el-button>
+        </div>
+        <div class="login-actions">
+          <el-input v-model="mail.user" size="small" placeholder="2925 主邮箱（user@2925.com）" />
+          <el-input
+            v-model="mail.password"
+            size="small"
+            type="password"
+            show-password
+            placeholder="2925 密码"
+          />
+        </div>
+        <p class="card-hint">
+          取到的验证码会填进上面的输入框；账号改绑邮箱后也可以直接手动输入验证码。
+        </p>
         <div class="login-actions">
           <el-button link type="primary" :loading="busy" @click="sendCode">
             没收到？重新发送
@@ -171,6 +277,11 @@ async function submitPassword() {
 </template>
 
 <style scoped>
+.code-sources {
+  display: flex;
+  gap: 8px;
+}
+
 .login-body {
   display: flex;
   flex-direction: column;

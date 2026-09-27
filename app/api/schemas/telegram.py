@@ -108,3 +108,15 @@ class AutoLoginStopRequest(BaseModel):
     """停止自动登录（留空表示全部）。"""
 
     account_ids: list[int] = Field(default_factory=list, max_length=200)
+
+
+class CodeFetchRequest(BaseModel):
+    """取验证码：接码平台（logincode）或 2925 邮箱。"""
+
+    source: Literal["logincode", "mail2925"]
+    # 接码地址：留空则用账号登记时保存的那条
+    code_url: str | None = Field(default=None, max_length=512)
+    # 2925 主邮箱与密码（只在 source=mail2925 时需要）
+    mail_user: str | None = Field(default=None, max_length=128)
+    mail_pass: str | None = Field(default=None, max_length=128)
+    timeout_seconds: int = Field(default=120, ge=10, le=300)

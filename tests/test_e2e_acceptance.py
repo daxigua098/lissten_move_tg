@@ -8,14 +8,13 @@
 4. 到期后巡检强停：线路停跑、在途任务取消、额度释放回代理；
 5. 平台续期：只改到期日，**不自动恢复运行**；会员自己手动启动才恢复。
 
-缺口标记：会员配的 TG 账号目前落在**自营租户**而不是会员租户
-（业务表 tenant_id 的写入/查询尚未按身份收口，即任务清单 P1-05），
-用 ``xfail(strict=True)`` 固化，修好后这条会 XPASS，提示去掉标记。
+P1-05 起，业务表的 tenant_id 写入与查询都按登录身份收口：会员配的 TG 账号
+会落到会员自己的租户，最后一条用例专门盯着这个归属承诺（原来用 ``xfail``
+固化的缺口，现已收口）。
 """
 
 from __future__ import annotations
 
-import pytest
 from conftest import auth_header, login
 
 from app.db.base import utc_now
@@ -235,10 +234,6 @@ async def test_full_chain_from_agent_to_expiry_and_manual_restart(admin_client) 
     assert body["runtime_stop_reason"] is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="P1-05 未收口：业务表 tenant_id 写入仍走默认自营租户，会员配的 TG 账号不归自己",
-)
 async def test_member_tg_account_belongs_to_his_own_tenant(admin_client) -> None:
     """会员配的 TG 账号应该归到会员租户名下（账号与机器人的归属承诺）。"""
     from sqlalchemy import select

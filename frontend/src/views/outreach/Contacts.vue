@@ -43,6 +43,16 @@ async function takeover(row) {
   }
 }
 
+async function resumeAuto(row) {
+  try {
+    await outreachApi.resumeAuto(row.id);
+    ElMessage.success("已交回自动回复");
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
 async function suppress(row) {
   try {
     await outreachApi.suppress(row.id);
@@ -118,6 +128,14 @@ onMounted(load);
             @click="takeover(row)"
           >
             接管
+          </el-button>
+          <el-button
+            v-if="row.reply_state === 'HUMAN'"
+            size="small"
+            link
+            @click="resumeAuto(row)"
+          >
+            恢复自动
           </el-button>
           <el-button v-if="!row.do_not_contact" size="small" link type="danger" @click="suppress(row)">
             拉黑

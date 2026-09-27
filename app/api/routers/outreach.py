@@ -38,6 +38,7 @@ from app.db.models import (
 )
 from app.services import (
     outreach_queue_service,
+    outreach_reply_service,
     outreach_sender_service,
     outreach_settings_service,
     outreach_template_service,
@@ -338,6 +339,19 @@ async def takeover_contact(
     if contact is None:
         raise NotFoundError("联系人不存在")
     await outreach_sender_service.takeover(session, contact)
+    return _contact(contact)
+
+
+@router.post("/contacts/{contact_id}/resume-auto")
+async def resume_auto_reply(
+    contact_id: int,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """人工处理完，把这个会话交回自动回复。"""
+    contact = await session.get(OutreachContact, contact_id)
+    if contact is None:
+        raise NotFoundError("联系人不存在")
+    await outreach_reply_service.resume_auto(session, contact)
     return _contact(contact)
 
 

@@ -15,6 +15,7 @@ const form = reactive({ name: "", kind: "first_contact", text: "" });
 const KINDS = [
   { value: "first_contact", label: "首条招呼" },
   { value: "follow_up", label: "跟进" },
+  { value: "auto_reply", label: "自动回复" },
 ];
 
 async function load() {

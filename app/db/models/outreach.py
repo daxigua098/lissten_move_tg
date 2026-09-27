@@ -151,10 +151,21 @@ TEMPLATE_SCOPE_TENANT = "tenant"
 TEMPLATE_SCOPES = (TEMPLATE_SCOPE_PLATFORM, TEMPLATE_SCOPE_TENANT)
 TEMPLATE_FIRST_CONTACT = "first_contact"
 TEMPLATE_FOLLOW_UP = "follow_up"
-TEMPLATE_KINDS = (TEMPLATE_FIRST_CONTACT, TEMPLATE_FOLLOW_UP)
+TEMPLATE_AUTO_REPLY = "auto_reply"
+TEMPLATE_KINDS = (TEMPLATE_FIRST_CONTACT, TEMPLATE_FOLLOW_UP, TEMPLATE_AUTO_REPLY)
 TEMPLATE_KIND_LABELS: dict[str, str] = {
     TEMPLATE_FIRST_CONTACT: "首条招呼",
     TEMPLATE_FOLLOW_UP: "跟进",
+    TEMPLATE_AUTO_REPLY: "自动回复",
+}
+
+# 回复模式：A=人工接管（默认），B=自动回复
+REPLY_MODE_HUMAN = "human"
+REPLY_MODE_AUTO = "auto"
+REPLY_MODES = (REPLY_MODE_HUMAN, REPLY_MODE_AUTO)
+REPLY_MODE_LABELS: dict[str, str] = {
+    REPLY_MODE_HUMAN: "人工接管",
+    REPLY_MODE_AUTO: "自动回复",
 }
 
 # 冷触达任务
@@ -302,6 +313,14 @@ class OutreachSettings(TimestampMixin, Base):
     strict_permanent_lock: Mapped[bool] = mapped_column(Boolean, default=False)
     follow_up_days: Mapped[int] = mapped_column(Integer, default=7)
     follow_up_max: Mapped[int] = mapped_column(Integer, default=1)
+    # B 模式：自动回复（默认关闭，只对已回复的会话生效）
+    reply_mode: Mapped[str] = mapped_column(String(8), default=REPLY_MODE_HUMAN)
+    auto_reply_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_reply_max_rounds: Mapped[int] = mapped_column(Integer, default=3)
+    auto_reply_template_id: Mapped[int | None] = mapped_column(
+        ForeignKey("outreach_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # JSON 数组 [开始, 结束]；空表示不限制
     working_hours: Mapped[str] = mapped_column(Text, default="[]")
     daily_pool_cap: Mapped[int | None] = mapped_column(Integer, nullable=True)

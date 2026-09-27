@@ -6,7 +6,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-TemplateKindLiteral = Literal["first_contact", "follow_up"]
+TemplateKindLiteral = Literal["first_contact", "follow_up", "auto_reply"]
+ReplyModeLiteral = Literal["human", "auto"]
 
 
 class OutreachSettingsUpdate(BaseModel):
@@ -17,6 +18,10 @@ class OutreachSettingsUpdate(BaseModel):
     strict_permanent_lock: bool | None = None
     follow_up_days: int | None = Field(default=None, ge=0, le=365)
     follow_up_max: int | None = Field(default=None, ge=0, le=5)
+    reply_mode: ReplyModeLiteral | None = None
+    auto_reply_enabled: bool | None = None
+    auto_reply_max_rounds: int | None = Field(default=None, ge=0, le=20)
+    auto_reply_template_id: int | None = Field(default=None, ge=1)
     working_hours: list[str] | None = None
     daily_pool_cap: int | None = Field(default=None, ge=1, le=100000)
     kill_switch: bool | None = None

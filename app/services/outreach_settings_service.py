@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ValidationFailedError
-from app.db.models import OutreachSettings
+from app.db.models import REPLY_MODE_HUMAN, REPLY_MODES, OutreachSettings
 
 DEFAULT_COOLDOWN_SECONDS = 2 * 3600
 DEFAULT_LOCK_DAYS = 30
@@ -16,11 +16,13 @@ DEFAULT_LOCK_DAYS = 30
 MIN_LOCK_DAYS = 14
 DEFAULT_FOLLOW_UP_DAYS = 7
 DEFAULT_FOLLOW_UP_MAX = 1
+DEFAULT_AUTO_REPLY_ROUNDS = 3
 # 严格模式下的"永久"锁定时间（用固定时间表达"永久"，避免 NULL 语义歧义）
 LOCK_FOREVER = datetime(9999, 12, 31, tzinfo=UTC)
 
 BOOL_FIELDS = (
     "strict_permanent_lock",
+    "auto_reply_enabled",
     "kill_switch",
     "delete_session_on_account_delete",
 )
@@ -45,6 +47,10 @@ def _dump(row: OutreachSettings) -> dict:
         "strict_permanent_lock": bool(row.strict_permanent_lock),
         "follow_up_days": row.follow_up_days,
         "follow_up_max": row.follow_up_max,
+        "reply_mode": row.reply_mode,
+        "auto_reply_enabled": bool(row.auto_reply_enabled),
+        "auto_reply_max_rounds": row.auto_reply_max_rounds,
+        "auto_reply_template_id": row.auto_reply_template_id,
         "working_hours": parse_working_hours(row.working_hours),
         "daily_pool_cap": row.daily_pool_cap,
         "kill_switch": bool(row.kill_switch),
@@ -61,6 +67,10 @@ def defaults() -> dict:
         "strict_permanent_lock": False,
         "follow_up_days": DEFAULT_FOLLOW_UP_DAYS,
         "follow_up_max": DEFAULT_FOLLOW_UP_MAX,
+        "reply_mode": REPLY_MODE_HUMAN,
+        "auto_reply_enabled": False,
+        "auto_reply_max_rounds": DEFAULT_AUTO_REPLY_ROUNDS,
+        "auto_reply_template_id": None,
         "working_hours": [],
         "daily_pool_cap": None,
         "kill_switch": False,
@@ -121,6 +131,22 @@ async def update_settings(session: AsyncSession, tenant_id: int, **fields) -> di
 
     if "working_hours" in fields:
         row.working_hours = _validate_hours(fields["working_hours"])
+
+    if "reply_mode" in fields:
+        mode = (fields["reply_mode"] or REPLY_MODE_HUMAN).strip()
+        if mode not in REPLY_MODES:
+            raise ValidationFailedError(f"回复模式必须是 {'/'.join(REPLY_MODES)} 之一")
+        row.reply_mode = mode
+
+    if "auto_reply_max_rounds" in fields:
+        value = int(fields["auto_reply_max_rounds"] or 0)
+        if not 0 <= value <= 20:
+            raise ValidationFailedError("自动回复轮次上限必须在 0～20 之间")
+        row.auto_reply_max_rounds = value
+
+    if "auto_reply_template_id" in fields:
+        raw_template = fields["auto_reply_template_id"]
+        row.auto_reply_template_id = int(raw_template) if raw_template else None
 
     await session.commit()
     await session.refresh(row)

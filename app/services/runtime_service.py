@@ -42,6 +42,7 @@ from app.db.models import (
     BUSINESS_MONITOR,
     DISCOVER_LINK,
     SENDER_MODE_BOT,
+    OutreachContact,
     Route,
     TenantChat,
 )
@@ -55,6 +56,7 @@ from app.services import (
     keyword_service,
     lead_service,
     outreach_queue_service,
+    outreach_reply_service,
     outreach_sender_service,
     outreach_settings_service,
     resource_join_service,
@@ -219,8 +221,6 @@ class RuntimeService:
                 account = await outreach_sender_service.pick_account(session, tenant_id)
                 if account is None:
                     continue
-                from app.db.models import OutreachContact
-
                 contact = await session.get(OutreachContact, task.contact_id)
                 if contact is None:
                     continue
@@ -280,7 +280,7 @@ class RuntimeService:
             return
 
         async def reply_handler(event: Any) -> None:  # noqa: ANN001
-            await self._on_outreach_reply(account, event)
+            await self._on_outreach_reply(account, event, client)
 
         client.add_event_handler(
             reply_handler,
@@ -288,27 +288,39 @@ class RuntimeService:
         )
         self._outreach_reply_handlers.add(account.id)
 
-    async def _on_outreach_reply(self, account: Any, event: Any) -> None:
-        """入站回复：归属锁定 / 拒绝拉黑。"""
+    async def _on_outreach_reply(self, account: Any, event: Any, client: Any) -> None:
+        """入站回复：归属锁定 / 拒绝拉黑；按 B 模式决定要不要自动回一句。"""
         message = getattr(event, "message", None)
         sender_id = getattr(event, "sender_id", None) or getattr(message, "sender_id", None)
         if not sender_id:
             return
+        text = getattr(message, "message", None)
         async with session_scope() as session:
             contact = await outreach_sender_service.handle_incoming(
                 session,
                 tenant_id=account.tenant_id,
                 account_id=account.id,
                 sender_tg_id=int(sender_id),
-                text=getattr(message, "message", None),
+                text=text,
                 tg_message_id=int(getattr(message, "id", 0) or 0),
             )
-        if contact is not None:
-            logger.info(
-                "冷触达收到回复：联系人 #{}（账号 {}）",
-                contact.id,
-                account.name,
-            )
+        if contact is None:
+            return
+        logger.info("冷触达收到回复：联系人 #{}（账号 {}）", contact.id, account.name)
+        async with session_scope() as session:
+            fresh = await session.get(OutreachContact, contact.id)
+            if fresh is None:
+                return
+            try:
+                await outreach_reply_service.auto_reply(
+                    session,
+                    client=client,
+                    account=account,
+                    contact=fresh,
+                    incoming_text=text,
+                )
+            except Exception as exc:  # noqa: BLE001 - 自动回复失败不能影响监听
+                logger.warning("冷触达自动回复失败：{}", exc)
 
     async def _close_outreach_clients(self) -> None:
         """断开冷触达连接（注入的连接由注入方负责）。"""

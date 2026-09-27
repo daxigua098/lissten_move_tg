@@ -158,6 +158,7 @@ export const outreachApi = {
   resumeRuntime: () => http.post("/api/outreach/runtime/resume"),
   dispatch: (limit = 1) => http.post("/api/outreach/queue/dispatch", null, { params: { limit } }),
   takeover: (id) => http.post(`/api/outreach/contacts/${id}/takeover`),
+  resumeAuto: (id) => http.post(`/api/outreach/contacts/${id}/resume-auto`),
   suppress: (id) => http.post(`/api/outreach/contacts/${id}/suppress`),
   unsuppress: (id) => http.delete(`/api/outreach/contacts/${id}/suppress`),
 };

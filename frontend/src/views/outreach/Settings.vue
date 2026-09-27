@@ -6,6 +6,7 @@ import { outreachApi } from "../../api";
 
 const loading = ref(false);
 const saving = ref(false);
+const autoTemplates = ref([]);
 const form = reactive({
   cooldown_hours: 2,
   cross_account_lock_days: 30,
@@ -17,12 +18,20 @@ const form = reactive({
   daily_pool_cap: null,
   kill_switch: false,
   delete_session_on_account_delete: false,
+  reply_mode: "human",
+  auto_reply_enabled: false,
+  auto_reply_max_rounds: 3,
+  auto_reply_template_id: null,
 });
 
 async function load() {
   loading.value = true;
   try {
-    const { data } = await outreachApi.settings();
+    const [{ data }, templates] = await Promise.all([
+      outreachApi.settings(),
+      outreachApi.templates({ kind: "auto_reply" }),
+    ]);
+    autoTemplates.value = templates.data.items.filter((item) => item.enabled);
     form.cooldown_hours = Math.round(data.default_cooldown_seconds / 3600);
     form.cross_account_lock_days = data.cross_account_lock_days;
     form.strict_permanent_lock = data.strict_permanent_lock;
@@ -34,6 +43,10 @@ async function load() {
     form.daily_pool_cap = data.daily_pool_cap;
     form.kill_switch = data.kill_switch;
     form.delete_session_on_account_delete = data.delete_session_on_account_delete;
+    form.reply_mode = data.reply_mode || "human";
+    form.auto_reply_enabled = !!data.auto_reply_enabled;
+    form.auto_reply_max_rounds = data.auto_reply_max_rounds ?? 3;
+    form.auto_reply_template_id = data.auto_reply_template_id || null;
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -55,6 +68,10 @@ async function save() {
       daily_pool_cap: form.daily_pool_cap ? Number(form.daily_pool_cap) : null,
       kill_switch: form.kill_switch,
       delete_session_on_account_delete: form.delete_session_on_account_delete,
+      reply_mode: form.reply_mode,
+      auto_reply_enabled: form.auto_reply_enabled,
+      auto_reply_max_rounds: Number(form.auto_reply_max_rounds),
+      auto_reply_template_id: form.auto_reply_template_id || null,
     });
     ElMessage.success("已保存");
     load();
@@ -103,6 +120,30 @@ onMounted(load);
       <el-form-item label="租户每日冷聊总量">
         <el-input-number v-model="form.daily_pool_cap" :min="1" :max="100000" placeholder="不限" />
         <span class="card-hint">留空表示只受账号额度约束</span>
+      </el-form-item>
+      <el-form-item label="回复模式">
+        <el-radio-group v-model="form.reply_mode">
+          <el-radio-button value="human">A · 人工接管</el-radio-button>
+          <el-radio-button value="auto">B · 自动回复</el-radio-button>
+        </el-radio-group>
+        <span class="card-hint">自动回复只对已回复的会话生效，绝不用于首条</span>
+      </el-form-item>
+      <el-form-item label="开启自动回复">
+        <el-switch v-model="form.auto_reply_enabled" />
+      </el-form-item>
+      <el-form-item label="自动回复轮次上限">
+        <el-input-number v-model="form.auto_reply_max_rounds" :min="0" :max="20" />
+        <span class="card-hint">超过就转人工</span>
+      </el-form-item>
+      <el-form-item label="自动回复话术">
+        <el-select v-model="form.auto_reply_template_id" clearable placeholder="不指定则用任意启用的自动回复模板">
+          <el-option
+            v-for="item in autoTemplates"
+            :key="item.id"
+            :label="item.name"
+            :value="item.id"
+          />
+        </el-select>
       </el-form-item>
       <el-form-item label="紧急熔断（全部停止）">
         <el-switch v-model="form.kill_switch" />

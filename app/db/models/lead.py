@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -106,6 +107,7 @@ class MemberProfile(TenantOwnedMixin, TimestampMixin, Base):
     # 同一个人被两个客户分别监听到，各自建档案
     __table_args__ = (
         UniqueConstraint("tenant_id", "tg_user_id", name="uq_member_profiles_tenant_tg_user"),
+        Index("ix_member_profiles_tenant_last_seen", "tenant_id", "last_seen_at", "pinned"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -162,6 +164,17 @@ class Lead(TenantOwnedMixin, TimestampMixin, Base):
     """线索：一条被监听到、值得跟进的发言。"""
 
     __tablename__ = "leads"
+    __table_args__ = (
+        Index("ix_leads_tenant_created_at", "tenant_id", "created_at"),
+        Index("ix_leads_tenant_delivered", "tenant_id", "delivered"),
+        Index(
+            "ix_leads_tenant_sender_keyword_created",
+            "tenant_id",
+            "sender_tg_id",
+            "keyword",
+            "created_at",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     # 线索是业务数据，不能因为删线路/删群就消失（只解除引用，保留快照字段）
@@ -223,7 +236,10 @@ class HotKeyword(TenantOwnedMixin, TimestampMixin, Base):
 
     __tablename__ = "hot_keywords"
     # 词频必须按租户分开统计，否则两个客户互相污染
-    __table_args__ = (UniqueConstraint("tenant_id", "token", name="uq_hot_keywords_tenant_token"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "token", name="uq_hot_keywords_tenant_token"),
+        Index("ix_hot_keywords_tenant_count", "tenant_id", "count"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     token: Mapped[str] = mapped_column(String(64), index=True)

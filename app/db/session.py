@@ -236,6 +236,11 @@ def _register_sqlite_pragmas(engine: AsyncEngine) -> None:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA busy_timeout=5000")
             cursor.execute("PRAGMA synchronous=NORMAL")
+            # 读多写少的本地库：给 SQLite 更多页缓存，并把临时表放内存。
+            # mmap_size 在不支持的平台会返回 0，不影响连接建立。
+            cursor.execute("PRAGMA cache_size=-20000")
+            cursor.execute("PRAGMA temp_store=MEMORY")
+            cursor.execute("PRAGMA mmap_size=268435456")
         finally:
             cursor.close()
 

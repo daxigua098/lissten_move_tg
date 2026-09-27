@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import select
 
 from app.core.bot_api import bot_api_chat_id
 from app.core.config import AppConfig
@@ -309,8 +310,6 @@ class RuntimeService:
         其他租户照常起（单租户异常不拖垮其他租户）。
         """
         async with session_scope() as session:
-            from sqlalchemy import select
-
             records = list(await session.scalars(select(Route).where(Route.enabled.is_(True))))
             by_tenant: dict[int, list[Route]] = {}
             for route in records:
@@ -566,16 +565,45 @@ class RuntimeService:
             return
 
         async with session_scope() as session:
+            # 同一条源消息会关联多条线路：先一次性取回线路和来源群，避免循环里逐条查库。
+            route_ids = [route.id for route in routes]
+            fresh_routes = (
+                list(
+                    await session.scalars(
+                        select(Route).where(Route.id.in_(route_ids), Route.enabled.is_(True))
+                    )
+                )
+                if route_ids
+                else []
+            )
+            fresh_by_id = {row.id: row for row in fresh_routes}
+            source_ids = {row.source_chat_id for row in fresh_routes}
+            source_rows = (
+                list(await session.scalars(select(TenantChat).where(TenantChat.id.in_(source_ids))))
+                if source_ids
+                else []
+            )
+            source_by_id = {row.id: row for row in source_rows}
+            runtime_allowed: dict[int, bool] = {}
+            entries_cache: dict[tuple[int, ...], Any] = {}
+            exclude_cache: dict[tuple[int, ...], tuple[str, ...]] = {}
+
             # 热门词采集一条消息只做一次（同一条消息不因多条线路重复计数）
             collected = False
             # 链接滚雪球同样一条消息只做一次
             link_absorbed = False
             for route in routes:
-                fresh = await session.get(Route, route.id)
-                if fresh is None or not fresh.enabled:
+                fresh = fresh_by_id.get(route.id)
+                if fresh is None:
                     continue
                 # P4-03：同上，租户停了就不再采集线索
-                if not await tenant_runtime_service.is_runtime_allowed(session, fresh.tenant_id):
+                allowed = runtime_allowed.get(fresh.tenant_id)
+                if allowed is None:
+                    allowed = await tenant_runtime_service.is_runtime_allowed(
+                        session, fresh.tenant_id
+                    )
+                    runtime_allowed[fresh.tenant_id] = allowed
+                if not allowed:
                     continue
                 config = load_b_config(fresh.b_config)
                 if config.skip_bots and sender.is_bot:
@@ -588,7 +616,7 @@ class RuntimeService:
                 if len(text) < config.min_text_length:
                     continue
 
-                source_chat = await session.get(TenantChat, fresh.source_chat_id)
+                source_chat = source_by_id.get(fresh.source_chat_id)
                 if source_chat is None or not source_chat.tg_id:
                     continue
                 if config.skip_admins and await self._is_admin(
@@ -599,21 +627,27 @@ class RuntimeService:
                 ):
                     continue
 
-                entries = await keyword_service.load_entries(
-                    session,
-                    config.keyword_group_ids or None,
-                )
-                # 排除词在最前面判断：命中就整条忽略（全量模式同样生效）
-                exclude_words = tuple(
-                    dict.fromkeys(
-                        [
-                            *config.exclude_keywords,
-                            *await keyword_service.load_exclude_words(
-                                session,
-                                config.exclude_group_ids,
-                            ),
-                        ]
+                keyword_group_key = tuple(config.keyword_group_ids)
+                entries = entries_cache.get(keyword_group_key)
+                if entries is None:
+                    entries = await keyword_service.load_entries(
+                        session,
+                        config.keyword_group_ids or None,
                     )
+                    entries_cache[keyword_group_key] = entries
+                # 排除词在最前面判断：命中就整条忽略（全量模式同样生效）
+                exclude_group_key = tuple(config.exclude_group_ids)
+                group_exclude_words = exclude_cache.get(exclude_group_key)
+                if group_exclude_words is None:
+                    group_exclude_words = tuple(
+                        await keyword_service.load_exclude_words(
+                            session,
+                            config.exclude_group_ids,
+                        )
+                    )
+                    exclude_cache[exclude_group_key] = group_exclude_words
+                exclude_words = tuple(
+                    dict.fromkeys([*config.exclude_keywords, *group_exclude_words])
                 )
                 if is_excluded(text, exclude_words):
                     logger.debug("被排除词挡住：{}", text[:30])
@@ -1157,8 +1191,6 @@ async def pending_route_ids(
     None 表示判断不出来（运行时没在跑，或心跳还是旧格式）——界面据此不做提醒。
     ``tenant_id`` 非空时只算该租户的线路（会员不该看到别人的线路号）。
     """
-    from sqlalchemy import select
-
     from app.db.models import Route
 
     status = read_status(config.path(config.runtime.status_file))

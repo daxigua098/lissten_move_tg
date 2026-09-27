@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.lead_extractor import ContactInfo, SenderInfo
@@ -361,34 +361,42 @@ async def list_leads(
 
 
 async def lead_stats(session: AsyncSession) -> dict[str, Any]:
-    today = int(
-        await session.scalar(
-            select(func.count()).select_from(Lead).where(Lead.created_at >= _day_start())
+    """一次聚合线索指标，再聚合档案指标，避免接口下发多条 COUNT。"""
+    today = _day_start()
+    lead_row = (
+        await session.execute(
+            select(
+                func.count(Lead.id),
+                func.coalesce(
+                    func.sum(case((Lead.created_at >= today, 1), else_=0)),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(case((Lead.delivered.is_(False), 1), else_=0)),
+                    0,
+                ),
+                func.coalesce(
+                    func.sum(case((Lead.keyword.is_not(None), 1), else_=0)),
+                    0,
+                ),
+            )
         )
-        or 0
-    )
-    total = int(await session.scalar(select(func.count()).select_from(Lead)) or 0)
-    undelivered = int(
-        await session.scalar(
-            select(func.count()).select_from(Lead).where(Lead.delivered.is_(False))
+    ).one()
+    member_row = (
+        await session.execute(
+            select(
+                func.count(MemberProfile.id),
+                func.coalesce(
+                    func.sum(case((MemberProfile.pinned.is_(True), 1), else_=0)),
+                    0,
+                ),
+            )
         )
-        or 0
-    )
-    members = int(await session.scalar(select(func.count()).select_from(MemberProfile)) or 0)
-    hits = int(
-        await session.scalar(
-            select(func.count()).select_from(Lead).where(Lead.keyword.is_not(None))
-        )
-        or 0
-    )
-    pinned_members = int(
-        await session.scalar(
-            select(func.count()).select_from(MemberProfile).where(MemberProfile.pinned.is_(True))
-        )
-        or 0
-    )
+    ).one()
+    total, today_count, undelivered, hits = (int(value or 0) for value in lead_row)
+    members, pinned_members = (int(value or 0) for value in member_row)
     return {
-        "today": today,
+        "today": today_count,
         "total": total,
         "hits": hits,
         "undelivered": undelivered,

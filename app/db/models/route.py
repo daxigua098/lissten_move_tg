@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -77,6 +78,9 @@ class Route(TenantOwnedMixin, TimestampMixin, Base):
     """线路：一条源到一组目标的搬运/监听规则。"""
 
     __tablename__ = "routes"
+    __table_args__ = (
+        Index("ix_routes_tenant_enabled_source", "tenant_id", "enabled", "source_chat_id"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(128), index=True)
@@ -124,7 +128,10 @@ class RouteTarget(TenantOwnedMixin, TimestampMixin, Base):
     """线路的接收目标。"""
 
     __tablename__ = "route_targets"
-    __table_args__ = (UniqueConstraint("route_id", "target_chat_id", name="uq_route_target"),)
+    __table_args__ = (
+        UniqueConstraint("route_id", "target_chat_id", name="uq_route_target"),
+        Index("ix_route_targets_route_enabled", "route_id", "enabled"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     route_id: Mapped[int] = mapped_column(

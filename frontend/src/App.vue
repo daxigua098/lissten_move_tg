@@ -4,7 +4,7 @@ import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { authApi } from "./api";
-import { auth } from "./stores/auth";
+import { auth, MODULE_LABELS } from "./stores/auth";
 
 const route = useRoute();
 const router = useRouter();
@@ -14,6 +14,54 @@ const showShell = computed(
 );
 
 const canOperate = computed(() => ["sub_admin", "super_admin"].includes(auth.role));
+
+// 菜单按「账号类型 + 功能块」生成：
+//   代理 → 只有代理工作台；会员 → 基础能力 + 已授权的功能块；平台 → 沿用角色分级
+const menuItems = computed(() => {
+  if (auth.isAgent) {
+    return [{ index: "/agent", label: "代理工作台" }];
+  }
+  if (auth.isMember) {
+    const items = [{ index: "/", label: "运行总览" }];
+    if (auth.hasAnyModule(["carry", "monitor"])) {
+      items.push({ index: "/config", label: "线路配置" });
+    }
+    if (auth.hasModule("monitor")) {
+      items.push({ index: "/library", label: "词库" });
+      items.push({ index: "/leads", label: "线索池" });
+    }
+    if (auth.hasModule("discovery")) {
+      items.push({ index: "/resources", label: "资源发现" });
+    }
+    items.push({ index: "/ops", label: "账号与机器人" });
+    return items;
+  }
+  const items = [{ index: "/", label: "运行总览" }];
+  if (canOperate.value) {
+    items.push({ index: "/config", label: "线路配置" });
+    items.push({ index: "/library", label: "词库" });
+    items.push({ index: "/resources", label: "资源发现" });
+    items.push({ index: "/leads", label: "线索池" });
+  }
+  if (auth.isSuperAdmin) {
+    items.push({ index: "/ops", label: "账号与机器人" });
+  }
+  if (canOperate.value) {
+    items.push({ index: "/system", label: "系统管理" });
+  }
+  return items;
+});
+
+const moduleHint = computed(() => {
+  if (!auth.isMember) return "";
+  const names = auth.modules.map((code) => MODULE_LABELS[code] || code);
+  return names.length ? names.join(" · ") : "仅基础功能";
+});
+
+const expiryHint = computed(() => {
+  if (!auth.expiresAt) return "";
+  return String(auth.expiresAt).slice(0, 10);
+});
 
 // 当前加载的前端产物文件名，用来判断页面是不是最新构建
 const pageVersion = import.meta.url.split("/").pop();
@@ -57,13 +105,9 @@ function logoutAll() {
         </div>
       </div>
       <el-menu :default-active="route.path" router class="shell-menu">
-        <el-menu-item index="/">运行总览</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/config">线路配置</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/library">词库</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/resources">资源发现</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/leads">线索池</el-menu-item>
-        <el-menu-item v-if="auth.isSuperAdmin" index="/ops">账号与机器人</el-menu-item>
-        <el-menu-item v-if="canOperate" index="/system">系统管理</el-menu-item>
+        <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
+          {{ item.label }}
+        </el-menu-item>
       </el-menu>
       <div class="aside-footer">
         <span class="card-hint version">页面版本 {{ pageVersion }}</span>
@@ -77,10 +121,13 @@ function logoutAll() {
         <span class="page-title">{{ route.name === "dashboard" ? "运行总览" : "" }}</span>
         <div class="header-right">
           <el-tag type="success" effect="light">后台服务正常</el-tag>
-          <span class="card-hint">
-            {{ auth.username }} ·
-            {{ auth.role === "super_admin" ? "超级管理员" : auth.role === "sub_admin" ? "子管理员" : "只读" }}
-          </span>
+          <el-tag v-if="auth.isMember && moduleHint" type="info" effect="plain">
+            {{ moduleHint }}
+          </el-tag>
+          <el-tag v-if="auth.isMember && expiryHint" type="warning" effect="plain">
+            有效期至 {{ expiryHint }}
+          </el-tag>
+          <span class="card-hint">{{ auth.username }} · {{ auth.roleLabel }}</span>
         </div>
       </el-header>
       <el-main class="shell-main">

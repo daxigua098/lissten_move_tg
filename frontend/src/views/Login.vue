@@ -24,7 +24,8 @@ async function submit() {
       router.push({ name: "change-password" });
     } else {
       ElMessage.success(`欢迎回来，${data.username}`);
-      router.push({ name: "dashboard" });
+      // 三类账号共用登录页，落点不同：代理进代理工作台，其余进业务后台
+      router.push({ name: data.account_type === "agent" ? "agent" : "dashboard" });
     }
   } catch (error) {
     ElMessage.error(error.message);

@@ -4,6 +4,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 
 import { routesApi, sourcesApi, targetsApi } from "../api";
 import RouteEditor from "../components/RouteEditor.vue";
+import { auth } from "../stores/auth";
 import { collectRoleMismatches, targetRoleFullLabel, targetRoleShortLabel, targetRoleTagType } from "../targetRoles";
 
 const loading = ref(false);
@@ -12,8 +13,12 @@ const sources = ref([]);
 const targets = ref([]);
 const editorVisible = ref(false);
 const editingId = ref(null);
+// 只有被授权的功能块才出现对应的业务类型：A 搬运 = carry，B 监听 = monitor
+const canCarry = computed(() => auth.hasModule("carry"));
+const canMonitor = computed(() => auth.hasModule("monitor"));
+
 const matrix = reactive({
-  business_type: "A",
+  business_type: canCarry.value ? "A" : "B",
   source_chat_ids: [],
   target_chat_ids: [],
 });
@@ -125,11 +130,19 @@ onMounted(load);
         <div class="matrix-side">
           <div class="matrix-head">业务类型</div>
           <el-radio-group v-model="matrix.business_type">
-            <el-radio-button value="A">A 搬运帖子</el-radio-button>
-            <el-radio-button value="B">B 监听会员</el-radio-button>
+            <el-radio-button v-if="canCarry" value="A">A 搬运帖子</el-radio-button>
+            <el-radio-button v-if="canMonitor" value="B">B 监听会员</el-radio-button>
           </el-radio-group>
           <p class="card-hint">
-            A 线搬运内容并按频率挂广告；B 线监听会员发言并生成线索卡片。
+            <template v-if="canCarry && canMonitor">
+              A 线搬运内容并按频率挂广告；B 线监听会员发言并生成线索卡片。
+            </template>
+            <template v-else-if="canCarry">
+              A 线把源群内容按频率搬运到接收群，并可挂广告素材。
+            </template>
+            <template v-else>
+              B 线监听源群里会员的发言，命中关键词后生成线索卡片。
+            </template>
           </p>
         </div>
         <div class="matrix-side">

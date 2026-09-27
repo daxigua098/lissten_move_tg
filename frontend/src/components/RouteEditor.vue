@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, reactive, ref, watch } from "vue";
 
 import { adAssetsApi, botsApi, keywordsApi, routesApi } from "../api";
+import { auth } from "../stores/auth";
 import MatchHelp from "./MatchHelp.vue";
 import {
   collectRoleMismatches,
@@ -18,6 +19,14 @@ const props = defineProps({
   targets: { type: Array, default: () => [] },
 });
 const emit = defineEmits(["update:modelValue", "saved"]);
+
+// 只有被授权的功能块才出现对应的业务类型（A 搬运 / B 监听）
+const canCarry = computed(() => auth.hasModule("carry"));
+const canMonitor = computed(() => auth.hasModule("monitor"));
+// 新建线路时的默认业务类型：优先用被授权的那个
+function defaultBusinessType() {
+  return canCarry.value ? "A" : "B";
+}
 
 const loading = ref(false);
 const saving = ref(false);
@@ -40,7 +49,7 @@ const form = reactive({
   name: "",
   source_chat_ids: [],
   target_chat_ids: [],
-  business_type: "A",
+  business_type: defaultBusinessType(),
   exec_account_id: null,
   notify_bot_id: null,
   sender_mode: "account",
@@ -204,7 +213,7 @@ function resetForm() {
     name: "",
     source_chat_ids: props.sources[0] ? [props.sources[0].id] : [],
     target_chat_ids: [],
-    business_type: "A",
+    business_type: defaultBusinessType(),
     exec_account_id: null,
     notify_bot_id: null,
     sender_mode: "account",
@@ -447,8 +456,8 @@ async function resetProgress(row) {
         </el-form-item>
         <el-form-item label="业务类型">
           <el-radio-group v-model="form.business_type">
-            <el-radio-button value="A">A 搬运帖子</el-radio-button>
-            <el-radio-button value="B">B 监听会员</el-radio-button>
+            <el-radio-button v-if="canCarry" value="A">A 搬运帖子</el-radio-button>
+            <el-radio-button v-if="canMonitor" value="B">B 监听会员</el-radio-button>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="监听源（可多选）">

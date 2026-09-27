@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 
-import { auth } from "../stores/auth";
+import { auth, ROLE_RANK } from "../stores/auth";
+import AgentConsole from "../views/AgentConsole.vue";
 import ChangePassword from "../views/ChangePassword.vue";
 import ConfigTabs from "../views/ConfigTabs.vue";
 import LibraryTabs from "../views/LibraryTabs.vue";
@@ -11,19 +12,49 @@ import OverviewTabs from "../views/OverviewTabs.vue";
 import ResourceTabs from "../views/ResourceTabs.vue";
 import SystemTabs from "../views/SystemTabs.vue";
 
-const ROLE_RANK = { viewer: 1, sub_admin: 2, super_admin: 3 };
-
+// 路由 meta 约定（三层一致的前端那两层：菜单 + 路由）：
+//   role        平台账号内部角色下限
+//   modules     会员账号需要的功能块（命中任意一个即可）
+//   platformOnly 平台账号专属（会员一律跳回运行总览）
+//   accountType 指定账号类型专属（代理工作台）
 const routes = [
   { path: "/login", name: "login", component: Login, meta: { public: true } },
   { path: "/change-password", name: "change-password", component: ChangePassword },
-  // 合并后的 6 个入口；子页面用 ?tab= 定位
   { path: "/", name: "dashboard", component: OverviewTabs },
-  { path: "/config", name: "config", component: ConfigTabs, meta: { role: "sub_admin" } },
-  { path: "/library", name: "library", component: LibraryTabs, meta: { role: "sub_admin" } },
-  { path: "/leads", name: "leads", component: Leads, meta: { role: "sub_admin" } },
-  { path: "/resources", name: "resources", component: ResourceTabs, meta: { role: "sub_admin" } },
+  { path: "/agent", name: "agent", component: AgentConsole, meta: { accountType: "agent" } },
+  // 合并后的入口；子页面用 ?tab= 定位
+  {
+    path: "/config",
+    name: "config",
+    component: ConfigTabs,
+    meta: { role: "sub_admin", modules: ["carry", "monitor"] },
+  },
+  {
+    path: "/library",
+    name: "library",
+    component: LibraryTabs,
+    meta: { role: "sub_admin", modules: ["monitor"] },
+  },
+  {
+    path: "/leads",
+    name: "leads",
+    component: Leads,
+    meta: { role: "sub_admin", modules: ["monitor"] },
+  },
+  {
+    path: "/resources",
+    name: "resources",
+    component: ResourceTabs,
+    meta: { role: "sub_admin", modules: ["discovery"] },
+  },
+  // 「账号与机器人」是基础能力，平台（超管）与会员都能进，代理不能
   { path: "/ops", name: "ops", component: OpsTabs, meta: { role: "super_admin" } },
-  { path: "/system", name: "system", component: SystemTabs, meta: { role: "sub_admin" } },
+  {
+    path: "/system",
+    name: "system",
+    component: SystemTabs,
+    meta: { role: "sub_admin", platformOnly: true },
+  },
   // 旧地址保留重定向，收藏夹与脚本不受影响
   { path: "/sources", redirect: { path: "/config", query: { tab: "sources" } } },
   { path: "/targets", redirect: { path: "/config", query: { tab: "targets" } } },
@@ -56,9 +87,31 @@ const router = createRouter({
   routes,
 });
 
+/** 登录后按账号类型落到各自的首页。 */
+export function homeRoute() {
+  return auth.isAgent ? { name: "agent" } : { name: "dashboard" };
+}
+
+function canAccess(meta) {
+  // 代理账号：只有代理工作台，业务页面一律打回
+  if (auth.isAgent) {
+    return meta.accountType === "agent";
+  }
+  // 会员账号：平台专属页面不给，功能块命中才放行
+  if (auth.isMember) {
+    if (meta.platformOnly || meta.accountType === "agent") return false;
+    if (meta.modules && !auth.hasAnyModule(meta.modules)) return false;
+    return true;
+  }
+  // 平台账号：沿用内部角色分级
+  if (meta.accountType === "agent") return false;
+  if (meta.role && auth.roleRank < (ROLE_RANK[meta.role] || 0)) return false;
+  return true;
+}
+
 router.beforeEach((to) => {
   if (to.meta.public) {
-    return auth.isAuthenticated && to.name === "login" ? { name: "dashboard" } : true;
+    return auth.isAuthenticated && to.name === "login" ? homeRoute() : true;
   }
   if (!auth.isAuthenticated) {
     return { name: "login" };
@@ -66,8 +119,8 @@ router.beforeEach((to) => {
   if (auth.mustChange && to.name !== "change-password") {
     return { name: "change-password" };
   }
-  if (to.meta.role && (ROLE_RANK[auth.role] || 0) < ROLE_RANK[to.meta.role]) {
-    return { name: "dashboard" };
+  if (!canAccess(to.meta)) {
+    return homeRoute();
   }
   return true;
 });

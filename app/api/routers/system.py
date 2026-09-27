@@ -9,11 +9,11 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import require_member_or_platform, session_dependency
+from app.api.deps import current_identity, require_member_or_platform, session_dependency
 from app.core.config import AppConfig
 from app.core.heartbeat import heartbeat_age_seconds, read_status
 from app.core.runtime_control import read_control
-from app.db.models import User
+from app.db.models import ACCOUNT_TYPE_PLATFORM, User
 from app.db.session import get_engine
 from app.services import delivery_service, lead_service, runtime_service, user_service
 
@@ -27,13 +27,18 @@ router = APIRouter(
 @router.get("/status")
 async def status(
     request: Request,
+    identity: dict[str, Any] = Depends(current_identity),
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
     """运行状态：数据库连通性、账号统计与保留策略。
 
     运行时（采集/投递进程）的心跳在 T1-03 实现，此处先返回 unknown。
+
+    平台级账号统计（账号总数、启用超管数）只对**平台账号**返回：
+    会员看到的是自己账号的统计，不该知道平台上有几个后台账号。
     """
     config: AppConfig = request.app.state.config
+    is_platform = identity.get("account_type") == ACCOUNT_TYPE_PLATFORM
     total_users = int(await session.scalar(select(func.count()).select_from(User)) or 0)
     active_super_admins = await user_service.count_active_super_admins(session)
     jobs = await delivery_service.job_stats(session)
@@ -64,8 +69,8 @@ async def status(
             "config_stale": bool(pending_routes),
         },
         "counts": {
-            "users": total_users,
-            "active_super_admins": active_super_admins,
+            "users": total_users if is_platform else None,
+            "active_super_admins": active_super_admins if is_platform else None,
             "sources": 0,
             "targets": 0,
             "routes": 0,

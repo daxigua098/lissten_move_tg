@@ -262,6 +262,26 @@ async def test_agent_login_contract_has_no_modules(admin_client, api_config) -> 
     assert body["tenant_id"] is None
 
 
+async def test_member_cannot_see_platform_account_counts(admin_client, api_config) -> None:
+    """平台级账号统计只给平台账号：会员看到的应为 null，避免跨租户信息泄露。"""
+    await _provision(api_config, username="memberD", account_type="member", modules=["carry"])
+    member_token = (await login(admin_client, username="memberD", password="Pass1234")).json()[
+        "token"
+    ]
+
+    member_status = (
+        await admin_client.get("/api/system/status", headers=auth_header(member_token))
+    ).json()
+    assert member_status["counts"]["users"] is None
+    assert member_status["counts"]["active_super_admins"] is None
+
+    admin_token = (await login(admin_client)).json()["token"]
+    admin_status = (
+        await admin_client.get("/api/system/status", headers=auth_header(admin_token))
+    ).json()
+    assert isinstance(admin_status["counts"]["users"], int)
+
+
 async def test_check_endpoint_matches_login_contract(admin_client, api_config) -> None:
     await _provision(api_config, username="memberC", account_type="member", modules=["monitor"])
     login_body = (await login(admin_client, username="memberC", password="Pass1234")).json()

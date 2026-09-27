@@ -2,7 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import { auth } from "../stores/auth";
+import { auth, ROLE_RANK } from "../stores/auth";
 
 const props = defineProps({
   // [{ name, label, component, role? }]
@@ -12,13 +12,18 @@ const props = defineProps({
 const route = useRoute();
 const router = useRouter();
 
-const ROLE_RANK = { viewer: 1, sub_admin: 2, super_admin: 3 };
-const visibleTabs = computed(() =>
-  props.tabs.filter(
-    (item) =>
-      !item.role || (ROLE_RANK[auth.role] || 0) >= (ROLE_RANK[item.role] || 0),
-  ),
-);
+/** 标签可见性：会员看功能块，平台账号看角色，代理在这里没有可看的业务标签。 */
+function tabVisible(item) {
+  if (auth.isMember) {
+    return !item.module || auth.hasModule(item.module);
+  }
+  if (item.role) {
+    return auth.roleRank >= (ROLE_RANK[item.role] || 0);
+  }
+  return true;
+}
+
+const visibleTabs = computed(() => props.tabs.filter(tabVisible));
 
 function currentFromQuery() {
   const wanted = String(route.query.tab || "");

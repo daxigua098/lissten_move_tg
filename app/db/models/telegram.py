@@ -87,6 +87,15 @@ class TgAccount(TenantOwnedMixin, TimestampMixin, Base):
     owner_confirm_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
     # 发信息账号的接码地址（带 token，属凭据，加密存储）
     code_url_enc: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # 最近一次取到的登录验证码 / 二级密码（同样是凭据，取到就先存下来）
+    last_code_enc: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_code_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_2fa_enc: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # 接码平台提示「30 分钟内没有新验证码」时的冷却截止时间
+    code_cooldown_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
     # 发信息账号退役（软删）：保留审计与联系档案，只停止外呼
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retire_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)

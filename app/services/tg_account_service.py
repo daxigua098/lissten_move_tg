@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,7 +17,7 @@ from app.core.errors import NotFoundError, UserExistsError, ValidationFailedErro
 from app.core.security import FieldCipher, mask_phone
 from app.core.source_resolver import PHONE_PATTERN
 from app.core.telegram_client import AccountProfile
-from app.db.base import utc_now
+from app.db.base import as_utc, utc_now
 from app.db.models import (
     ACCOUNT_ACTIVE,
     ACCOUNT_DISABLED,
@@ -394,6 +396,53 @@ async def _clear_other_defaults(session: AsyncSession, keep_id: int, purpose: st
     )
     for item in others:
         item.is_default = False
+
+
+CODE_COOLDOWN_MINUTES = 30
+
+
+async def save_fetched_code(
+    session: AsyncSession,
+    config: AppConfig,
+    account: TgAccount,
+    *,
+    code: str,
+    password: str | None = None,
+) -> TgAccount:
+    """接码平台一返回就先落库：后续登录失败也能看到验证码 / 二级密码。"""
+    cipher = FieldCipher.from_config(config)
+    text = (code or "").strip()
+    if text:
+        account.last_code_enc = cipher.encrypt(text)
+        account.last_code_at = utc_now()
+    secret = (password or "").strip()
+    if secret:
+        account.last_2fa_enc = cipher.encrypt(secret)
+    await session.commit()
+    await session.refresh(account)
+    return account
+
+
+async def mark_code_cooldown(
+    session: AsyncSession,
+    account: TgAccount,
+    *,
+    minutes: int = CODE_COOLDOWN_MINUTES,
+) -> TgAccount:
+    """接码平台提示 30 分钟内没有新码：这个账号先挂起。"""
+    account.code_cooldown_until = utc_now() + timedelta(minutes=int(minutes))
+    await session.commit()
+    await session.refresh(account)
+    return account
+
+
+def code_cooldown_remaining(account: TgAccount) -> int:
+    """还剩多少秒冷却（0 表示可以继续）。"""
+    until = as_utc(account.code_cooldown_until)
+    if until is None:
+        return 0
+    left = int((until - utc_now()).total_seconds())
+    return max(0, left)
 
 
 def decrypt_code_url(config: AppConfig, account: TgAccount) -> str | None:

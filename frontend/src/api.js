@@ -139,6 +139,7 @@ export const accountsApi = {
   loginStatus: (id) => http.get(`/api/accounts/${id}/login/status`),
   refreshCredentials: (id) => http.post(`/api/accounts/${id}/credentials/refresh`),
   importAccounts: (payload) => http.post("/api/accounts/import", payload),
+  codeUrl: (id) => http.get(`/api/accounts/${id}/code-url`),
   fetchLoginCode: (id, payload) =>
     http.post(`/api/accounts/${id}/code/fetch`, payload, { timeout: 320000 }),
   autoLogin: (accountIds) => http.post("/api/accounts/auto-login", { account_ids: accountIds }),

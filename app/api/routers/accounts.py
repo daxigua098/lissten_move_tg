@@ -68,6 +68,10 @@ def serialize_account(config: AppConfig, account: TgAccount) -> dict[str, Any]:
         "note": account.note,
         "has_code_url": bool(account.code_url_enc),
         "code_host": _code_host(config, account),
+        "has_code": bool(account.last_code_enc),
+        "has_2fa": bool(account.last_2fa_enc),
+        "code_cooldown_until": as_utc(account.code_cooldown_until),
+        "code_cooldown_remaining": tg_account_service.code_cooldown_remaining(account),
         "owner_confirmed_at": as_utc(account.owner_confirmed_at),
         "owner_confirmed_by": account.owner_confirmed_by,
         "created_at": as_utc(account.created_at),
@@ -297,6 +301,23 @@ async def stop_auto_login(payload: AutoLoginStopRequest) -> dict[str, Any]:
     return {"stopped": outreach_auto_login_service.stop(payload.account_ids or None)}
 
 
+@router.get("/{account_id}/code-url")
+async def get_code_url(
+    account_id: int,
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """返回该账号的接码地址，用于在浏览器里打开真实页面（接口读不到时人工看）。"""
+    config: AppConfig = request.app.state.config
+    account = await tg_account_service.get_account(session, account_id)
+    if account is None:
+        raise NotFoundError("执行账号不存在")
+    url = tg_account_service.decrypt_code_url(config, account)
+    if not url:
+        raise ValidationFailedError("这个账号还没有接码地址")
+    return {"code_url": url}
+
+
 @router.post("/{account_id}/code/fetch")
 async def fetch_login_code(
     account_id: int,
@@ -318,12 +339,24 @@ async def fetch_login_code(
             raise ValidationFailedError("这个账号还没有接码地址，请粘贴一次取码链接")
         http_get = getattr(request.app.state, "logincode_http_get", None)
         service = await logincode.resolve_service(code_url, http_get=http_get)
-        result = await logincode.wait_for_code(
-            service,
-            http_get=http_get,
-            timeout=float(payload.timeout_seconds),
-            poll=CODE_FETCH_POLL_SECONDS,
-            first_delay=CODE_FETCH_FIRST_DELAY_SECONDS,
+        try:
+            result = await logincode.wait_for_code(
+                service,
+                http_get=http_get,
+                timeout=float(payload.timeout_seconds),
+                poll=CODE_FETCH_POLL_SECONDS,
+                first_delay=CODE_FETCH_FIRST_DELAY_SECONDS,
+            )
+        except logincode.LogincodeCooldown:
+            # 平台要 30 分钟内没有新码：挂起这个账号
+            await tg_account_service.mark_code_cooldown(session, account)
+            raise
+        await tg_account_service.save_fetched_code(
+            session,
+            config,
+            account,
+            code=result["login_code"],
+            password=result["password"],
         )
         return {
             "source": "logincode",
@@ -343,6 +376,12 @@ async def fetch_login_code(
         else:
             found = await mail2925.fetch_latest_code(mail_config, alias=alias)
         if found.get("code"):
+            await tg_account_service.save_fetched_code(
+                session,
+                config,
+                account,
+                code=found["code"],
+            )
             return {
                 "source": "mail2925",
                 "code": found["code"],

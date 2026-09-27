@@ -16,9 +16,9 @@ from loguru import logger
 from app.core import logincode
 from app.core.config import AppConfig
 from app.core.errors import ValidationFailedError
-from app.core.logincode import WaitCancelled, resolve_service, wait_for_code
+from app.core.logincode import LogincodeCooldown, WaitCancelled, resolve_service, wait_for_code
 from app.db.base import as_utc, utc_now
-from app.db.models import TgAccount
+from app.db.models import ACCOUNT_ACTIVE, TgAccount
 from app.db.session import session_scope
 from app.services import tg_account_service, tg_login_service
 
@@ -32,6 +32,7 @@ STAGE_LABELS: dict[str, str] = {
     "sending": "发送验证码",
     "waiting_code": "等待接码平台",
     "verifying": "提交验证码",
+    "cooldown": "30 分钟后重试",
     "success": "登录成功",
     "failed": "失败",
     "stopped": "已停止",
@@ -81,13 +82,31 @@ async def start(
     http_get: Any = None,
     client_factory: Any = None,
 ) -> dict[str, Any]:
-    """为这些账号启动自动登录任务。"""
+    """为这些账号启动自动登录任务；已登录 / 冷却中的会被跳过。"""
     started: list[int] = []
-    skipped: list[int] = []
+    skipped: list[dict[str, Any]] = []
     for account_id in account_ids:
         if is_running(account_id):
-            skipped.append(account_id)
+            skipped.append({"account_id": account_id, "reason": "正在登录中"})
             continue
+        async with session_scope() as session:
+            account = await session.get(TgAccount, account_id)
+            if account is None:
+                skipped.append({"account_id": account_id, "reason": "账号不存在"})
+                continue
+            name = account.name
+            if account.status == ACCOUNT_ACTIVE:
+                skipped.append({"account_id": account_id, "reason": f"{name} 已登录，自动跳过"})
+                continue
+            left = tg_account_service.code_cooldown_remaining(account)
+            if left > 0:
+                skipped.append(
+                    {
+                        "account_id": account_id,
+                        "reason": f"{name} 接码平台冷却中，约 {max(1, left // 60)} 分钟后重试",
+                    }
+                )
+                continue
         _STOP.discard(account_id)
         _set(account_id, stage="resolving", message="准备开始")
         _TASKS[account_id] = asyncio.create_task(
@@ -142,15 +161,38 @@ async def _run(
             )
 
         _set(account_id, stage="waiting_code", message="等待接码平台返回验证码")
-        verification = await wait_for_code(
-            service,
-            http_get=http_get,
-            timeout=WAIT_TIMEOUT_SECONDS,
-            poll=POLL_SECONDS,
-            first_delay=FIRST_DELAY_SECONDS,
-            should_stop=lambda: account_id in _STOP,
-            on_step=lambda text: _set(account_id, stage="waiting_code", message=text),
-        )
+        try:
+            verification = await wait_for_code(
+                service,
+                http_get=http_get,
+                timeout=WAIT_TIMEOUT_SECONDS,
+                poll=POLL_SECONDS,
+                first_delay=FIRST_DELAY_SECONDS,
+                should_stop=lambda: account_id in _STOP,
+                on_step=lambda text: _set(account_id, stage="waiting_code", message=text),
+            )
+        except LogincodeCooldown as exc:
+            # 平台说 30 分钟内没有新码：终止这个账号，冷却期结束前不再处理
+            async with session_scope() as session:
+                account = await session.get(TgAccount, account_id)
+                if account is not None:
+                    await tg_account_service.mark_code_cooldown(session, account)
+            await _cleanup(account_id)
+            _set(account_id, stage="cooldown", status="cooldown", message=str(exc))
+            logger.info("接码平台冷却，跳过账号 {}：{}", account_id, exc)
+            return
+
+        # 取到码先落库：即使后面登录失败，也能看到验证码与二级密码
+        async with session_scope() as session:
+            account = await session.get(TgAccount, account_id)
+            if account is not None:
+                await tg_account_service.save_fetched_code(
+                    session,
+                    config,
+                    account,
+                    code=verification["login_code"],
+                    password=verification["password"],
+                )
 
         _set(account_id, stage="verifying", message="正在提交验证码")
         async with session_scope() as session:

@@ -68,6 +68,20 @@ async function startAutoLogin() {
   }
 }
 
+async function openPlatform() {
+  try {
+    const { data } = await accountsApi.codeUrl(props.account.id);
+    window.open(data.code_url, "_blank", "noopener");
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+function cooldownMinutes() {
+  const left = Number(props.account?.code_cooldown_remaining || 0);
+  return left > 0 ? Math.max(1, Math.ceil(left / 60)) : 0;
+}
+
 async function fetchCode(source) {
   if (source === "mail2925" && (!mail.user.trim() || !mail.password)) {
     ElMessage.warning("请先填写 2925 主邮箱和密码");
@@ -198,8 +212,18 @@ async function submitPassword() {
         <el-button type="success" :loading="autoRunning" @click="startAutoLogin">
           通过接码平台登录
         </el-button>
+        <el-button v-if="account.has_code_url" size="small" @click="openPlatform">
+          打开接码平台
+        </el-button>
         <p v-if="autoMessage" class="card-hint">{{ autoMessage }}</p>
         <p v-if="account.code_host" class="card-hint">已绑定接码地址：{{ account.code_host }}</p>
+        <p v-if="account.has_code || account.has_2fa" class="card-hint">
+          已保存：
+          {{ account.has_code ? "登录验证码" : "" }}{{ account.has_code && account.has_2fa ? " + " : "" }}{{ account.has_2fa ? "二级密码" : "" }}
+        </p>
+        <p v-if="cooldownMinutes()" class="card-hint">
+          接码平台冷却中，约 {{ cooldownMinutes() }} 分钟后可重试
+        </p>
       </div>
 
       <div v-else-if="stage === 'code_sent'" class="login-step">

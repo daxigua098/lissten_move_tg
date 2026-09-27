@@ -1,6 +1,6 @@
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref } from "vue";
 
 import { accountsApi } from "../api";
 import AccountLoginDialog from "../components/AccountLoginDialog.vue";
@@ -12,6 +12,13 @@ const dialogVisible = ref(false);
 const loginDialog = ref(false);
 const loginAccount = ref(null);
 const selected = ref([]);
+// 「清除已登录」只从列表里隐藏，不删账号、不影响 Telegram 在线状态
+const HIDDEN_KEY = "outreach-hidden-accounts";
+const hiddenIds = ref(JSON.parse(localStorage.getItem(HIDDEN_KEY) || "[]"));
+const showHidden = ref(false);
+const visibleRows = computed(() =>
+  showHidden.value ? rows.value : rows.value.filter((row) => !hiddenIds.value.includes(row.id)),
+);
 const form = reactive({
   name: "",
   phone: "",
@@ -155,6 +162,39 @@ async function toggleState(row) {
   }
 }
 
+function persistHidden() {
+  localStorage.setItem(HIDDEN_KEY, JSON.stringify(hiddenIds.value));
+}
+
+function clearLoggedIn() {
+  const loggedIn = rows.value.filter((row) => row.status === "active").map((row) => row.id);
+  if (!loggedIn.length) {
+    ElMessage.info("当前没有已登录的账号");
+    return;
+  }
+  hiddenIds.value = [...new Set([...hiddenIds.value, ...loggedIn])];
+  persistHidden();
+  ElMessage.success(`已从列表清除 ${loggedIn.length} 个已登录账号（账号本身保留）`);
+}
+
+function restoreHidden() {
+  hiddenIds.value = [];
+  persistHidden();
+  showHidden.value = false;
+  ElMessage.success("已恢复显示全部账号");
+}
+
+function hiddenCount() {
+  return rows.value.filter((row) => hiddenIds.value.includes(row.id)).length;
+}
+
+function codeState(row) {
+  const left = Number(row.code_cooldown_remaining || 0);
+  if (left > 0) return `冷却 ${Math.max(1, Math.ceil(left / 60))} 分钟`;
+  if (row.has_code) return row.has_2fa ? "已收码 + 二级密码" : "已收验证码";
+  return "-";
+}
+
 function openImport() {
   importText.value = "";
   importConfirmed.value = false;
@@ -226,8 +266,11 @@ async function autoLoginBatch() {
   }
   const withoutCode = targets.filter((row) => !row.code_host);
   try {
-    await accountsApi.autoLogin(targets.map((row) => row.id));
+    const { data } = await accountsApi.autoLogin(targets.map((row) => row.id));
     ElMessage.success("已开始自动登录，正在等接码平台返回验证码");
+    if (data.skipped?.length) {
+      ElMessage.warning(data.skipped.map((item) => item.reason).join("；"));
+    }
     if (withoutCode.length) {
       ElMessage.warning(`其中 ${withoutCode.length} 个账号没有接码地址，会直接失败`);
     }
@@ -253,7 +296,7 @@ async function stopAutoLogin() {
 function openBatch() {
   const targets = selected.value.length
     ? selected.value
-    : rows.value.filter((row) => row.status !== "active");
+    : visibleRows.value.filter((row) => row.status !== "active");
   if (!targets.length) {
     ElMessage.warning("没有需要登录的账号，请先勾选或先登记账号");
     return;
@@ -426,10 +469,17 @@ onMounted(load);
   <div>
     <div class="toolbar">
       <h2 class="page-title">发信息账号</h2>
-      <span class="card-hint">共 {{ total }} 个账号</span>
+      <span class="card-hint">共 {{ visibleRows.length }} 个账号</span>
       <div class="spacer" />
       <el-button size="small" type="primary" @click="openCreate">登记发信息账号</el-button>
       <el-button size="small" @click="openImport">导入账号</el-button>
+      <el-button size="small" @click="clearLoggedIn">清除已登录</el-button>
+      <el-button v-if="hiddenCount()" size="small" @click="showHidden = !showHidden">
+        {{ showHidden ? "隐藏已清除" : `显示已清除（${hiddenCount()}）` }}
+      </el-button>
+      <el-button v-if="hiddenIds.length && !hiddenCount()" size="small" @click="restoreHidden">
+        恢复显示
+      </el-button>
       <el-button size="small" @click="openBatch">批量登录</el-button>
       <el-button size="small" :disabled="!selected.length" @click="retireBatch(false)">
         批量停用
@@ -448,7 +498,7 @@ onMounted(load);
 
     <el-table
       v-loading="loading"
-      :data="rows"
+      :data="visibleRows"
       size="small"
       border
       @selection-change="(value) => (selected = value)"
@@ -491,6 +541,9 @@ onMounted(load);
         <template #default="{ row }">
           {{ row.outreach?.today_sent ?? 0 }} / {{ row.outreach?.daily_cap ?? "-" }}
         </template>
+      </el-table-column>
+      <el-table-column label="取码状态" width="150">
+        <template #default="{ row }">{{ codeState(row) }}</template>
       </el-table-column>
       <el-table-column label="7日成功率" width="110">
         <template #default="{ row }">{{ percent(row.outreach?.success_rate_7d) }}</template>

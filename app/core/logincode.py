@@ -37,6 +37,12 @@ class WaitCancelled(RuntimeError):
     """等待过程被人工取消。"""
 
 
+class LogincodeCooldown(ValidationFailedError):
+    """接码平台提示：30 分钟内没有新的登录验证码（该账号先挂起）。"""
+
+    code = "LOGINCODE_COOLDOWN"
+
+
 @dataclass(frozen=True)
 class LogincodeService:
     """一个取码地址解析出来的接口信息。"""
@@ -175,7 +181,7 @@ async def wait_for_code(
         if result["status"] == "invalid":
             raise ValidationFailedError("接码链接已失效（账号可能已被封禁）")
         if result["status"] == "failed":
-            raise ValidationFailedError("接码平台提示：30 分钟内没有新的登录验证码，请稍后重试")
+            raise LogincodeCooldown("接码平台提示：30 分钟内没有新的登录验证码，请稍后重试")
         if on_step is not None and int(waited) % 15 == 0:
             on_step(f"等待接码平台返回验证码（已等待 {int(waited)} 秒）")
         await pause(poll)

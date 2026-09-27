@@ -348,6 +348,33 @@ async def test_peer_reference_only_is_not_captured(db, fake_delivery_client) -> 
     assert fake_delivery_client.sent == []
 
 
+async def test_full_push_all_still_requires_direct_contact(db, fake_delivery_client) -> None:
+    """全量推卡片也不能绕过准入：没有用户名/手机号就完全不抓。"""
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(
+        db,
+        listen_mode="all",
+        push_card_on_all=True,
+    )
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐", username=None, access_hash=123456),
+        [route],
+    )
+
+    async with session_scope() as session:
+        _rows, total = await lead_service.list_leads(session)
+    assert total == 0
+    assert fake_delivery_client.sent == []
+
+
 async def test_global_suppression_blocks_capture(db, fake_delivery_client) -> None:
     from app.db.models import ContactSuppression
     from app.db.session import session_scope

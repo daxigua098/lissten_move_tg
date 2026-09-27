@@ -32,7 +32,6 @@ from app.core.content_cleaner import (
 from app.core.heartbeat import heartbeat_age_seconds, is_running, read_status, write_status
 from app.core.keyword_matcher import is_excluded, match_text
 from app.core.lead_extractor import extract_contacts, render_lead_card, sender_info
-from app.core.outreach_capture import CONSENT_NONE
 from app.core.route_config import load_a_config, load_b_config
 from app.core.runtime_control import is_paused, is_stop_requested, set_paused, set_stop_requested
 from app.core.runtime_lock import RuntimeLock, RuntimeLockError
@@ -697,27 +696,24 @@ class RuntimeService:
                 if hit is None and config.listen_mode != "all":
                     continue
 
-                # 命中后仍计算冷触达资格，给后续 outreach 流程留下快照。
-                # 但“全量监听”是否入库、以及命中卡片是否转发，不由资格结果短路：
-                # 否则大量没有用户名/手机号的群成员会表现成“明明在运行却完全没数据”。
-                decision = None
-                if hit is not None:
-                    decision = await lead_service.evaluate_capture_eligibility(
-                        session,
-                        tenant_id=fresh.tenant_id,
-                        sender=sender,
-                        text=text,
-                        capture_mode=config.capture_mode,
-                        source_account_id=fresh.exec_account_id,
+                # 硬性准入：必须留有可用于冷触达的直接字段（用户名 / 手机号等）。
+                # 全量监听也不能绕过，否则卡片会出现“无用户名 + 未提供联系方式”的无效线索。
+                decision = await lead_service.evaluate_capture_eligibility(
+                    session,
+                    tenant_id=fresh.tenant_id,
+                    sender=sender,
+                    text=text,
+                    capture_mode=config.capture_mode,
+                    source_account_id=fresh.exec_account_id,
+                )
+                if not decision.allowed:
+                    logger.debug(
+                        "跳过不可冷触达用户：{}（线路 {}，原因 {}）",
+                        sender.display_name or sender.tg_user_id,
+                        fresh.name,
+                        decision.reason,
                     )
-                    if not decision.allowed and config.listen_mode != "all":
-                        logger.debug(
-                            "跳过不可冷触达用户：{}（线路 {}，原因 {}）",
-                            sender.display_name or sender.tg_user_id,
-                            fresh.name,
-                            decision.reason,
-                        )
-                        continue
+                    continue
                 if hit is not None and await lead_service.recent_lead_exists(
                     session,
                     route_id=fresh.id,
@@ -735,7 +731,6 @@ class RuntimeService:
                     capture_phone=config.capture_phone,
                     capture_contact=config.capture_contact,
                 )
-                metadata = decision if decision is not None and decision.allowed else None
                 lead = await lead_service.record_lead(
                     session,
                     route_id=fresh.id,
@@ -751,14 +746,10 @@ class RuntimeService:
                     text=text,
                     source_title=source_title,
                     tenant_id=fresh.tenant_id,
-                    reachable_routes=metadata.reachable_routes if metadata else (),
-                    consent_type=metadata.consent_type if metadata else CONSENT_NONE,
-                    capture_reason=(
-                        metadata.reason
-                        if metadata
-                        else (decision.reason if decision else "FULL_INDEX")
-                    ),
-                    route_owner_account_id=(metadata.route_owner_account_id if metadata else None),
+                    reachable_routes=decision.reachable_routes,
+                    consent_type=decision.consent_type,
+                    capture_reason=decision.reason,
+                    route_owner_account_id=decision.route_owner_account_id,
                 )
                 await lead_service.upsert_member(
                     session,
@@ -766,8 +757,8 @@ class RuntimeService:
                     seen_at=view.date,
                     hit=hit is not None,
                     tenant_id=fresh.tenant_id,
-                    reachable_routes=metadata.reachable_routes if metadata else (),
-                    consent_type=metadata.consent_type if metadata else CONSENT_NONE,
+                    reachable_routes=decision.reachable_routes,
+                    consent_type=decision.consent_type,
                 )
                 logger.info(
                     "监听到发言：{}（线路 {}，命中 {}）",

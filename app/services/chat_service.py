@@ -20,13 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.telegram_client import ChatProfile
 from app.db.models import (
-    SELF_TENANT_ID,
     SOURCE_KIND_LOCAL,
     TARGET_ROLE_CONTENT,
     TARGET_ROLES,
     ChatDirectory,
     TenantChat,
 )
+from app.db.tenant_context import scoped_tenant_id
 
 
 def load_tags(chat: TenantChat) -> list[str]:
@@ -62,9 +62,10 @@ async def get_chat_by_tg_id(
     session: AsyncSession,
     tg_id: int,
     *,
-    tenant_id: int = SELF_TENANT_ID,
+    tenant_id: int | None = None,
 ) -> TenantChat | None:
     """按 Telegram ID 查某租户下的群配置。"""
+    tenant_id = resolve_tenant_id(tenant_id)
     return await session.scalar(
         select(TenantChat)
         .join(ChatDirectory, TenantChat.chat_id == ChatDirectory.id)
@@ -153,12 +154,18 @@ def _scoped_conditions(
     return conditions
 
 
+def resolve_tenant_id(tenant_id: int | None = None) -> int:
+    """没显式给租户时用当前作用域；非请求路径落回自营租户（P1-05）。"""
+    return tenant_id if tenant_id is not None else scoped_tenant_id()
+
+
 def _page_statements(
     conditions: list[Any],
     *,
-    tenant_id: int,
+    tenant_id: int | None = None,
     order_by: Any = None,
 ) -> tuple[Any, Any]:
+    tenant_id = resolve_tenant_id(tenant_id)
     join = ChatDirectory.__table__.join(
         TenantChat.__table__,
         TenantChat.chat_id == ChatDirectory.id,
@@ -202,7 +209,7 @@ async def list_chats(
     keyword: str | None = None,
     limit: int = 50,
     offset: int = 0,
-    tenant_id: int = SELF_TENANT_ID,
+    tenant_id: int | None = None,
 ) -> tuple[list[TenantChat], int]:
     """分页查询聊天对象。"""
     conditions = _scoped_conditions(
@@ -225,9 +232,10 @@ async def upsert_chat_from_profile(
     tags: list[str] | None = None,
     note: str | None = None,
     source_kind: str = SOURCE_KIND_LOCAL,
-    tenant_id: int = SELF_TENANT_ID,
+    tenant_id: int | None = None,
 ) -> TenantChat:
     """按 Telegram ID 新增或更新：客观信息进目录，租户配置进 tenant_chats。"""
+    tenant_id = resolve_tenant_id(tenant_id)
     if not profile.tg_id:
         raise ValidationFailedError("缺少 Telegram 群 ID，无法登记")
 
@@ -313,8 +321,9 @@ async def delete_chat(session: AsyncSession, chat_id: int) -> TenantChat:
     return chat
 
 
-async def list_tags(session: AsyncSession, *, tenant_id: int = SELF_TENANT_ID) -> list[str]:
+async def list_tags(session: AsyncSession, *, tenant_id: int | None = None) -> list[str]:
     """汇总本租户已使用的标签。"""
+    tenant_id = resolve_tenant_id(tenant_id)
     rows = await session.scalars(select(TenantChat.tags).where(TenantChat.tenant_id == tenant_id))
     tags: list[str] = []
     for raw in rows:
@@ -338,7 +347,7 @@ async def list_sources(
     keyword: str | None = None,
     limit: int = 100,
     offset: int = 0,
-    tenant_id: int = SELF_TENANT_ID,
+    tenant_id: int | None = None,
 ) -> tuple[list[TenantChat], int]:
     """监听源列表。"""
     return await _list_by_role(
@@ -363,7 +372,7 @@ async def list_targets(
     keyword: str | None = None,
     limit: int = 100,
     offset: int = 0,
-    tenant_id: int = SELF_TENANT_ID,
+    tenant_id: int | None = None,
 ) -> tuple[list[TenantChat], int]:
     """接收组列表。"""
     return await _list_by_role(
@@ -391,7 +400,7 @@ async def _list_by_role(
     target_role: str | None = None,
     limit: int = 100,
     offset: int = 0,
-    tenant_id: int = SELF_TENANT_ID,
+    tenant_id: int | None = None,
 ) -> tuple[list[TenantChat], int]:
     conditions = [role_column.is_(True)]
     if enabled is not None:
@@ -409,7 +418,7 @@ async def list_pool(
     keyword: str | None = None,
     limit: int = 200,
     offset: int = 0,
-    tenant_id: int = SELF_TENANT_ID,
+    tenant_id: int | None = None,
 ) -> tuple[list[TenantChat], int]:
     """可选群组池：已经同步到本地、但还没被选为源/接收组的聊天对象。"""
     conditions: list[Any] = []

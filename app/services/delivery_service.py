@@ -60,6 +60,8 @@ async def enqueue_message(
         if existing is not None:
             continue
         job = DeliveryJob(
+            # P1-05：任务跟着线路走，会员租户的投递任务不会记到自营租户名下
+            tenant_id=route.tenant_id,
             route_id=route.id,
             source_chat_id=source_chat_id,
             source_message_id=source_message_id,

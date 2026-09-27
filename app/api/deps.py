@@ -35,10 +35,12 @@ from app.db.models import (
     ROLE_RANK,
     ROLE_SUB_ADMIN,
     ROLE_SUPER_ADMIN,
+    SELF_TENANT_ID,
     TENANT_STATUS_ACTIVE,
     User,
 )
 from app.db.session import get_session_factory
+from app.db.tenant_context import set_tenant_scope
 from app.services import (
     session_service,
     tenant_module_service,
@@ -188,12 +190,24 @@ async def current_identity(
         raise PasswordChangeRequiredError()
 
     request.state.identity = identity
+    # P1-05：按身份设请求级租户作用域，业务表的读写都由它收口
+    set_tenant_scope(tenant_scope_of(identity))
     return identity
 
 
 def _account_type(identity: dict[str, Any]) -> str:
     """取账号类型；缺省按平台账号处理（兼容仅给了角色的旧身份）。"""
     return str(identity.get("account_type") or ACCOUNT_TYPE_PLATFORM)
+
+
+def tenant_scope_of(identity: dict[str, Any]) -> int:
+    """这个请求该落在哪个租户（P1-05）。
+
+    会员用自己的租户；平台账号与 API Token 用自营租户——平台管通道与客户，
+    日常操作（执行账号、线路、词库、线索）都发生在自营业务上。
+    """
+    value = identity.get("tenant_id")
+    return int(value) if value is not None else SELF_TENANT_ID
 
 
 def require_role(minimum: str):

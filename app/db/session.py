@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.orm import Session, with_loader_criteria
 
 from app.core.config import AppConfig, absolute_database_url, sqlite_database_path
 from app.core.paths import ensure_dir
@@ -162,6 +163,65 @@ def _seed_plan_templates(connection: Connection) -> None:
         )
 
 
+def tenant_owned_classes() -> list[type]:
+    """全部带 ``tenant_id`` 归属的业务模型（P1-05 的读取过滤按它生效）。"""
+    from app.db.models.tenant import TenantOwnedMixin
+
+    Base.registry.configure()
+    return [
+        mapper.class_
+        for mapper in Base.registry.mappers
+        if issubclass(mapper.class_, TenantOwnedMixin)
+    ]
+
+
+_TENANT_CLASSES: list[type] = []
+
+
+def _tenant_classes() -> list[type]:
+    """惰性缓存业务模型清单：每次 SELECT 都算一遍没必要。"""
+    global _TENANT_CLASSES
+    if not _TENANT_CLASSES:
+        _TENANT_CLASSES = tenant_owned_classes()
+    return _TENANT_CLASSES
+
+
+def register_tenant_filter() -> None:
+    """给业务表的 SELECT 自动补租户条件（只在设了作用域时生效）。
+
+    作用域由 API 请求按登录身份设定（见 ``app.db.tenant_context``）：
+    会员 = 自己的租户，平台 / API Token = 自营租户。运行时进程、脚本、
+    后台巡检不设作用域，因此照旧能看到全部租户的数据（运行时按租户切分是 P1-06）。
+
+    需要"越过作用域"时用 ``execution_options(include_all_tenants=True)`` 显式放行。
+    监听装在 Session 事件上（``do_orm_execute`` 是会话级事件），所以进程内只注册一次。
+    """
+    from app.db.tenant_context import current_tenant_id
+
+    @event.listens_for(Session, "do_orm_execute")
+    def _apply_tenant_filter(state: Any) -> None:
+        if not state.is_select or state.is_column_load or state.is_relationship_load:
+            return
+        if state.execution_options.get("include_all_tenants"):
+            return
+        tenant_id = current_tenant_id()
+        if tenant_id is None:
+            return
+        classes = _tenant_classes()
+        if not classes:
+            return
+        state.statement = state.statement.options(
+            *(
+                with_loader_criteria(
+                    model,
+                    model.tenant_id == tenant_id,
+                    include_aliases=True,
+                )
+                for model in classes
+            )
+        )
+
+
 def _is_sqlite(url: str) -> bool:
     return url.startswith("sqlite")
 
@@ -177,3 +237,7 @@ def _register_sqlite_pragmas(engine: AsyncEngine) -> None:
             cursor.execute("PRAGMA synchronous=NORMAL")
         finally:
             cursor.close()
+
+
+# 进程内只注册一次：业务表的 SELECT 自动按租户作用域收口（P1-05）
+register_tenant_filter()

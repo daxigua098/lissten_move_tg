@@ -4,8 +4,9 @@
 
 - 租户是业务数据的唯一归属单位，会员账号与租户 1:1；
 - 自营业务本身也是一个租户，**固定 `id=1`**，存量数据全部挂在它下面；
-- 业务表的 `tenant_id` 非空，Python 侧默认值指向自营租户——这是给"还没接
-  身份的写入路径"留的单租户兼容口径，P1-04 起由 service 层按当前身份显式写入。
+- 业务表的 `tenant_id` 非空，Python 侧默认值取**当前租户作用域**
+  （``app.db.tenant_context``）：API 请求里是登录账号的租户，非请求路径
+  （运行时、脚本、巡检）落回自营租户——这是 P1-04/P1-05 的统一口径。
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
 from app.db.models.quota import QUOTA_NONE
+from app.db.tenant_context import scoped_tenant_id
 
 # 租户类型与状态
 TENANT_KIND_SELF = "self"
@@ -114,7 +116,8 @@ class TenantOwnedMixin:
 
     tenant_id: Mapped[int] = mapped_column(
         ForeignKey("tenants.id", ondelete="CASCADE"),
-        default=SELF_TENANT_ID,
+        # 取当前租户作用域；没有作用域（运行时 / 脚本）落回自营租户
+        default=scoped_tenant_id,
         index=True,
         nullable=False,
     )

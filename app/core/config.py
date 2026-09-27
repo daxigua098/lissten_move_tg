@@ -155,6 +155,8 @@ class RuntimeSection(BaseModel):
     lock_file: str = "data/runtime.lock"
     status_file: str = "data/runtime_status.json"
     control_file: str = "data/runtime_control.json"
+    # 冷触达独立熔断：开关不影响搬运 / 监听
+    outreach_control_file: str = "data/outreach_control.json"
 
 
 class RetentionSection(BaseModel):

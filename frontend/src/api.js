@@ -153,6 +153,13 @@ export const outreachApi = {
   updateTemplate: (id, payload) => http.patch(`/api/outreach/templates/${id}`, payload),
   removeTemplate: (id) => http.delete(`/api/outreach/templates/${id}`),
   adoptTemplate: (id) => http.post(`/api/outreach/templates/${id}/adopt`),
+  runtimeStatus: () => http.get("/api/outreach/runtime/status"),
+  pauseRuntime: () => http.post("/api/outreach/runtime/pause"),
+  resumeRuntime: () => http.post("/api/outreach/runtime/resume"),
+  dispatch: (limit = 1) => http.post("/api/outreach/queue/dispatch", null, { params: { limit } }),
+  takeover: (id) => http.post(`/api/outreach/contacts/${id}/takeover`),
+  suppress: (id) => http.post(`/api/outreach/contacts/${id}/suppress`),
+  unsuppress: (id) => http.delete(`/api/outreach/contacts/${id}/suppress`),
 };
 
 export const botsApi = {

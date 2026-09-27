@@ -5,10 +5,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,6 +24,8 @@ from app.api.schemas.outreach import (
     OutreachTemplateCreate,
     OutreachTemplateUpdate,
 )
+from app.core.errors import NotFoundError, ValidationFailedError
+from app.core.runtime_control import is_paused, set_paused
 from app.db.base import as_utc
 from app.db.models import (
     CONTACT_STATE_LABELS,
@@ -35,8 +38,10 @@ from app.db.models import (
 )
 from app.services import (
     outreach_queue_service,
+    outreach_sender_service,
     outreach_settings_service,
     outreach_template_service,
+    tg_account_service,
 )
 
 router = APIRouter(
@@ -66,6 +71,35 @@ def _template(row: OutreachTemplate) -> dict[str, Any]:
         "created_by": row.created_by,
         "updated_at": as_utc(row.updated_at),
     }
+
+
+def _outreach_control_path(config: Any) -> Any:
+    return config.path(config.runtime.outreach_control_file)
+
+
+async def _open_outreach_client(config: Any, account: Any, factory: Any) -> Any:
+    """打开发信息账号连接（演练模式用模拟客户端）。"""
+    from app.core.telegram_client import connect_user_client, session_file_path
+
+    if config.app.demo_mode:
+        from app.core.demo_client import DemoAccountClient
+
+        return DemoAccountClient()
+    _phone, api_id, api_hash = tg_account_service.decrypt_credentials(config, account)
+    session_path = session_file_path(config, account.session_name)
+    if factory is not None:
+        return await factory(
+            config,
+            api_id=api_id,
+            api_hash=api_hash,
+            session_path=session_path,
+        )
+    return await connect_user_client(
+        config,
+        api_id=api_id,
+        api_hash=api_hash,
+        session_path=session_path,
+    )
 
 
 def _contact(row: OutreachContact) -> dict[str, Any]:
@@ -292,3 +326,137 @@ async def get_capacity(
         session,
         tenant_id=tenant_scope_of(identity),
     )
+
+
+@router.post("/contacts/{contact_id}/takeover")
+async def takeover_contact(
+    contact_id: int,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """A 模式人工接管：标记为人工处理，不再有任何自动动作。"""
+    contact = await session.get(OutreachContact, contact_id)
+    if contact is None:
+        raise NotFoundError("联系人不存在")
+    await outreach_sender_service.takeover(session, contact)
+    return _contact(contact)
+
+
+@router.post("/contacts/{contact_id}/suppress")
+async def suppress_contact(
+    contact_id: int,
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """把联系人加入永久免打扰名单。"""
+    contact = await session.get(OutreachContact, contact_id)
+    if contact is None:
+        raise NotFoundError("联系人不存在")
+    await outreach_sender_service.add_suppression(
+        session,
+        contact,
+        reason="manual",
+        created_by=identity.get("username"),
+    )
+    await outreach_sender_service.cancel_queued(session, contact.id, reason="人工拉黑")
+    await session.commit()
+    await session.refresh(contact)
+    return _contact(contact)
+
+
+@router.delete("/contacts/{contact_id}/suppress")
+async def unsuppress_contact(
+    contact_id: int,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """解除免打扰（仅人工操作）。"""
+    contact = await session.get(OutreachContact, contact_id)
+    if contact is None:
+        raise NotFoundError("联系人不存在")
+    await outreach_sender_service.remove_suppression(session, contact)
+    await session.commit()
+    await session.refresh(contact)
+    return _contact(contact)
+
+
+@router.post("/queue/dispatch")
+async def dispatch_queue(
+    request: Request,
+    limit: int = Query(default=1, ge=1, le=20),
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """立即发送：按闸门取号，最多发送 ``limit`` 条（运维手动触发）。"""
+    config: Any = request.app.state.config
+    tenant_id = tenant_scope_of(identity)
+    settings = await outreach_settings_service.read_settings(session, tenant_id)
+    if settings.get("kill_switch"):
+        raise ValidationFailedError("冷触达已熔断，请先到「策略」里关闭熔断")
+
+    factory = getattr(request.app.state, "account_client_factory", None)
+    clients: dict[int, Any] = {}
+    results: list[dict[str, Any]] = []
+    try:
+        for _ in range(limit):
+            task = await outreach_queue_service.next_ready_task(session, tenant_id)
+            if task is None:
+                break
+            account = await outreach_sender_service.pick_account(session, tenant_id)
+            if account is None:
+                break
+            contact = await session.get(OutreachContact, task.contact_id)
+            if contact is None:
+                break
+            client = clients.get(account.id)
+            if client is None:
+                client = await _open_outreach_client(config, account, factory)
+                clients[account.id] = client
+            results.append(
+                await outreach_sender_service.send_task(
+                    session,
+                    client=client,
+                    account=account,
+                    task=task,
+                    contact=contact,
+                )
+            )
+    finally:
+        for client in clients.values():
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+
+    sent = sum(1 for item in results if item.get("status") == "SENT")
+    return {"sent": sent, "results": results}
+
+
+@router.get("/runtime/status")
+async def runtime_status(
+    request: Request,
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """冷触达开关与队列概况。"""
+    config: Any = request.app.state.config
+    capacity = await outreach_queue_service.capacity(
+        session,
+        tenant_id=tenant_scope_of(identity),
+    )
+    return {
+        "paused": is_paused(_outreach_control_path(config)),
+        **capacity,
+    }
+
+
+@router.post("/runtime/pause")
+async def runtime_pause(request: Request) -> dict[str, Any]:
+    """暂停冷触达（可逆，不影响搬运 / 监听）。"""
+    config: Any = request.app.state.config
+    set_paused(_outreach_control_path(config), True)
+    return {"paused": True}
+
+
+@router.post("/runtime/resume")
+async def runtime_resume(request: Request) -> dict[str, Any]:
+    """恢复冷触达。"""
+    config: Any = request.app.state.config
+    set_paused(_outreach_control_path(config), False)
+    return {"paused": False}

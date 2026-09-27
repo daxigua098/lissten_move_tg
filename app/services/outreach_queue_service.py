@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from math import ceil
 
 from sqlalchemy import func, select
@@ -229,6 +230,38 @@ async def plan_pending(
             for reason, count in sorted(blocked.items(), key=lambda item: -item[1])
         ],
     }
+
+
+async def pending_tenants(session: AsyncSession, *, limit: int = 20) -> list[int]:
+    """还有排队任务的租户（供冷触达循环调度）。"""
+    rows = await session.scalars(
+        select(OutreachTask.tenant_id)
+        .where(OutreachTask.status == TASK_QUEUED)
+        .distinct()
+        .limit(limit)
+    )
+    return [int(item) for item in rows]
+
+
+async def next_ready_task(
+    session: AsyncSession,
+    tenant_id: int,
+    *,
+    now: datetime | None = None,
+) -> OutreachTask | None:
+    """取该租户下一个可发送的任务（到点且未被退避推迟）。"""
+    moment = now or utc_now()
+    statement = (
+        select(OutreachTask)
+        .where(
+            OutreachTask.tenant_id == tenant_id,
+            OutreachTask.status == TASK_QUEUED,
+            (OutreachTask.next_retry_at.is_(None)) | (OutreachTask.next_retry_at <= moment),
+        )
+        .order_by(OutreachTask.id)
+        .limit(1)
+    )
+    return await session.scalar(statement)
 
 
 async def capacity(session: AsyncSession, *, tenant_id: int) -> dict:

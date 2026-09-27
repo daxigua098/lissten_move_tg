@@ -33,6 +33,36 @@ async function load() {
   }
 }
 
+async function takeover(row) {
+  try {
+    await outreachApi.takeover(row.id);
+    ElMessage.success(`已接管 ${row.display_name || row.tg_user_id}，不会再自动动作`);
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function suppress(row) {
+  try {
+    await outreachApi.suppress(row.id);
+    ElMessage.success("已加入永久免打扰");
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function unsuppress(row) {
+  try {
+    await outreachApi.unsuppress(row.id);
+    ElMessage.success("已解除免打扰");
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
 function fmt(value) {
   return value ? new Date(value).toLocaleString("zh-CN") : "-";
 }
@@ -76,6 +106,23 @@ onMounted(load);
         <template #default="{ row }">
           <el-tag v-if="row.do_not_contact" type="danger" size="small">是</el-tag>
           <span v-else class="card-hint">否</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="操作" width="200" fixed="right">
+        <template #default="{ row }">
+          <el-button
+            size="small"
+            link
+            type="primary"
+            :disabled="row.contact_state !== 'REPLIED'"
+            @click="takeover(row)"
+          >
+            接管
+          </el-button>
+          <el-button v-if="!row.do_not_contact" size="small" link type="danger" @click="suppress(row)">
+            拉黑
+          </el-button>
+          <el-button v-else size="small" link @click="unsuppress(row)">解除</el-button>
         </template>
       </el-table-column>
     </el-table>

@@ -93,6 +93,47 @@ async def snapshot(
     }
 
 
+async def get_or_create_daily(
+    session: AsyncSession,
+    account: TgAccount,
+    *,
+    day: date | None = None,
+) -> OutreachAccountDaily:
+    """取账号当天的计分行；没有就建一条（调用方负责 commit）。"""
+    target = day or local_day()
+    row = await session.scalar(
+        select(OutreachAccountDaily).where(
+            OutreachAccountDaily.account_id == account.id,
+            OutreachAccountDaily.day == target,
+        )
+    )
+    if row is None:
+        row = OutreachAccountDaily(account_id=account.id, tenant_id=account.tenant_id, day=target)
+        session.add(row)
+        await session.flush()
+    return row
+
+
+async def bump_daily(
+    session: AsyncSession,
+    account: TgAccount,
+    *,
+    first_contact: int = 0,
+    follow_up: int = 0,
+    failed: int = 0,
+    blocked: int = 0,
+    limited: int = 0,
+) -> OutreachAccountDaily:
+    """累加当天的计数（调用方负责 commit）。"""
+    row = await get_or_create_daily(session, account)
+    row.first_contact_sent += first_contact
+    row.follow_up_sent += follow_up
+    row.failed += failed
+    row.blocked += blocked
+    row.limited_hits += limited
+    return row
+
+
 async def update_state(
     session: AsyncSession,
     account: TgAccount,

@@ -348,3 +348,49 @@ class OutreachTask(TenantOwnedMixin, TimestampMixin, Base):
     target_message_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     dedupe_key: Mapped[str] = mapped_column(String(128))
+
+
+# 会话消息方向与作者
+DIRECTION_IN = "in"
+DIRECTION_OUT = "out"
+MESSAGE_GENERATED_AUTO = "auto"
+MESSAGE_GENERATED_HUMAN = "human"
+MESSAGE_GENERATED_CONTACT = "contact"
+
+# 回复状态
+REPLY_STATE_REPLIED = "REPLIED"
+REPLY_STATE_HUMAN = "HUMAN"
+REPLY_STATE_REFUSED = "REFUSED"
+
+
+class OutreachMessage(TenantOwnedMixin, TimestampMixin, Base):
+    """会话消息流水：出站发送与入站回复都记这里，用于会话画像与审计。"""
+
+    __tablename__ = "outreach_messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "account_id",
+            "direction",
+            "tg_message_id",
+            name="uq_outreach_messages_tg",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    contact_id: Mapped[int] = mapped_column(
+        ForeignKey("outreach_contacts.id", ondelete="CASCADE"),
+        index=True,
+    )
+    account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    bot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("control_bots.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    direction: Mapped[str] = mapped_column(String(4))
+    tg_message_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    text: Mapped[str] = mapped_column(Text, default="")
+    generated_by: Mapped[str] = mapped_column(String(8), default=MESSAGE_GENERATED_AUTO)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

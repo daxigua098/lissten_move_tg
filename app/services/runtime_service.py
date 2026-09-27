@@ -54,6 +54,9 @@ from app.services import (
     hot_keyword_service,
     keyword_service,
     lead_service,
+    outreach_queue_service,
+    outreach_sender_service,
+    outreach_settings_service,
     resource_join_service,
     resource_probe_service,
     resource_service,
@@ -116,6 +119,9 @@ class RuntimeService:
         self._bot_apis: dict[int, Any] = {}
         # 目录站抓取器（不需要 Telegram 账号，用到时才建）
         self._directory_fetcher: Any = None
+        # 发信息账号连接（account_id → client）：冷触达自己一组，与监听账号分开
+        self._outreach_clients: dict[int, Any] = {}
+        self._outreach_reply_handlers: set[int] = set()
 
     @property
     def control_path(self):
@@ -126,6 +132,11 @@ class RuntimeService:
     def status_path(self):
         """状态文件路径。"""
         return self.config.path(self.config.runtime.status_file)
+
+    @property
+    def outreach_control_path(self):
+        """冷触达的独立控制文件：熔断 / 暂停只影响冷触达。"""
+        return self.config.path(self.config.runtime.outreach_control_file)
 
     async def run(self, *, client: Any = None) -> int:
         """启动运行：获取锁、按租户注册监听、进入心跳与队列循环。
@@ -159,21 +170,155 @@ class RuntimeService:
                 logger.warning("上次中断留下 {} 条处理中任务，已重新入队", requeued)
             # 心跳独立跑：投递循环里在下载大文件时，界面也不会显示成掉线
             heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            outreach_task = asyncio.create_task(self._outreach_loop())
             try:
                 await self._loop()
             finally:
                 # 停止前把还没入队的相册冲出去，别丢掉刚发的帖子
                 with contextlib.suppress(Exception):
                     await self._flush_pending_albums()
+                outreach_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await outreach_task
                 heartbeat_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat_task
         finally:
+            await self._close_outreach_clients()
             await self._close_clients()
             await self._close_bot_apis()
             self._lock.release()
             await self._publish(status="stopped", extra={})
         return 0
+
+    async def _outreach_loop(self) -> None:
+        """冷触达循环：独立节奏，失败不影响搬运 / 监听。"""
+        while not self._stop:
+            if is_paused(self.outreach_control_path):
+                await asyncio.sleep(self.poll_interval)
+                continue
+            try:
+                await self._outreach_tick()
+            except Exception as exc:  # noqa: BLE001 - 单轮失败不能拖垮运行时
+                logger.warning("冷触达本轮执行失败：{}", exc)
+            await asyncio.sleep(max(2.0, self.poll_interval * 2))
+
+    async def _outreach_tick(self) -> int:
+        """处理一轮冷触达任务：闸门由发送服务负责，这里只做串行调度。"""
+        async with session_scope() as session:
+            tenant_ids = await outreach_queue_service.pending_tenants(session)
+        sent = 0
+        for tenant_id in tenant_ids:
+            async with session_scope() as session:
+                settings = await outreach_settings_service.read_settings(session, tenant_id)
+                if settings.get("kill_switch"):
+                    continue
+                task = await outreach_queue_service.next_ready_task(session, tenant_id)
+                if task is None:
+                    continue
+                account = await outreach_sender_service.pick_account(session, tenant_id)
+                if account is None:
+                    continue
+                from app.db.models import OutreachContact
+
+                contact = await session.get(OutreachContact, task.contact_id)
+                if contact is None:
+                    continue
+                client = await self._outreach_client(session, account)
+                result = await outreach_sender_service.send_task(
+                    session,
+                    client=client,
+                    account=account,
+                    task=task,
+                    contact=contact,
+                )
+                if result.get("status") == "SENT":
+                    sent += 1
+            await asyncio.sleep(1.0)
+        return sent
+
+    async def _outreach_client(self, session: Any, account: Any) -> Any:
+        """取发信息账号的连接；第一次用到时才建，并挂上回复监听。"""
+        if self._fallback_client is not None:
+            return self._fallback_client
+        cached = self._outreach_clients.get(account.id)
+        if cached is not None:
+            return cached
+        from app.core.telegram_client import connect_user_client, session_file_path
+
+        phone, api_id, api_hash = tg_account_service.decrypt_credentials(self.config, account)
+        session_path = session_file_path(self.config, account.session_name)
+        if self.config.app.demo_mode:
+            from app.core.demo_client import DemoAccountClient
+
+            client = DemoAccountClient()
+        elif self.client_factory is not None:
+            client = await self.client_factory(
+                self.config,
+                api_id=api_id,
+                api_hash=api_hash,
+                session_path=session_path,
+            )
+        else:
+            client = await connect_user_client(
+                self.config,
+                api_id=api_id,
+                api_hash=api_hash,
+                session_path=session_path,
+            )
+        self._register_outreach_handler(client, account)
+        self._outreach_clients[account.id] = client
+        return client
+
+    def _register_outreach_handler(self, client: Any, account: Any) -> None:
+        """听这个发信息账号收到的私聊回复（只认私聊）。"""
+        if account.id in self._outreach_reply_handlers:
+            return
+        try:
+            from telethon import events
+        except ImportError:  # pragma: no cover - 演练 / 测试环境没有 telethon
+            return
+
+        async def reply_handler(event: Any) -> None:  # noqa: ANN001
+            await self._on_outreach_reply(account, event)
+
+        client.add_event_handler(
+            reply_handler,
+            events.NewMessage(incoming=True, func=lambda event: event.is_private),
+        )
+        self._outreach_reply_handlers.add(account.id)
+
+    async def _on_outreach_reply(self, account: Any, event: Any) -> None:
+        """入站回复：归属锁定 / 拒绝拉黑。"""
+        message = getattr(event, "message", None)
+        sender_id = getattr(event, "sender_id", None) or getattr(message, "sender_id", None)
+        if not sender_id:
+            return
+        async with session_scope() as session:
+            contact = await outreach_sender_service.handle_incoming(
+                session,
+                tenant_id=account.tenant_id,
+                account_id=account.id,
+                sender_tg_id=int(sender_id),
+                text=getattr(message, "message", None),
+                tg_message_id=int(getattr(message, "id", 0) or 0),
+            )
+        if contact is not None:
+            logger.info(
+                "冷触达收到回复：联系人 #{}（账号 {}）",
+                contact.id,
+                account.name,
+            )
+
+    async def _close_outreach_clients(self) -> None:
+        """断开冷触达连接（注入的连接由注入方负责）。"""
+        if self._fallback_client is not None:
+            return
+        for account_id, client in list(self._outreach_clients.items()):
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+            self._outreach_clients.pop(account_id, None)
+        self._outreach_reply_handlers.clear()
 
     async def _heartbeat_loop(self) -> None:
         """只负责定期写心跳，与投递循环解耦。"""

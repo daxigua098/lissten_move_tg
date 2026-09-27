@@ -5,6 +5,7 @@ import { onMounted, ref } from "vue";
 import { outreachApi } from "../../api";
 
 const loading = ref(false);
+const runtime = ref({ paused: false });
 const capacity = ref(null);
 const rows = ref([]);
 const total = ref(0);
@@ -13,10 +14,12 @@ const planResult = ref(null);
 async function load() {
   loading.value = true;
   try {
-    const [cap, tasks] = await Promise.all([
+    const [run, cap, tasks] = await Promise.all([
+      outreachApi.runtimeStatus(),
       outreachApi.capacity(),
       outreachApi.tasks({ limit: 100 }),
     ]);
+    runtime.value = run.data;
     capacity.value = cap.data;
     rows.value = tasks.data.items;
     total.value = tasks.data.total;
@@ -38,6 +41,35 @@ async function plan() {
   }
 }
 
+async function dispatch() {
+  try {
+    const { data } = await outreachApi.dispatch(1);
+    if (data.sent) {
+      ElMessage.success("已发送 1 条");
+    } else {
+      ElMessage.warning("当前没有可发送的任务（缺账号 / 缺话术 / 都在冷却）");
+    }
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function toggleRuntime() {
+  try {
+    if (runtime.value.paused) {
+      await outreachApi.resumeRuntime();
+      ElMessage.success("冷触达已恢复");
+    } else {
+      await outreachApi.pauseRuntime();
+      ElMessage.success("冷触达已暂停");
+    }
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
 function fmt(value) {
   return value ? new Date(value).toLocaleString("zh-CN") : "-";
 }
@@ -52,8 +84,22 @@ onMounted(load);
       <span class="card-hint">共 {{ total }} 条任务</span>
       <div class="spacer" />
       <el-button size="small" type="primary" :loading="loading" @click="plan">生成队列</el-button>
+      <el-button size="small" :loading="loading" @click="dispatch">立即发送一条</el-button>
+      <el-button size="small" @click="toggleRuntime">
+        {{ runtime.paused ? "恢复冷触达" : "暂停冷触达" }}
+      </el-button>
       <el-button size="small" @click="load">刷新</el-button>
     </div>
+
+    <el-alert
+      v-if="runtime.paused"
+      class="panel"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="冷触达已暂停"
+      description="暂停只影响发信息账号，搬运 / 监听照常运行。"
+    />
 
     <el-row v-if="capacity" :gutter="12">
       <el-col :span="6"><el-statistic title="今日可用冷聊总量" :value="capacity.today_available" /></el-col>

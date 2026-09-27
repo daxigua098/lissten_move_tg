@@ -40,6 +40,7 @@ runtime:
   lock_file: data/runtime.lock
   status_file: data/runtime_status.json
   control_file: data/runtime_control.json
+  outreach_control_file: data/outreach_control.json
 
 retention:
   messages_raw_days: 3

@@ -42,7 +42,7 @@ const isPaused = computed(() => Boolean(status.value?.runtime?.paused));
 
 // P4：会员的租户运行状态（功能是否在跑、为什么停）。平台账号没有租户块。
 const tenant = computed(() => status.value?.tenant || null);
-const tenantStopped = computed(() => Boolean(tenant.value) && tenant.value.status !== "active");
+
 const runtimeOff = computed(
   () =>
     auth.isMember &&
@@ -220,20 +220,7 @@ async function act(action) {
     </el-card>
 
     <el-alert
-      v-if="tenantStopped"
-      class="panel"
-      type="error"
-      :closable="false"
-      show-icon
-      :title="tenant?.status === 'suspended' ? '账号已停用，功能已停止' : '账号已过期，功能已停止'"
-      :description="
-        tenant?.stop_reason_label ||
-        '续费 / 解停之后，到本页点「启动」或「一键启动全部功能」才会恢复。'
-      "
-    />
-
-    <el-alert
-      v-else-if="runtimeOff"
+      v-if="runtimeOff"
       class="panel"
       type="warning"
       :closable="false"

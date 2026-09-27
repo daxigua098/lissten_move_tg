@@ -335,6 +335,36 @@ async def test_start_tenant_runtime_rejects_inactive(db) -> None:
             await tenant_runtime_service.start_tenant_runtime(session, tenant)
 
 
+async def test_deliver_once_cancels_jobs_of_stopped_tenant(db) -> None:
+    """投递前实时过滤：租户停了之后，队头任务在真正发送前就被取消。
+
+    这条是 P4 的核心：不重启进程、不等巡检，投递循环碰到就该停。
+    """
+    from app.services.runtime_service import RuntimeService
+
+    tenant_runtime_service.clear_cache()
+    tenant_id = await _make_tenant(db, username="p4-deliver", runtime_enabled=True)
+    route_id = await _add_route(db, tenant_id, tg_id=9020)
+    job_id = await _add_job(db, tenant_id, route_id, message_id=520)
+
+    # 直接改库把开关关掉（等价于"进程外把租户停了"），队列里仍留着任务
+    async with session_scope() as session:
+        tenant = await session.get(Tenant, tenant_id)
+        tenant.runtime_enabled = False
+        tenant.runtime_stop_reason = STOP_REASON_MANUAL
+        await session.commit()
+    tenant_runtime_service.clear_cache()
+
+    service = RuntimeService(db, poll_interval=0.01)
+    delivered = await service._deliver_once(client=object())
+
+    assert delivered == 1  # 队列里确实有东西被处理掉了，不是空转
+    async with session_scope() as session:
+        job = await session.get(DeliveryJob, job_id)
+    assert job.status == JOB_CANCELLED
+    assert "取消" in (job.last_error or "")
+
+
 async def test_enable_all_routes(db) -> None:
     """一键启动：把租户下停用的线路恢复为启用，只开不关。"""
     tenant_runtime_service.clear_cache()

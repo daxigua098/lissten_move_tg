@@ -85,7 +85,9 @@ def test_days_left_counts_local_days() -> None:
 
     assert tenant_status_service.days_left(None, now=now) is None
     assert tenant_status_service.days_left(local_day_end(today, tz), now=now) == 0
-    assert tenant_status_service.days_left(local_day_end(today + timedelta(days=6), tz), now=now) == 6
+    assert (
+        tenant_status_service.days_left(local_day_end(today + timedelta(days=6), tz), now=now) == 6
+    )
 
 
 def test_evaluate_payload_shape() -> None:

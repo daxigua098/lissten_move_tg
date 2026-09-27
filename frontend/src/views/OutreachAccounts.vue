@@ -15,12 +15,24 @@ const selected = ref([]);
 const form = reactive({
   name: "",
   phone: "",
-  api_id: "",
-  api_hash: "",
   note: "",
   is_default: false,
   owner_confirmed: false,
 });
+
+// 批量登录：每个账号各自持有验证码状态，验证码由人工从各自 Telegram App 读取
+const batchDialog = ref(false);
+const batchBusy = ref(false);
+const batchRows = ref([]);
+const sharedPassword = ref("");
+
+const BATCH_LABELS = {
+  idle: "未发送",
+  code_sent: "验证码已发送",
+  password_required: "需要二级密码",
+  active: "已登录",
+  error: "失败",
+};
 
 const STATUS_TYPE = {
   pending_login: "warning",
@@ -63,8 +75,6 @@ function openCreate() {
   Object.assign(form, {
     name: "",
     phone: "",
-    api_id: "",
-    api_hash: "",
     note: "",
     is_default: false,
     owner_confirmed: false,
@@ -81,8 +91,6 @@ async function create() {
     await accountsApi.create({
       name: form.name,
       phone: form.phone,
-      api_id: form.api_id ? Number(form.api_id) : null,
-      api_hash: form.api_hash || null,
       note: form.note || null,
       is_default: form.is_default,
       purpose: "outreach",
@@ -130,6 +138,107 @@ async function toggleState(row) {
   } catch (error) {
     ElMessage.error(error.message);
   }
+}
+
+function openBatch() {
+  const targets = selected.value.length
+    ? selected.value
+    : rows.value.filter((row) => row.status !== "active");
+  if (!targets.length) {
+    ElMessage.warning("没有需要登录的账号，请先勾选或先登记账号");
+    return;
+  }
+  batchRows.value = targets.map((row) => ({
+    id: row.id,
+    name: row.name,
+    phone_masked: row.phone_masked,
+    stage: "idle",
+    code: "",
+    password: "",
+    error: "",
+  }));
+  sharedPassword.value = "";
+  batchDialog.value = true;
+}
+
+async function sendAllCodes() {
+  batchBusy.value = true;
+  let sent = 0;
+  for (const item of batchRows.value) {
+    if (item.stage === "active") continue;
+    try {
+      await accountsApi.loginStart(item.id);
+      item.stage = "code_sent";
+      item.error = "";
+      sent += 1;
+    } catch (error) {
+      item.stage = "error";
+      item.error = error.message;
+    }
+  }
+  batchBusy.value = false;
+  ElMessage.success(`已为 ${sent} 个账号请求验证码，请逐个填入收到验证码`);
+}
+
+async function submitAllCodes() {
+  batchBusy.value = true;
+  let ok = 0;
+  for (const item of batchRows.value) {
+    if (item.stage !== "code_sent" || !item.code.trim()) continue;
+    try {
+      const { data } = await accountsApi.loginVerify(item.id, item.code.trim());
+      if (data.status === "password_required") {
+        item.stage = "password_required";
+        item.error = "";
+      } else {
+        item.stage = "active";
+        item.error = "";
+        ok += 1;
+      }
+    } catch (error) {
+      item.error = error.message;
+    }
+  }
+  batchBusy.value = false;
+  load();
+  ElMessage.success(`验证码已提交，登录成功 ${ok} 个`);
+}
+
+async function submitAllPasswords() {
+  batchBusy.value = true;
+  let ok = 0;
+  for (const item of batchRows.value) {
+    if (item.stage !== "password_required") continue;
+    const password = item.password || sharedPassword.value;
+    if (!password) {
+      item.error = "请填写二级密码";
+      continue;
+    }
+    try {
+      await accountsApi.loginPassword(item.id, password);
+      item.stage = "active";
+      item.error = "";
+      ok += 1;
+    } catch (error) {
+      item.error = error.message;
+    }
+  }
+  batchBusy.value = false;
+  load();
+  ElMessage.success(`二级密码已提交，完成 ${ok} 个`);
+}
+
+async function closeBatch() {
+  for (const item of batchRows.value) {
+    if (item.stage === "code_sent" || item.stage === "password_required") {
+      try {
+        await accountsApi.loginCancel(item.id);
+      } catch {
+        // 取消失败不阻塞关闭
+      }
+    }
+  }
+  batchDialog.value = false;
 }
 
 async function retireBatch(hard) {
@@ -206,6 +315,7 @@ onMounted(load);
       <span class="card-hint">共 {{ total }} 个账号</span>
       <div class="spacer" />
       <el-button size="small" type="primary" @click="openCreate">登记发信息账号</el-button>
+      <el-button size="small" @click="openBatch">批量登录</el-button>
       <el-button size="small" :disabled="!selected.length" @click="retireBatch(false)">
         批量停用
       </el-button>
@@ -321,12 +431,6 @@ onMounted(load);
         <el-form-item label="手机号（含区号）">
           <el-input v-model="form.phone" placeholder="+8613800001111" />
         </el-form-item>
-        <el-form-item label="API ID（留空则用 .env 里的 TG_API_ID）">
-          <el-input v-model="form.api_id" placeholder="留空使用 .env 里的默认凭据" />
-        </el-form-item>
-        <el-form-item label="API Hash（留空则用 .env 里的 TG_API_HASH）">
-          <el-input v-model="form.api_hash" show-password placeholder="留空使用 .env 里的默认凭据" />
-        </el-form-item>
         <el-form-item label="备注（可选）">
           <el-input v-model="form.note" />
         </el-form-item>
@@ -351,12 +455,90 @@ onMounted(load);
       title="登录发信息账号"
       @logged-in="load"
     />
+
+    <el-dialog
+      v-model="batchDialog"
+      title="批量登录发信息账号"
+      width="720px"
+      :close-on-click-modal="false"
+      @close="closeBatch"
+    >
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="验证码会发到各账号自己的 Telegram App"
+        description="先点「批量发送验证码」，再把每个账号收到的验证码填进对应一行；开了两步验证的账号，再填二级密码（可只填一次统一密码）。"
+      />
+
+      <div class="batch-actions">
+        <el-button type="primary" :loading="batchBusy" @click="sendAllCodes">
+          批量发送验证码
+        </el-button>
+        <el-button :loading="batchBusy" @click="submitAllCodes">提交所有验证码</el-button>
+        <el-button :loading="batchBusy" @click="submitAllPasswords">提交二级密码</el-button>
+        <span class="card-hint">统一二级密码</span>
+        <el-input
+          v-model="sharedPassword"
+          show-password
+          type="password"
+          size="small"
+          style="width: 180px"
+          placeholder="多个账号共用时可只填这里"
+        />
+      </div>
+
+      <el-table :data="batchRows" size="small" border class="panel">
+        <el-table-column prop="name" label="别名" min-width="120" />
+        <el-table-column prop="phone_masked" label="手机号" width="120" />
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }">{{ BATCH_LABELS[row.stage] || row.stage }}</template>
+        </el-table-column>
+        <el-table-column label="验证码" width="130">
+          <template #default="{ row }">
+            <el-input
+              v-model="row.code"
+              size="small"
+              placeholder="收到的验证码"
+              :disabled="row.stage !== 'code_sent'"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="二级密码" width="130">
+          <template #default="{ row }">
+            <el-input
+              v-model="row.password"
+              size="small"
+              show-password
+              type="password"
+              placeholder="按需填写"
+              :disabled="row.stage !== 'password_required'"
+            />
+          </template>
+        </el-table-column>
+        <el-table-column label="错误" min-width="150">
+          <template #default="{ row }">{{ row.error || "-" }}</template>
+        </el-table-column>
+      </el-table>
+
+      <template #footer>
+        <el-button @click="closeBatch">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .tag {
   margin-left: 6px;
+}
+
+.batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 4px;
+  flex-wrap: wrap;
 }
 
 .panel {

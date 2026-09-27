@@ -293,3 +293,98 @@ async def test_login_endpoints_require_super_admin(login_client, api_config) -> 
     )
 
     assert response.status_code == 403
+
+
+async def test_outreach_account_needs_only_phone_code_password(
+    login_client, fake_login_client
+) -> None:
+    """发信息账号：不填 API 凭据（走 .env），只用手机号 + 验证码 + 二级密码登录。"""
+    created = await login_client.post(
+        "/api/accounts",
+        headers=_headers(),
+        json={
+            "name": "冷聊号",
+            "phone": "+8613800002222",
+            "purpose": "outreach",
+            "owner_confirmed": True,
+        },
+    )
+    assert created.status_code == 201
+    account_id = created.json()["id"]
+    assert created.json()["purpose"] == "outreach"
+
+    fake_login_client.need_password = True
+    started = await login_client.post(
+        f"/api/accounts/{account_id}/login/start",
+        headers=_headers(),
+        json={},
+    )
+    assert started.status_code == 200
+    assert started.json()["status"] == "code_sent"
+
+    step = await login_client.post(
+        f"/api/accounts/{account_id}/login/verify",
+        headers=_headers(),
+        json={"code": "12345"},
+    )
+    assert step.json()["status"] == "password_required"
+
+    done = await login_client.post(
+        f"/api/accounts/{account_id}/login/password",
+        headers=_headers(),
+        json={"password": "two-step-pw"},
+    )
+    assert done.status_code == 200
+    assert done.json()["status"] == "active"
+
+
+async def test_two_accounts_can_login_in_parallel(login_client) -> None:
+    """批量登录的前提：多个账号可以同时挂着待登录会话，各自提交互不影响。"""
+    second = await login_client.post(
+        "/api/accounts",
+        headers=_headers(),
+        json={
+            "name": "冷聊号2",
+            "phone": "+8613800003333",
+            "purpose": "outreach",
+            "owner_confirmed": True,
+        },
+    )
+    assert second.status_code == 201
+    second_id = second.json()["id"]
+
+    listing = await login_client.get("/api/accounts", headers=_headers())
+    ids = [item["id"] for item in listing.json()["items"]]
+    assert second_id in ids
+    others = [item for item in ids if item != second_id]
+    assert others
+    first_id = others[0]
+
+    for account_id in (first_id, second_id):
+        started = await login_client.post(
+            f"/api/accounts/{account_id}/login/start",
+            headers=_headers(),
+            json={},
+        )
+        assert started.status_code == 200
+
+    for account_id in (first_id, second_id):
+        status = await login_client.get(
+            f"/api/accounts/{account_id}/login/status",
+            headers=_headers(),
+        )
+        assert status.json()["pending"] is True
+        assert status.json()["stage"] == "code_sent"
+
+    for account_id in (first_id, second_id):
+        done = await login_client.post(
+            f"/api/accounts/{account_id}/login/verify",
+            headers=_headers(),
+            json={"code": "12345"},
+        )
+        assert done.status_code == 200
+        assert done.json()["status"] == "active"
+
+    after = await login_client.get("/api/accounts", headers=_headers())
+    active = [item for item in after.json()["items"] if item["status"] == "active"]
+    assert {item["id"] for item in active} == {first_id, second_id}

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 
 from conftest import auth_header, login
 
 from app.db.base import utc_now
+from app.db.models import CHANNEL_INAPP, CHANNEL_TELEGRAM, SELF_TENANT_ID
 from app.db.session import session_scope
 
 
@@ -222,3 +224,186 @@ async def _user_id(config, username: str) -> int:
         value = await session.scalar(select(User.id).where(User.username == username))
     assert value is not None
     return int(value)
+
+
+class _FakeNotifyClient:
+    """通知 Bot 替身：只记录发出去的文本，不联网。"""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.sent: list[tuple[str, str]] = []
+        self.fail = fail
+        self.closed = False
+
+    async def send_message(self, chat_id, text):  # noqa: ANN001, ANN201
+        if self.fail:
+            raise RuntimeError("模拟发送失败")
+        self.sent.append((str(chat_id), text))
+        return {}
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+async def _make_notify_bot(
+    config,
+    *,
+    tenant_id: int,
+    admin_ids: list[int],
+    token: str,
+    name: str = "通知Bot",
+) -> int:
+    """直接落一个「默认通知 Bot」（绕过 Token 校验，测试不联网）。"""
+    from app.core.security import FieldCipher
+    from app.db.models import ControlBot
+    from app.db.tenant_context import tenant_scope
+
+    cipher = FieldCipher.from_config(config)
+    async with session_scope() as session:
+        with tenant_scope(tenant_id):
+            bot = ControlBot(
+                name=name,
+                token_enc=cipher.encrypt(token),
+                admin_ids=json.dumps(admin_ids),
+                is_default=True,
+                enabled=True,
+            )
+            session.add(bot)
+            await session.commit()
+            return int(bot.id)
+
+
+async def test_deliver_sends_via_tenant_notify_bot(api_config, client) -> None:
+    """租户配了默认通知 Bot：提醒按 TG 发出，渠道记成 telegram。"""
+    from app.services import reminder_service
+
+    agent_id = await _make_agent(api_config, "rem-tg-agent")
+    tenant_id = await _make_member(api_config, "rem-tg-a", days=2, owner_agent_id=agent_id)
+    await _make_notify_bot(
+        api_config,
+        tenant_id=tenant_id,
+        admin_ids=[555000111],
+        token="token-a",
+    )
+
+    client = _FakeNotifyClient()
+
+    async def factory(_config, token):  # noqa: ANN001, ANN202
+        assert token == "token-a"
+        return client
+
+    async with session_scope() as session:
+        created = await reminder_service.sweep(session)
+        outcome = await reminder_service.deliver(
+            session,
+            created["rows"],
+            config=api_config,
+            sender_factory=factory,
+        )
+        channels = [row.channel for row in created["rows"]]
+
+    assert created["count"] == 3  # 代理 7 天 / 3 天 + 会员 3 天
+    assert outcome["sent"] == 3
+    assert outcome["failed"] == 0
+    assert channels == [CHANNEL_TELEGRAM] * 3
+    assert client.closed is True
+    assert len(client.sent) == 3
+    assert all(target == "555000111" for target, _ in client.sent)
+    texts = " ".join(text for _, text in client.sent)
+    assert "预留额度" in texts  # 代理文案
+    assert "到期时间" in texts
+
+
+async def test_deliver_without_bot_keeps_inapp(api_config, client) -> None:
+    """没配通知 Bot：一条都不发，提醒留在站内渠道（与接 TG 之前一致）。"""
+    from app.services import reminder_service
+
+    agent_id = await _make_agent(api_config, "rem-nb-agent")
+    await _make_member(api_config, "rem-nb-a", days=2, owner_agent_id=agent_id)
+
+    async with session_scope() as session:
+        created = await reminder_service.sweep(session)
+        outcome = await reminder_service.deliver(session, created["rows"], config=api_config)
+        channels = [row.channel for row in created["rows"]]
+
+    assert created["count"] == 3
+    assert outcome == {"sent": 0, "failed": 0, "skipped": 3, "messages": 0}
+    assert set(channels) == {CHANNEL_INAPP}
+
+
+async def test_deliver_falls_back_to_self_tenant_bot(api_config, client) -> None:
+    """会员租户没配 Bot，但自营租户配了：用平台出口发，收件人是平台管理员。"""
+    from app.services import reminder_service
+
+    agent_id = await _make_agent(api_config, "rem-fb-agent")
+    await _make_member(api_config, "rem-fb-a", days=2, owner_agent_id=agent_id)
+    await _make_notify_bot(
+        api_config,
+        tenant_id=SELF_TENANT_ID,
+        admin_ids=[900001],
+        token="token-self",
+        name="平台通知Bot",
+    )
+
+    client = _FakeNotifyClient()
+
+    async def factory(_config, token):  # noqa: ANN001, ANN202
+        assert token == "token-self"
+        return client
+
+    async with session_scope() as session:
+        created = await reminder_service.sweep(session)
+        outcome = await reminder_service.deliver(
+            session,
+            created["rows"],
+            config=api_config,
+            sender_factory=factory,
+        )
+
+    assert outcome["sent"] == 3
+    assert len(client.sent) == 3
+    assert all(target == "900001" for target, _ in client.sent)
+
+
+async def test_deliver_failure_keeps_inapp_without_blocking_others(api_config, client) -> None:
+    """一个租户通知失败只让它留在站内，别的租户照常收到。"""
+    from app.services import reminder_service
+
+    agent_id = await _make_agent(api_config, "rem-iso-agent")
+    bad_tenant = await _make_member(api_config, "rem-iso-bad", days=2, owner_agent_id=agent_id)
+    ok_tenant = await _make_member(api_config, "rem-iso-ok", days=2, owner_agent_id=agent_id)
+    await _make_notify_bot(api_config, tenant_id=bad_tenant, admin_ids=[111], token="token-bad")
+    await _make_notify_bot(
+        api_config,
+        tenant_id=ok_tenant,
+        admin_ids=[222],
+        token="token-ok",
+        name="通知Bot2",
+    )
+
+    bad = _FakeNotifyClient(fail=True)
+    good = _FakeNotifyClient()
+    clients = {"token-bad": bad, "token-ok": good}
+
+    async def factory(_config, token):  # noqa: ANN001, ANN202
+        return clients[token]
+
+    async with session_scope() as session:
+        created = await reminder_service.sweep(session)
+        outcome = await reminder_service.deliver(
+            session,
+            created["rows"],
+            config=api_config,
+            sender_factory=factory,
+        )
+        by_tenant: dict[int, set[str]] = {}
+        for row in created["rows"]:
+            by_tenant.setdefault(row.tenant_id, set()).add(row.channel)
+
+    assert created["count"] == 6
+    assert outcome["sent"] == 3
+    assert outcome["failed"] == 3
+    assert by_tenant[bad_tenant] == {CHANNEL_INAPP}
+    assert by_tenant[ok_tenant] == {CHANNEL_TELEGRAM}
+    assert len(good.sent) == 3
+    assert good.closed is True
+    assert bad.closed is True

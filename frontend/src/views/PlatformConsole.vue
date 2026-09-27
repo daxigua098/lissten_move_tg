@@ -56,12 +56,16 @@ const agentForm = reactive({
   trial_alloc: 0,
   note: "",
 });
+// 会员默认全功能：开通了就能用搬运 / 监听 / 资源发现，代理系统除外。
+// 想少给就手动取消勾选，或选一个功能包模板覆盖。
+const FULL_MODULES = ["carry", "monitor", "discovery"];
+
 // 开会员
 const memberForm = reactive({
   username: "",
   days: 30,
   template_code: "",
-  modules: [],
+  modules: [...FULL_MODULES],
   display_name: "",
   owner_agent_id: null,
   note: "",
@@ -269,7 +273,7 @@ async function submitMember() {
     return;
   }
   if (!memberForm.modules.length && !memberForm.template_code) {
-    ElMessage.warning("请至少勾一个功能块（或选一个功能包模板）：没功能块的账号进去只有「账号与机器人」");
+    ElMessage.warning("会员至少要有一个功能块：一个都不给，客户进去只剩「账号与机器人」");
     return;
   }
   submitting.value = true;
@@ -289,7 +293,7 @@ async function submitMember() {
       username: "",
       days: 30,
       template_code: "",
-      modules: [],
+      modules: [...FULL_MODULES],
       display_name: "",
       owner_agent_id: null,
       note: "",
@@ -875,6 +879,7 @@ onMounted(loadAll);
                   {{ item.label }}
                 </el-checkbox>
               </el-checkbox-group>
+              <span class="tip inline">会员默认全功能，想少给就手动取消勾选</span>
             </el-form-item>
             <el-form-item label="归属代理">
               <el-select

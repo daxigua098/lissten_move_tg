@@ -494,34 +494,28 @@ def test_expiry_helper_matches_design() -> None:
     assert later - expiry_for_days(1) == timedelta(days=2)
 
 
-async def test_open_member_requires_a_module(db) -> None:
-    """没选功能块的会员是空白账号（进去只有「账号与机器人」）：开号直接挡掉，不落数据、不扣额度。"""
-    from sqlalchemy import func, select
-
-    from app.db.models import User
+async def test_open_member_without_plan_defaults_to_full(db) -> None:
+    """不勾功能块也不选模板 = 全功能：开出来就能用搬运 / 监听 / 资源发现，不会再有空白账号。"""
     from app.db.session import session_scope
     from app.services import provision_service, quota_service
 
-    agent_id, _admin_id = await _agent_with_quota(db, "pz-agent", member=1)
+    agent_id, _admin_id = await _agent_with_quota(db, "pz-agent", member=2)
 
-    for empty in (None, []):
-        with pytest.raises(ValidationFailedError) as excinfo:
-            async with session_scope() as session:
-                actor = await _load(session, agent_id)
-                await provision_service.open_member(
-                    session,
-                    db,
-                    actor=actor,
-                    username="pz-customer",
-                    days=30,
-                    modules=empty,
-                )
-        assert "至少选择一个功能块" in str(excinfo.value)
+    for index, empty in enumerate((None, []), start=1):
+        async with session_scope() as session:
+            actor = await _load(session, agent_id)
+            result = await provision_service.open_member(
+                session,
+                db,
+                actor=actor,
+                username=f"pz-customer{index}",
+                days=30,
+                modules=empty,
+            )
+        assert result["modules"] == ["carry", "discovery", "monitor"]
+        assert result["module_labels"] == ["搬运帖子", "资源发现", "监听会员"]
 
+    # 两个号都真开了，代理额度也按规矩各扣 1 个
     async with session_scope() as session:
-        exists = await session.scalar(
-            select(func.count()).select_from(User).where(User.username == "pz-customer")
-        )
         balance = await quota_service.balance_of(session, agent_id, "member")
-    assert exists == 0
-    assert balance == 1
+    assert balance == 0

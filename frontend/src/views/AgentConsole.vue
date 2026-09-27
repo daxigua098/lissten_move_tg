@@ -25,11 +25,14 @@ const ledger = ref({ items: [], total: 0 });
 const ledgerFilter = reactive({ quota_type: "", action: "", scope: "subtree" });
 
 const openMode = ref("member");
+// 会员默认全功能：开通了就能用搬运 / 监听 / 资源发现，代理系统除外。
+const FULL_MODULES = ["carry", "monitor", "discovery"];
+
 const memberForm = reactive({
   username: "",
   days: 30,
   template_code: "",
-  modules: [],
+  modules: [...FULL_MODULES],
   display_name: "",
   note: "",
 });
@@ -125,6 +128,8 @@ function afterIssue(data, message) {
   issued.value = { ...data, message };
   ElMessage.success(message);
   memberForm.username = "";
+  memberForm.template_code = "";
+  memberForm.modules = [...FULL_MODULES];
   trialForm.username = "";
   agentForm.username = "";
   loadAll();
@@ -136,7 +141,7 @@ async function submitMember() {
     return;
   }
   if (!memberForm.modules.length && !memberForm.template_code) {
-    ElMessage.warning("请至少勾一个功能块（或选一个功能包模板）：没功能块的账号进去只有「账号与机器人」");
+    ElMessage.warning("会员至少要有一个功能块：一个都不给，客户进去只剩「账号与机器人」");
     return;
   }
   submitting.value = true;
@@ -417,6 +422,7 @@ onMounted(loadAll);
                   {{ item.label }}
                 </el-checkbox>
               </el-checkbox-group>
+              <span class="tip inline">会员默认全功能，想少给就手动取消勾选</span>
             </el-form-item>
             <el-form-item label="显示名">
               <el-input v-model="memberForm.display_name" placeholder="可留空" />

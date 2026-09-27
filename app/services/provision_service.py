@@ -51,6 +51,11 @@ from app.services import (
 TRIAL_DAYS = 1
 TRIAL_TEMPLATE_CODES = ("trial_carry", "trial_monitor")
 
+# 会员默认全功能：开号时既不勾功能块也不选模板，就按「全功能」包下发。
+# 口径是「只要开通了会员，就能用系统的实用功能（搬运帖子 / 监听会员 / 资源发现），
+# 代理系统除外」，所以正式会员不该再开出只有「账号与机器人」的空白账号。
+DEFAULT_MEMBER_TEMPLATE = "full"
+
 
 def resolve_initial_password(password: str | None) -> tuple[str, bool]:
     """开号下发的密码，返回 ``(密码, 是否平台统一初始密码)``。
@@ -72,7 +77,10 @@ PLAN_REQUIRED_MESSAGE = (
 
 
 def _ensure_plan_selected(modules: list[str] | None, template_code: str | None) -> None:
-    """开号 / 改功能包时必须给出至少一个功能块，挡住"空白账号"。"""
+    """改功能包时必须显式给出至少一个功能块，挡住"空白账号"。
+
+    开号不走这里：正式会员缺省就是 :data:`DEFAULT_MEMBER_TEMPLATE`（全功能）。
+    """
     if not modules and not template_code:
         raise ValidationFailedError(PLAN_REQUIRED_MESSAGE)
 
@@ -255,8 +263,11 @@ async def open_member(
 
     额度从 **payer** 账上扣 1 个——指定归属代理时扣那个代理的，否则扣代理自己的；
     平台直开（没有归属代理）不占任何额度，记 ``quota_type='none'``。
+
+    不显式指定功能块 / 功能包时按「全功能」下发（见 :data:`DEFAULT_MEMBER_TEMPLATE`）。
     """
-    _ensure_plan_selected(modules, template_code)
+    if not modules and not template_code:
+        template_code = DEFAULT_MEMBER_TEMPLATE
     wanted, limits = await _resolve_plan(session, template_code=template_code, modules=modules)
     payer = owner_agent if owner_agent is not None else (actor if _is_agent(actor) else None)
     user, tenant, password_value = await _create_member_account(

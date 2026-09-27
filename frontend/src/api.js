@@ -169,6 +169,11 @@ export const outreachApi = {
   resumeAuto: (id) => http.post(`/api/outreach/contacts/${id}/resume-auto`),
   handoff: (id) => http.post(`/api/outreach/contacts/${id}/handoff`),
   batchRetire: (payload) => http.post("/api/outreach/accounts/batch-retire", payload),
+  setParticipation: (accountIds, enabled) =>
+    http.post("/api/outreach/accounts/participation", {
+      account_ids: accountIds,
+      enabled,
+    }),
   suppress: (id) => http.post(`/api/outreach/contacts/${id}/suppress`),
   unsuppress: (id) => http.delete(`/api/outreach/contacts/${id}/suppress`),
 };

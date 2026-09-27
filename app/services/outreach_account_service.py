@@ -17,10 +17,15 @@ from app.core.expiry import local_today
 from app.core.paths import ensure_dir
 from app.db.base import as_utc, utc_now
 from app.db.models import (
+    ACCOUNT_ACTIVE,
     ACCOUNT_DISABLED,
+    ACCOUNT_PURPOSE_OUTREACH,
     ACCOUNT_STATE_LABELS,
     ACCOUNT_STATES,
     STATE_DISABLED,
+    STATE_LIMITED,
+    STATE_PAUSED,
+    STATE_READY,
     TASK_QUEUED,
     TIER_DEFAULTS,
     TIER_LABELS,
@@ -142,6 +147,43 @@ async def bump_daily(
     row.blocked += blocked
     row.limited_hits += limited
     return row
+
+
+async def set_participation(
+    session: AsyncSession,
+    account_ids: list[int],
+    *,
+    enabled: bool,
+    tenant_id: int,
+) -> dict[str, Any]:
+    """勾选 / 取消勾选"参与冷触达"。
+
+    参与 = 运营态 READY（冷却、配额、档位、熔断等策略照旧生效）；
+    取消 = PAUSED（调度器直接跳过）。被限制 / 停用 / 未登录的账号不能被强行打开。
+    """
+    updated: list[int] = []
+    skipped: list[dict[str, Any]] = []
+    for account_id in account_ids:
+        account = await session.get(TgAccount, account_id)
+        if account is None or account.purpose != ACCOUNT_PURPOSE_OUTREACH:
+            skipped.append({"account_id": account_id, "reason": "不是发信息账号"})
+            continue
+        if tenant_id and account.tenant_id != tenant_id:
+            skipped.append({"account_id": account_id, "reason": "不属于当前租户"})
+            continue
+        if account.status != ACCOUNT_ACTIVE:
+            skipped.append({"account_id": account_id, "reason": f"{account.name} 还没登录"})
+            continue
+        state = await get_or_create_state(session, account)
+        if state.state in (STATE_LIMITED, STATE_DISABLED):
+            skipped.append(
+                {"account_id": account_id, "reason": f"{account.name} 被限制或已停用，不能参与"}
+            )
+            continue
+        state.state = STATE_READY if enabled else STATE_PAUSED
+        updated.append(account.id)
+    await session.commit()
+    return {"updated": updated, "skipped": skipped, "enabled": enabled}
 
 
 async def retire(

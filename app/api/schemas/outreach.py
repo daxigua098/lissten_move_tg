@@ -63,3 +63,10 @@ class BatchRetireRequest(BaseModel):
     reason: str = Field(default="manual", max_length=64)
     hard: bool = False
     delete_session: bool = False
+
+
+class ParticipationRequest(BaseModel):
+    """勾选 / 取消勾选「参与冷触达」的发信息账号。"""
+
+    account_ids: list[int] = Field(min_length=1, max_length=200)
+    enabled: bool = True

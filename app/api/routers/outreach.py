@@ -25,6 +25,7 @@ from app.api.schemas.outreach import (
     OutreachSettingsUpdate,
     OutreachTemplateCreate,
     OutreachTemplateUpdate,
+    ParticipationRequest,
 )
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.runtime_control import is_paused, set_paused
@@ -575,3 +576,18 @@ async def batch_retire_accounts(
         "delete_session": delete_session,
         "hard": payload.hard,
     }
+
+
+@router.post("/accounts/participation")
+async def set_accounts_participation(
+    payload: ParticipationRequest,
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """勾选参与冷触达（READY）/ 取消（PAUSED）；策略对这些账号一律生效。"""
+    return await outreach_account_service.set_participation(
+        session,
+        payload.account_ids,
+        enabled=payload.enabled,
+        tenant_id=tenant_scope_of(identity),
+    )

@@ -124,7 +124,14 @@ router.beforeEach((to) => {
   if (!auth.isAuthenticated) {
     return { name: "login" };
   }
-  if (auth.mustChange && to.name !== "change-password") {
+  // 改密页对所有账号类型（含代理）都放行。
+  // 代理账号的 canAccess 只认代理工作台，若不在这里提前返回，
+  // 「代理 + 首登必须改密」会变成 change-password ⇄ agent 的无限重定向，
+  // 表现就是点了登录没有任何反应。
+  if (to.name === "change-password") {
+    return true;
+  }
+  if (auth.mustChange) {
     return { name: "change-password" };
   }
   if (!canAccess(to.meta)) {

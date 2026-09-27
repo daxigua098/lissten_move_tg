@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -13,16 +14,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ValidationFailedError
 from app.core.expiry import local_today
-from app.db.base import as_utc
+from app.core.paths import ensure_dir
+from app.db.base import as_utc, utc_now
 from app.db.models import (
+    ACCOUNT_DISABLED,
     ACCOUNT_STATE_LABELS,
     ACCOUNT_STATES,
+    STATE_DISABLED,
+    TASK_QUEUED,
     TIER_DEFAULTS,
     TIER_LABELS,
     TIER_NEW,
     TIERS,
     OutreachAccountDaily,
     OutreachAccountState,
+    OutreachTask,
     TgAccount,
 )
 
@@ -89,6 +95,10 @@ async def snapshot(
         "cooldown_seconds": cooldown,
         "cooldown_until": cooldown_until,
         "limited_until": as_utc(state.limited_until) if state is not None else None,
+        "success_rate_7d": state.success_rate_7d if state is not None else None,
+        "reply_rate_7d": state.reply_rate_7d if state is not None else None,
+        "active_conversation_count": (state.active_conversation_count if state is not None else 0),
+        "metrics_at": as_utc(state.metrics_at) if state is not None else None,
         "note": state.note if state is not None else None,
     }
 
@@ -132,6 +142,95 @@ async def bump_daily(
     row.blocked += blocked
     row.limited_hits += limited
     return row
+
+
+async def retire(
+    session: AsyncSession,
+    account: TgAccount,
+    *,
+    reason: str = "manual",
+    hard: bool = False,
+    delete_session: bool = False,
+    session_path: Any = None,
+) -> dict[str, Any]:
+    """退役一个发信息账号：冻结名下会话、回收在途任务，默认只软删。
+
+    ``hard=True`` 才会真正删掉账号行；联系档案、消息流水与审计记录始终保留。
+    """
+    from app.services import outreach_sender_service
+
+    frozen = await outreach_sender_service.freeze_account_contacts(
+        session,
+        account,
+        reason=reason,
+    )
+    recycled = await _recycle_tasks(session, account.id)
+
+    state = await session.get(OutreachAccountState, account.id)
+    if state is None:
+        state = OutreachAccountState(account_id=account.id, tenant_id=account.tenant_id)
+        session.add(state)
+    state.state = STATE_DISABLED
+    state.note = f"已退役：{reason}"
+
+    account.status = ACCOUNT_DISABLED
+    account.retired_at = utc_now()
+    account.retire_reason = reason
+    account.is_default = False
+
+    moved = _trash_session_file(session_path) if delete_session else None
+    if hard:
+        await session.delete(account)
+    await session.commit()
+    return {
+        "account_id": account.id,
+        "name": account.name,
+        "frozen_contacts": frozen,
+        "recycled_tasks": recycled,
+        "session_moved": moved,
+        "hard": hard,
+    }
+
+
+async def _recycle_tasks(session: AsyncSession, account_id: int) -> int:
+    """把该账号在途的任务放回队列（换号或等人工处理，不能丢）。"""
+    from app.db.models import TASK_ASSIGNED, TASK_SENDING
+
+    rows = list(
+        await session.scalars(
+            select(OutreachTask).where(
+                OutreachTask.account_id == account_id,
+                OutreachTask.status.in_((TASK_ASSIGNED, TASK_SENDING)),
+            )
+        )
+    )
+    for row in rows:
+        row.status = TASK_QUEUED
+        row.account_id = None
+        row.next_retry_at = None
+        row.last_error = "原账号已退役，任务重新排队"
+    return len(rows)
+
+
+def _trash_session_file(session_path: Any) -> str | None:
+    """把 session 文件挪进 ``data/session_trash``（可恢复），不直接销毁。"""
+    if session_path is None:
+        return None
+    base = Path(session_path)
+    parent = base.parent
+    if not parent.exists():
+        return None
+    trash = parent.parent / "session_trash"
+    ensure_dir(trash)
+    stem = base.stem if base.suffix == ".session" else base.name
+    moved: list[str] = []
+    for item in sorted(parent.glob(f"{stem}*")):
+        if not item.is_file():
+            continue
+        target = trash / item.name
+        item.replace(target)
+        moved.append(item.name)
+    return ", ".join(moved) or None
 
 
 async def update_state(

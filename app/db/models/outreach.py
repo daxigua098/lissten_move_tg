@@ -13,6 +13,7 @@ from sqlalchemy import (
     Boolean,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -99,6 +100,11 @@ class OutreachAccountState(TenantOwnedMixin, TimestampMixin, Base):
     )
     limited_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     limited_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 近 7 天指标（由 outreach_metrics_service 刷新）
+    success_rate_7d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    reply_rate_7d: Mapped[float | None] = mapped_column(Float, nullable=True)
+    active_conversation_count: Mapped[int] = mapped_column(Integer, default=0)
+    metrics_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 

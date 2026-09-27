@@ -31,7 +31,13 @@ PLAN_CODE_MAX_LENGTH = 32
 PLAN_NAME_MAX_LENGTH = 64
 
 # 用量限制的合法键：与 TenantLimit 列一一对应
-_LIMIT_INT_KEYS = ("max_routes", "max_tg_accounts", "max_sources")
+_LIMIT_INT_KEYS = (
+    "max_routes",
+    "max_tg_accounts",
+    "max_sources",
+    "max_outreach_accounts",
+    "max_daily_cold_outreach",
+)
 
 
 def validate_module(module: str) -> str:

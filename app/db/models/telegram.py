@@ -85,6 +85,9 @@ class TgAccount(TenantOwnedMixin, TimestampMixin, Base):
     )
     owner_confirmed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     owner_confirm_version: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # 发信息账号退役（软删）：保留审计与联系档案，只停止外呼
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retire_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用
         return f"<TgAccount {self.name} status={self.status}>"

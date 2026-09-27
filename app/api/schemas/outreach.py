@@ -54,3 +54,12 @@ class HandoffConsumeRequest(BaseModel):
 
     token: str = Field(min_length=8, max_length=64)
     tg_user_id: int | None = Field(default=None, gt=0)
+
+
+class BatchRetireRequest(BaseModel):
+    """批量退役发信息账号。"""
+
+    account_ids: list[int] = Field(min_length=1, max_length=200)
+    reason: str = Field(default="manual", max_length=64)
+    hard: bool = False
+    delete_session: bool = False

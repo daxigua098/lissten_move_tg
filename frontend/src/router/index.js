@@ -59,7 +59,12 @@ const routes = [
   },
   // 「账号与机器人」「冷触达」是基础能力，平台（超管）与会员都能进，代理不能
   { path: "/ops", name: "ops", component: OpsTabs, meta: { role: "super_admin" } },
-  { path: "/outreach", name: "outreach", component: OutreachTabs, meta: { role: "sub_admin" } },
+  {
+    path: "/outreach",
+    name: "outreach",
+    component: OutreachTabs,
+    meta: { role: "sub_admin", modules: ["outreach"] },
+  },
   {
     path: "/system",
     name: "system",

@@ -74,6 +74,7 @@ async def list_accounts(
     request: Request,
     status: str | None = Query(default=None),
     purpose: str | None = Query(default=None),
+    include_retired: bool = Query(default=False),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(session_dependency),
@@ -86,6 +87,7 @@ async def list_accounts(
         purpose=purpose,
         limit=limit,
         offset=offset,
+        include_retired=include_retired,
     )
     return {
         "items": [await serialize(session, config, row) for row in rows],

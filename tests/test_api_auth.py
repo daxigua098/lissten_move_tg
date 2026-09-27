@@ -30,7 +30,7 @@ async def test_login_success_returns_token(admin_client) -> None:
     assert body["account_type"] == "platform"
     assert body["tenant_id"] is None
     assert body["tenant_status"] == "active"
-    assert set(body["modules"]) == {"carry", "monitor", "discovery"}
+    assert set(body["modules"]) == {"carry", "monitor", "discovery", "outreach"}
     assert body["limits"] == {}
 
 

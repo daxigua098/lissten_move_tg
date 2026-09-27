@@ -34,7 +34,9 @@ const menuItems = computed(() => {
     if (auth.hasModule("discovery")) {
       items.push({ index: "/resources", label: "资源发现" });
     }
-    items.push({ index: "/outreach", label: "冷触达" });
+    if (auth.hasModule("outreach")) {
+      items.push({ index: "/outreach", label: "冷触达" });
+    }
     items.push({ index: "/ops", label: "账号与机器人" });
     return items;
   }

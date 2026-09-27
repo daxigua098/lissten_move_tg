@@ -20,6 +20,7 @@ from app.api.deps import (
     tenant_scope_of,
 )
 from app.api.schemas.outreach import (
+    BatchRetireRequest,
     HandoffConsumeRequest,
     OutreachSettingsUpdate,
     OutreachTemplateCreate,
@@ -29,6 +30,7 @@ from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.runtime_control import is_paused, set_paused
 from app.db.base import as_utc
 from app.db.models import (
+    ACCOUNT_PURPOSE_OUTREACH,
     CONTACT_STATE_LABELS,
     ROLE_SUB_ADMIN,
     TASK_STATUS_LABELS,
@@ -39,6 +41,7 @@ from app.db.models import (
     TgAccount,
 )
 from app.services import (
+    outreach_account_service,
     outreach_handoff_service,
     outreach_queue_service,
     outreach_reply_service,
@@ -530,3 +533,45 @@ async def runtime_resume(request: Request) -> dict[str, Any]:
     config: Any = request.app.state.config
     set_paused(_outreach_control_path(config), False)
     return {"paused": False}
+
+
+@router.post("/accounts/batch-retire")
+async def batch_retire_accounts(
+    payload: BatchRetireRequest,
+    request: Request,
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """批量退役发信息账号：冻结会话、回收在途任务，默认只软删。"""
+    config: Any = request.app.state.config
+    settings = await outreach_settings_service.read_settings(
+        session,
+        tenant_scope_of(identity),
+    )
+    delete_session = bool(
+        payload.delete_session or settings.get("delete_session_on_account_delete")
+    )
+    from app.core.telegram_client import session_file_path
+
+    items: list[dict[str, Any]] = []
+    for account_id in payload.account_ids:
+        account = await session.get(TgAccount, account_id)
+        if account is None or account.purpose != ACCOUNT_PURPOSE_OUTREACH:
+            continue
+        items.append(
+            await outreach_account_service.retire(
+                session,
+                account,
+                reason=payload.reason,
+                hard=payload.hard,
+                delete_session=delete_session,
+                session_path=session_file_path(config, account.session_name),
+            )
+        )
+    return {
+        "items": items,
+        "count": len(items),
+        "frozen_contacts": sum(item["frozen_contacts"] for item in items),
+        "delete_session": delete_session,
+        "hard": payload.hard,
+    }

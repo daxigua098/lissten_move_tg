@@ -57,6 +57,7 @@ from app.services import (
     keyword_service,
     lead_service,
     outreach_handoff_service,
+    outreach_metrics_service,
     outreach_queue_service,
     outreach_reply_service,
     outreach_sender_service,
@@ -242,6 +243,7 @@ class RuntimeService:
                 )
                 if result.get("status") == "SENT":
                     sent += 1
+                    await outreach_metrics_service.refresh(session, account)
             await asyncio.sleep(1.0)
 
         now = asyncio.get_running_loop().time()

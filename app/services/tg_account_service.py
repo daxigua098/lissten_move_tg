@@ -26,8 +26,10 @@ from app.db.models import (
     ACCOUNT_PURPOSES,
     ACCOUNT_RESTRICTED,
     ACCOUNT_STATUSES,
+    TenantLimit,
     TgAccount,
 )
+from app.db.tenant_context import scoped_tenant_id
 
 FAILURE_THRESHOLD = 3
 
@@ -40,6 +42,29 @@ def validate_purpose(purpose: str) -> str:
     return value
 
 
+async def ensure_outreach_quota(session: AsyncSession) -> None:
+    """发信息账号数量受租户额度限制（退役的不算）。"""
+    tenant_id = scoped_tenant_id()
+    limit = await session.get(TenantLimit, tenant_id)
+    cap = getattr(limit, "max_outreach_accounts", None) if limit is not None else None
+    if not cap:
+        return
+    used = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(TgAccount)
+            .where(
+                TgAccount.tenant_id == tenant_id,
+                TgAccount.purpose == ACCOUNT_PURPOSE_OUTREACH,
+                TgAccount.retired_at.is_(None),
+            )
+        )
+        or 0
+    )
+    if used >= int(cap):
+        raise ValidationFailedError(f"发信息账号数量已达上限（{cap} 个），请先停用或删除不用的账号")
+
+
 async def list_accounts(
     session: AsyncSession,
     *,
@@ -47,10 +72,17 @@ async def list_accounts(
     purpose: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    include_retired: bool = False,
 ) -> tuple[list[TgAccount], int]:
-    """分页查询账号；``purpose`` 用于区分执行账号与发信息账号。"""
+    """分页查询账号；``purpose`` 区分执行账号与发信息账号。
+
+    已退役（软删）的发信息账号默认不出现在列表里，历史与联系档案仍在库里。
+    """
     statement = select(TgAccount).order_by(TgAccount.id)
     count_statement = select(func.count()).select_from(TgAccount)
+    if not include_retired:
+        statement = statement.where(TgAccount.retired_at.is_(None))
+        count_statement = count_statement.where(TgAccount.retired_at.is_(None))
     if purpose:
         statement = statement.where(TgAccount.purpose == purpose)
         count_statement = count_statement.where(TgAccount.purpose == purpose)
@@ -134,8 +166,10 @@ async def create_account(
     发信息账号（``purpose=outreach``）必须由会员确认账号归属与授权后才能登记。
     """
     purpose = validate_purpose(purpose)
-    if purpose == ACCOUNT_PURPOSE_OUTREACH and not owner_confirmed:
-        raise ValidationFailedError("请先确认该账号归你所有并已获授权用于发送消息")
+    if purpose == ACCOUNT_PURPOSE_OUTREACH:
+        if not owner_confirmed:
+            raise ValidationFailedError("请先确认该账号归你所有并已获授权用于发送消息")
+        await ensure_outreach_quota(session)
     alias = (name or "").strip()
     if not alias:
         raise ValidationFailedError("请填写账号别名")

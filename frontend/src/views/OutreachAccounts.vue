@@ -11,6 +11,7 @@ const total = ref(0);
 const dialogVisible = ref(false);
 const loginDialog = ref(false);
 const loginAccount = ref(null);
+const selected = ref([]);
 const form = reactive({
   name: "",
   phone: "",
@@ -131,6 +132,49 @@ async function toggleState(row) {
   }
 }
 
+async function retireBatch(hard) {
+  if (!selected.value.length) {
+    ElMessage.warning("请先勾选要处理的账号");
+    return;
+  }
+  const ids = selected.value.map((item) => item.id);
+  try {
+    if (hard) {
+      await ElMessageBox.prompt(
+        `将彻底删除 ${ids.length} 个账号：名下会话全部冻结（不会转给其他账号）。请输入 DELETE 确认。`,
+        "彻底删除账号",
+        {
+          confirmButtonText: "删除",
+          cancelButtonText: "取消",
+          inputPattern: /^DELETE$/,
+          inputErrorMessage: "请输入 DELETE",
+        },
+      );
+    } else {
+      await ElMessageBox.confirm(
+        `将停用 ${ids.length} 个账号：名下会话全部冻结（不转号），在途任务重新排队。`,
+        "批量停用",
+        { type: "warning", confirmButtonText: "停用", cancelButtonText: "取消" },
+      );
+    }
+    const { data } = await outreachApi.batchRetire({
+      account_ids: ids,
+      reason: hard ? "batch_delete" : "batch_disable",
+      hard,
+    });
+    ElMessage.success(`已处理 ${data.count} 个账号，冻结会话 ${data.frozen_contacts} 个`);
+    load();
+  } catch (error) {
+    if (error?.message && !error.message.includes("cancel")) {
+      ElMessage.error(error.message);
+    }
+  }
+}
+
+function percent(value) {
+  return value === null || value === undefined ? "-" : `${Math.round(value * 100)}%`;
+}
+
 async function remove(row) {
   try {
     await ElMessageBox.confirm(
@@ -162,10 +206,29 @@ onMounted(load);
       <span class="card-hint">共 {{ total }} 个账号</span>
       <div class="spacer" />
       <el-button size="small" type="primary" @click="openCreate">登记发信息账号</el-button>
+      <el-button size="small" :disabled="!selected.length" @click="retireBatch(false)">
+        批量停用
+      </el-button>
+      <el-button
+        size="small"
+        type="danger"
+        plain
+        :disabled="!selected.length"
+        @click="retireBatch(true)"
+      >
+        彻底删除
+      </el-button>
       <el-button size="small" @click="load">刷新</el-button>
     </div>
 
-    <el-table v-loading="loading" :data="rows" size="small" border>
+    <el-table
+      v-loading="loading"
+      :data="rows"
+      size="small"
+      border
+      @selection-change="(value) => (selected = value)"
+    >
+      <el-table-column type="selection" width="42" />
       <el-table-column prop="id" label="ID" width="60" />
       <el-table-column label="别名" min-width="140">
         <template #default="{ row }">
@@ -203,6 +266,15 @@ onMounted(load);
         <template #default="{ row }">
           {{ row.outreach?.today_sent ?? 0 }} / {{ row.outreach?.daily_cap ?? "-" }}
         </template>
+      </el-table-column>
+      <el-table-column label="7日成功率" width="110">
+        <template #default="{ row }">{{ percent(row.outreach?.success_rate_7d) }}</template>
+      </el-table-column>
+      <el-table-column label="7日回复率" width="110">
+        <template #default="{ row }">{{ percent(row.outreach?.reply_rate_7d) }}</template>
+      </el-table-column>
+      <el-table-column label="在跟会话" width="100">
+        <template #default="{ row }">{{ row.outreach?.active_conversation_count ?? 0 }}</template>
       </el-table-column>
       <el-table-column label="冷却至" width="170">
         <template #default="{ row }">{{ fmt(row.outreach?.cooldown_until) }}</template>

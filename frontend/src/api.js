@@ -160,6 +160,7 @@ export const outreachApi = {
   takeover: (id) => http.post(`/api/outreach/contacts/${id}/takeover`),
   resumeAuto: (id) => http.post(`/api/outreach/contacts/${id}/resume-auto`),
   handoff: (id) => http.post(`/api/outreach/contacts/${id}/handoff`),
+  batchRetire: (payload) => http.post("/api/outreach/accounts/batch-retire", payload),
   suppress: (id) => http.post(`/api/outreach/contacts/${id}/suppress`),
   unsuppress: (id) => http.delete(`/api/outreach/contacts/${id}/suppress`),
 };

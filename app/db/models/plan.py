@@ -15,11 +15,13 @@ from app.db.base import Base, TimestampMixin, utc_now
 MODULE_CARRY = "carry"
 MODULE_MONITOR = "monitor"
 MODULE_DISCOVERY = "discovery"
-MODULES = (MODULE_CARRY, MODULE_MONITOR, MODULE_DISCOVERY)
+MODULE_OUTREACH = "outreach"
+MODULES = (MODULE_CARRY, MODULE_MONITOR, MODULE_DISCOVERY, MODULE_OUTREACH)
 MODULE_LABELS: dict[str, str] = {
     MODULE_CARRY: "搬运帖子",
     MODULE_MONITOR: "监听会员",
     MODULE_DISCOVERY: "资源发现",
+    MODULE_OUTREACH: "冷触达",
 }
 
 # 功能包模板类型
@@ -86,6 +88,9 @@ class TenantLimit(TimestampMixin, Base):
     max_routes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_tg_accounts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     max_sources: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 冷触达：发信息账号数上限 / 每日冷聊总量上限
+    max_outreach_accounts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    max_daily_cold_outreach: Mapped[int | None] = mapped_column(Integer, nullable=True)
     allow_export: Mapped[bool] = mapped_column(Boolean, default=True)
 
     def __repr__(self) -> str:  # pragma: no cover - 调试用

@@ -40,7 +40,6 @@ from app.db.models import (
     BUSINESS_CARRY,
     BUSINESS_MONITOR,
     DISCOVER_LINK,
-    LISTEN_MODE_ALL,
     SENDER_MODE_BOT,
     Route,
     TenantChat,
@@ -659,9 +658,27 @@ class RuntimeService:
                     exclude=(),
                 )
                 hit = hits[0] if hits else None
-                if hit is None and config.listen_mode != LISTEN_MODE_ALL:
+                # 新规则：关键词命中是入库前置条件。全量模式仍扫描消息、
+                # 采集热门词和链接，但没有命中的用户不进入线索 / 会员档案。
+                if hit is None:
                     continue
-                if hit is not None and await lead_service.recent_lead_exists(
+                decision = await lead_service.evaluate_capture_eligibility(
+                    session,
+                    tenant_id=fresh.tenant_id,
+                    sender=sender,
+                    text=text,
+                    capture_mode=config.capture_mode,
+                    source_account_id=fresh.exec_account_id,
+                )
+                if not decision.allowed:
+                    logger.debug(
+                        "跳过不可冷触达用户：{}（线路 {}，原因 {}）",
+                        sender.display_name or sender.tg_user_id,
+                        fresh.name,
+                        decision.reason,
+                    )
+                    continue
+                if await lead_service.recent_lead_exists(
                     session,
                     route_id=fresh.id,
                     sender_tg_id=sender.tg_user_id,
@@ -686,29 +703,34 @@ class RuntimeService:
                     message_at=view.date,
                     sender=sender,
                     contacts=contacts,
-                    keyword=hit.keyword if hit else None,
-                    keyword_group_id=hit.group_id if hit else None,
-                    matched_mode=hit.mode if hit else "",
-                    score=hit.score if hit else 0.0,
+                    keyword=hit.keyword,
+                    keyword_group_id=hit.group_id,
+                    matched_mode=hit.mode,
+                    score=hit.score,
                     text=text,
                     source_title=source_title,
+                    tenant_id=fresh.tenant_id,
+                    reachable_routes=decision.reachable_routes,
+                    consent_type=decision.consent_type,
+                    capture_reason=decision.reason,
+                    route_owner_account_id=decision.route_owner_account_id,
                 )
                 await lead_service.upsert_member(
                     session,
                     sender,
                     seen_at=view.date,
-                    hit=hit is not None,
+                    hit=True,
+                    tenant_id=fresh.tenant_id,
+                    reachable_routes=decision.reachable_routes,
+                    consent_type=decision.consent_type,
                 )
                 logger.info(
-                    "监听到发言：{}（线路 {}，命中 {}）",
+                    "监听到冷触达候选：{}（线路 {}，命中 {}，路径 {}）",
                     sender.display_name or sender.tg_user_id,
                     fresh.name,
-                    hit.keyword if hit else "无（全量入库）",
+                    hit.keyword,
+                    ",".join(decision.reachable_routes) or "无",
                 )
-
-                # 全量监听默认只入库不刷屏；命中关键词或显式打开时才推卡片
-                if hit is None and not config.push_card_on_all:
-                    continue
                 await self._push_lead_card(
                     client,
                     session,
@@ -717,7 +739,7 @@ class RuntimeService:
                     lead=lead,
                     sender=sender,
                     contacts=contacts,
-                    keyword=hit.keyword if hit else "",
+                    keyword=hit.keyword,
                     source_title=source_title,
                     message_at=view.date,
                     text=text,

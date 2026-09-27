@@ -23,6 +23,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.core.outreach_capture import (
+    CONSENT_NONE,
+    OUTREACH_WAITING_SENDER_ACCOUNT,
+)
 from app.db.base import Base, TimestampMixin
 from app.db.models.tenant import TenantOwnedMixin
 
@@ -119,6 +123,39 @@ class MemberProfile(TenantOwnedMixin, TimestampMixin, Base):
     )
     first_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 抓取时已经存在的潜在可触达路径与授权依据
+    reachable_routes: Mapped[str] = mapped_column(Text, default="[]")
+    consent_type: Mapped[str] = mapped_column(String(32), default=CONSENT_NONE)
+    outreach_status: Mapped[str] = mapped_column(
+        String(32),
+        default=OUTREACH_WAITING_SENDER_ACCOUNT,
+        index=True,
+    )
+    # 用户回复后归属的发送账号；未分配时为空
+    conversation_owner_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    first_contact_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_contact_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ContactSuppression(TenantOwnedMixin, TimestampMixin, Base):
+    """全局免打扰名单：同一租户下所有发送账号共享。"""
+
+    __tablename__ = "contact_suppressions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "tg_user_id", name="uq_contact_suppressions_tenant_user"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tg_user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    reason: Mapped[str] = mapped_column(String(64), default="manual")
+    note: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class Lead(TenantOwnedMixin, TimestampMixin, Base):
@@ -155,6 +192,21 @@ class Lead(TenantOwnedMixin, TimestampMixin, Base):
 
     text: Mapped[str] = mapped_column(Text, default="")
     source_title: Mapped[str] = mapped_column(String(128), default="")
+
+    # 抓取规则命中时的路径与授权快照；发送账号可暂时不存在
+    reachable_routes: Mapped[str] = mapped_column(Text, default="[]")
+    consent_type: Mapped[str] = mapped_column(String(32), default=CONSENT_NONE)
+    outreach_status: Mapped[str] = mapped_column(
+        String(32),
+        default=OUTREACH_WAITING_SENDER_ACCOUNT,
+        index=True,
+    )
+    capture_reason: Mapped[str] = mapped_column(String(255), default="")
+    route_owner_account_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tg_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     delivered: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

@@ -6,6 +6,7 @@ import asyncio
 import csv
 import io
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,13 +15,116 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.lead_extractor import ContactInfo, SenderInfo
+from app.core.outreach_capture import (
+    CONSENT_MEMBER,
+    CONSENT_NONE,
+    CONSENT_PRIOR_REPLY,
+    OUTREACH_BLOCKED_STATUSES,
+    OUTREACH_REPLIED,
+    OUTREACH_WAITING_SENDER_ACCOUNT,
+    ROUTE_PEER_REFERENCE,
+    ROUTE_SHARED_GROUP,
+    consent_satisfies_capture,
+    detect_consent_type,
+    detect_reachable_routes,
+    parse_reachable_routes,
+    reachable_routes_json,
+)
 from app.db.base import as_utc, utc_now
-from app.db.models import Lead, MemberProfile
+from app.db.models import ContactSuppression, Lead, MemberProfile
 
 
 def _day_start(days_ago: int = 0) -> datetime:
     moment = datetime.now(UTC) - timedelta(days=days_ago)
     return moment.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+@dataclass(frozen=True)
+class CaptureDecision:
+    """一条监听消息能否成为冷私聊候选。"""
+
+    allowed: bool
+    reason: str
+    reachable_routes: tuple[str, ...] = ()
+    consent_type: str = CONSENT_NONE
+    route_owner_account_id: int | None = None
+
+
+async def evaluate_capture_eligibility(
+    session: AsyncSession,
+    *,
+    tenant_id: int,
+    sender: SenderInfo,
+    text: str | None,
+    capture_mode: str,
+    source_account_id: int | None,
+) -> CaptureDecision:
+    """按“真人 + 可触达 + 未阻断 + 严格模式授权”判断是否入库。"""
+    if not sender.is_user or sender.is_bot:
+        return CaptureDecision(False, "NOT_REAL_USER")
+    if not sender.tg_user_id:
+        return CaptureDecision(False, "NO_TG_USER_ID")
+
+    routes = detect_reachable_routes(
+        username=sender.username,
+        phone=sender.phone,
+        has_peer_reference=sender.has_peer_reference,
+        has_source_account=source_account_id is not None,
+    )
+    if not routes:
+        return CaptureDecision(False, "NO_REACHABLE_ROUTE")
+
+    suppressed = await session.scalar(
+        select(ContactSuppression.id).where(
+            ContactSuppression.tenant_id == tenant_id,
+            ContactSuppression.tg_user_id == sender.tg_user_id,
+        )
+    )
+    if suppressed is not None:
+        return CaptureDecision(False, "DO_NOT_CONTACT")
+
+    profile = await session.scalar(
+        select(MemberProfile).where(
+            MemberProfile.tenant_id == tenant_id,
+            MemberProfile.tg_user_id == sender.tg_user_id,
+        )
+    )
+    if profile is not None:
+        if profile.conversation_owner_account_id is not None:
+            return CaptureDecision(False, "CONVERSATION_OWNER_CONFLICT")
+        if (
+            profile.first_contact_at is not None
+            or profile.outreach_status in OUTREACH_BLOCKED_STATUSES
+        ):
+            return CaptureDecision(False, "ALREADY_CONTACTED")
+
+    prior_reply = bool(
+        profile is not None
+        and (
+            profile.outreach_status == OUTREACH_REPLIED
+            or profile.consent_type == CONSENT_PRIOR_REPLY
+        )
+    )
+    member_consent = bool(profile is not None and profile.consent_type == CONSENT_MEMBER)
+    consent_type = detect_consent_type(
+        text,
+        prior_reply=prior_reply,
+        member_consent=member_consent,
+    )
+    if not consent_satisfies_capture(capture_mode, consent_type):
+        return CaptureDecision(False, "CONSENT_REQUIRED")
+
+    route_owner_account_id = None
+    if ROUTE_PEER_REFERENCE in routes or ROUTE_SHARED_GROUP in routes:
+        route_owner_account_id = source_account_id
+    reason = f"ROUTES={','.join(routes)};CONSENT={consent_type}"
+    return CaptureDecision(
+        True,
+        reason,
+        reachable_routes=routes,
+        consent_type=consent_type,
+        route_owner_account_id=route_owner_account_id,
+    )
 
 
 async def record_lead(
@@ -38,15 +142,22 @@ async def record_lead(
     score: float,
     text: str,
     source_title: str,
+    tenant_id: int | None = None,
+    reachable_routes: tuple[str, ...] = (),
+    consent_type: str = CONSENT_NONE,
+    outreach_status: str = OUTREACH_WAITING_SENDER_ACCOUNT,
+    capture_reason: str = "",
+    route_owner_account_id: int | None = None,
 ) -> Lead:
     """写入一条线索（同一群同一条消息只记一次）。"""
-    existing = await session.scalar(
-        select(Lead).where(
-            Lead.route_id == route_id,
-            Lead.source_chat_id == source_chat_id,
-            Lead.message_id == message_id,
-        )
-    )
+    filters = [
+        Lead.route_id == route_id,
+        Lead.source_chat_id == source_chat_id,
+        Lead.message_id == message_id,
+    ]
+    if tenant_id is not None:
+        filters.append(Lead.tenant_id == tenant_id)
+    existing = await session.scalar(select(Lead).where(*filters))
     if existing is not None:
         return existing
 
@@ -67,7 +178,14 @@ async def record_lead(
         score=score,
         text=(text or "")[:4000],
         source_title=source_title,
+        reachable_routes=reachable_routes_json(reachable_routes),
+        consent_type=consent_type,
+        outreach_status=outreach_status,
+        capture_reason=capture_reason,
+        route_owner_account_id=route_owner_account_id,
     )
+    if tenant_id is not None:
+        lead.tenant_id = tenant_id
     session.add(lead)
     await session.commit()
     await session.refresh(lead)
@@ -120,6 +238,10 @@ async def upsert_member(
     *,
     seen_at: datetime | None = None,
     hit: bool = False,
+    tenant_id: int | None = None,
+    reachable_routes: tuple[str, ...] = (),
+    consent_type: str = CONSENT_NONE,
+    outreach_status: str = OUTREACH_WAITING_SENDER_ACCOUNT,
 ) -> MemberProfile | None:
     """按人汇总会员档案；没有用户 ID 的（频道匿名帖）跳过。
 
@@ -128,9 +250,11 @@ async def upsert_member(
     if not sender.tg_user_id:
         return None
     moment = seen_at or utc_now()
-    profile = await session.scalar(
-        select(MemberProfile).where(MemberProfile.tg_user_id == sender.tg_user_id)
-    )
+    filters = [MemberProfile.tg_user_id == sender.tg_user_id]
+    if tenant_id is not None:
+        filters.append(MemberProfile.tenant_id == tenant_id)
+    profile = await session.scalar(select(MemberProfile).where(*filters))
+    route_payload = reachable_routes_json(reachable_routes)
     if profile is None:
         profile = MemberProfile(
             tg_user_id=sender.tg_user_id,
@@ -141,7 +265,12 @@ async def upsert_member(
             message_count=1,
             first_seen_at=moment,
             last_seen_at=moment,
+            reachable_routes=route_payload,
+            consent_type=consent_type,
+            outreach_status=outreach_status,
         )
+        if tenant_id is not None:
+            profile.tenant_id = tenant_id
         session.add(profile)
     else:
         profile.username = sender.username or profile.username
@@ -149,6 +278,12 @@ async def upsert_member(
         profile.phone = sender.phone or profile.phone
         profile.message_count += 1
         profile.last_seen_at = moment
+        if reachable_routes:
+            profile.reachable_routes = route_payload
+        if consent_type != CONSENT_NONE:
+            profile.consent_type = consent_type
+        if profile.outreach_status not in OUTREACH_BLOCKED_STATUSES:
+            profile.outreach_status = outreach_status
     if hit and not profile.pinned:
         profile.pinned = True
         profile.first_hit_at = moment
@@ -393,6 +528,11 @@ def serialize_lead(row: Lead) -> dict[str, Any]:
         "matched_mode": row.matched_mode,
         "score": row.score,
         "text": row.text,
+        "reachable_routes": parse_reachable_routes(row.reachable_routes),
+        "consent_type": row.consent_type,
+        "outreach_status": row.outreach_status,
+        "capture_reason": row.capture_reason,
+        "route_owner_account_id": row.route_owner_account_id,
         "delivered": row.delivered,
         "target_chat_id": row.target_chat_id,
         "target_message_id": row.target_message_id,
@@ -412,6 +552,12 @@ def serialize_member(row: MemberProfile) -> dict[str, Any]:
         "is_bot": row.is_bot,
         "message_count": row.message_count,
         "pinned": row.pinned,
+        "reachable_routes": parse_reachable_routes(row.reachable_routes),
+        "consent_type": row.consent_type,
+        "outreach_status": row.outreach_status,
+        "conversation_owner_account_id": row.conversation_owner_account_id,
+        "first_contact_at": row.first_contact_at.isoformat() if row.first_contact_at else None,
+        "last_contact_at": row.last_contact_at.isoformat() if row.last_contact_at else None,
         "first_hit_at": first_hit.isoformat() if first_hit else None,
         "first_seen_at": first_seen.isoformat() if first_seen else None,
         "last_seen_at": last_seen.isoformat() if last_seen else None,

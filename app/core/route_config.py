@@ -54,6 +54,9 @@ class BMonitorConfig(BaseModel):
     """B 线：会员监听与线索生成。"""
 
     listen_mode: Literal["all", "keyword"] = "all"
+    # cold：关键词命中 + 潜在可触达路径即可成为冷私聊候选；
+    # strict：还必须存在明确邀请、历史回复或会员授权。
+    capture_mode: Literal["cold", "strict"] = "cold"
     keyword_group_ids: list[int] = Field(default_factory=list)
     sensitivity: Literal["loose", "standard", "strict"] = "loose"
     match_contains: bool = True

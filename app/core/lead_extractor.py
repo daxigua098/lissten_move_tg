@@ -42,6 +42,10 @@ class SenderInfo:
     display_name: str | None = None
     phone: str | None = None
     is_bot: bool = False
+    # 普通用户才允许进入冷私聊候选；频道 / 匿名身份不能当个人用户处理
+    is_user: bool = True
+    # Telethon 原始 User 对象带 access_hash 时，当前监听账号持有可用于后续联系的 peer
+    has_peer_reference: bool = False
 
 
 @dataclass(frozen=True)
@@ -113,12 +117,16 @@ def sender_info(sender: Any) -> SenderInfo:
     title = getattr(sender, "title", None)
     display = title or f"{first}{last}".strip() or username or None
     tg_user_id = getattr(sender, "id", None)
+    is_bot = bool(getattr(sender, "bot", False))
+    has_title = bool(getattr(sender, "title", None))
     return SenderInfo(
         tg_user_id=int(tg_user_id) if tg_user_id else None,
         username=username,
         display_name=display,
         phone=getattr(sender, "phone", None),
-        is_bot=bool(getattr(sender, "bot", False)),
+        is_bot=is_bot,
+        is_user=not is_bot and not has_title,
+        has_peer_reference=getattr(sender, "access_hash", None) is not None,
     )
 
 

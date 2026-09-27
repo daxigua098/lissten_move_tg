@@ -178,6 +178,7 @@ def test_migration_splits_chats_and_keeps_references(tmp_path: Path) -> None:
         assert {row[2] for row in connection.execute("PRAGMA foreign_key_list(leads)")} == {
             "tenant_chats",
             "routes",
+            "tg_accounts",
             "tenants",
         }
 

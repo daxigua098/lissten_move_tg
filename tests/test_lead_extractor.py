@@ -40,6 +40,7 @@ def test_sender_info_from_telethon_like_object() -> None:
         last_name="明",
         phone="+8613800138000",
         bot=False,
+        access_hash=123456,
     )
 
     info = sender_info(sender)
@@ -49,6 +50,11 @@ def test_sender_info_from_telethon_like_object() -> None:
     assert info.display_name == "小明"
     assert info.phone == "+8613800138000"
     assert info.is_bot is False
+    assert info.is_user is True
+    assert info.has_peer_reference is True
+
+    channel = sender_info(SimpleNamespace(id=9001, title="频道", bot=False))
+    assert channel.is_user is False
 
 
 def test_contact_summary_prefers_phone_then_username() -> None:

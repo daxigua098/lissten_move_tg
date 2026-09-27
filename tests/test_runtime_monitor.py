@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from conftest import fake_message
 
 
-async def _prepare_monitor_route(db, *, listen_mode: str = "keyword"):
+async def _prepare_monitor_route(db, *, listen_mode: str = "keyword", capture_mode: str = "cold"):
     """建一条 B 线：搜索群 → 线索群，并配好关键词组。"""
     from app.core.telegram_client import ChatProfile
     from app.db.session import session_scope
@@ -49,21 +49,38 @@ async def _prepare_monitor_route(db, *, listen_mode: str = "keyword"):
             source_chat_id=source.id,
             business_type="B",
             target_chat_ids=[target.id],
-            b_config={"listen_mode": listen_mode, "keyword_group_ids": [group.id]},
+            b_config={
+                "listen_mode": listen_mode,
+                "capture_mode": capture_mode,
+                "keyword_group_ids": [group.id],
+            },
         )
         return route.id, source.id, target.id
 
 
-def _event(text: str, *, message_id: int = 901, user_id: int = 5550001):
+def _event(
+    text: str,
+    *,
+    message_id: int = 901,
+    user_id: int = 5550001,
+    username: str | None = "seller01",
+    phone: str | None = None,
+    access_hash: int | None = None,
+    title: str | None = None,
+):
     message = fake_message(message_id, text)
-    message.sender = SimpleNamespace(
+    sender = SimpleNamespace(
         id=user_id,
-        username="seller01",
+        username=username,
         first_name="卖",
         last_name="家",
-        phone=None,
+        phone=phone,
         bot=False,
+        access_hash=access_hash,
     )
+    if title is not None:
+        sender.title = title
+    message.sender = sender
     return SimpleNamespace(message=message)
 
 
@@ -90,6 +107,8 @@ async def test_keyword_hit_records_lead_and_pushes_card(db, fake_delivery_client
     assert lead.keyword == "体育"
     assert lead.phone == "13800138000"
     assert lead.delivered is True
+    assert lead.outreach_status == "WAITING_SENDER_ACCOUNT"
+    assert lead.reachable_routes
 
     assert len(fake_delivery_client.sent) == 1
     card = fake_delivery_client.sent[0]["text"]
@@ -98,8 +117,10 @@ async def test_keyword_hit_records_lead_and_pushes_card(db, fake_delivery_client
     assert "@seller01" in card
 
 
-async def test_full_listen_mode_only_stores_without_push(db, fake_delivery_client) -> None:
-    """全量监听：没命中关键词也入库，但默认不推卡片。"""
+async def test_full_listen_mode_scans_without_storing_unmatched_user(
+    db, fake_delivery_client
+) -> None:
+    """全量监听仍扫描消息，但关键词未命中的用户不入线索库。"""
     from app.db.session import session_scope
     from app.services import lead_service, route_service
     from app.services.runtime_service import RuntimeService
@@ -112,10 +133,8 @@ async def test_full_listen_mode_only_stores_without_push(db, fake_delivery_clien
     await service._on_monitor_message(fake_delivery_client, _event("今天天气不错啊"), [route])
 
     async with session_scope() as session:
-        rows, total = await lead_service.list_leads(session)
-    assert total == 1
-    assert rows[0].keyword is None
-    assert rows[0].delivered is False
+        _rows, total = await lead_service.list_leads(session)
+    assert total == 0
     assert fake_delivery_client.sent == []
 
 
@@ -191,11 +210,155 @@ async def test_exclude_group_blocks_message(db, fake_delivery_client) -> None:
     await service._on_monitor_message(fake_delivery_client, _event("随便聊聊天气"), [route])
 
     async with session_scope() as session:
-        rows, total = await lead_service.list_leads(session)
-    # 客服那条被排除词挡掉，只剩普通发言
-    assert total == 1
-    assert rows[0].text == "随便聊聊天气"
+        _rows, total = await lead_service.list_leads(session)
+    # 客服那条被排除词挡掉；普通发言没命中关键词，也不入库
+    assert total == 0
     assert source_id
+
+
+async def test_keyword_hit_without_reachable_route_is_not_stored(db, fake_delivery_client) -> None:
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(db)
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐", username=None),
+        [route],
+    )
+
+    async with session_scope() as session:
+        _rows, total = await lead_service.list_leads(session)
+    assert total == 0
+    assert fake_delivery_client.sent == []
+
+
+async def test_channel_sender_is_not_treated_as_member(db, fake_delivery_client) -> None:
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(db)
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐", title="频道身份"),
+        [route],
+    )
+
+    async with session_scope() as session:
+        _rows, total = await lead_service.list_leads(session)
+    assert total == 0
+    assert fake_delivery_client.sent == []
+
+
+async def test_strict_capture_requires_explicit_invite(db, fake_delivery_client) -> None:
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(db, capture_mode="strict")
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐", message_id=1),
+        [route],
+    )
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐，有意私信我", message_id=2),
+        [route],
+    )
+
+    async with session_scope() as session:
+        rows, total = await lead_service.list_leads(session)
+    assert total == 1
+    assert rows[0].consent_type == "EXPLICIT_DM_INVITE"
+    assert len(fake_delivery_client.sent) == 1
+
+
+async def test_global_suppression_blocks_capture(db, fake_delivery_client) -> None:
+    from app.db.models import ContactSuppression
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(db)
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        session.add(
+            ContactSuppression(
+                tenant_id=route.tenant_id,
+                tg_user_id=5550001,
+                reason="manual",
+            )
+        )
+        await session.commit()
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐"),
+        [route],
+    )
+
+    async with session_scope() as session:
+        _rows, total = await lead_service.list_leads(session)
+    assert total == 0
+    assert fake_delivery_client.sent == []
+
+
+async def test_existing_conversation_owner_blocks_capture(db, fake_delivery_client) -> None:
+    from app.db.models import MemberProfile, TgAccount
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(db)
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+        account = TgAccount(
+            tenant_id=route.tenant_id,
+            name="发送账号",
+            phone_masked="+86****8000",
+            phone_enc="enc",
+            api_id_enc="enc",
+            api_hash_enc="enc",
+            session_name="sender",
+        )
+        session.add(account)
+        await session.flush()
+        session.add(
+            MemberProfile(
+                tenant_id=route.tenant_id,
+                tg_user_id=5550001,
+                conversation_owner_account_id=account.id,
+            )
+        )
+        await session.commit()
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐"),
+        [route],
+    )
+
+    async with session_scope() as session:
+        _rows, total = await lead_service.list_leads(session)
+    assert total == 0
+    assert fake_delivery_client.sent == []
 
 
 class FakeBotApi:

@@ -7,40 +7,29 @@
 - 停用中的租户不再催（停用是处罚，催续费没有意义）；已过期也不再生成；
 - 续期后剩余天数回到窗口外，提醒自然从列表消失，历史记录保留可追溯。
 
-渠道：站内（``inapp``）+ TG 通知（``telegram``）。TG 出口取「租户自己的默认
-通知 Bot」（控制 Bot 的 ``is_default``），没配就退回自营租户的默认 Bot；收件人是
-Bot 里的「管理员 TG 用户 ID」。没配 Bot / 没配管理员 / 发送失败都只留在站内渠道，
-不影响到期强停，也不影响其他租户的提醒。
+渠道：目前只实现站内（``inapp``）。要接 TG / 邮件 / 短信，只需要在
+:func:`deliver` 里补一个发送实现，去重表与调用方都不用改。
 """
 
 from __future__ import annotations
 
-import contextlib
 from datetime import UTC, datetime
 from typing import Any
 
-from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.bot_api import BotApiClient
-from app.core.config import AppConfig
-from app.core.expiry import resolve_timezone
 from app.db.base import as_utc
 from app.db.models import (
     AUDIENCE_AGENT,
     AUDIENCE_MEMBER,
     CHANNEL_INAPP,
-    CHANNEL_TELEGRAM,
-    SELF_TENANT_ID,
     TENANT_KIND_MEMBER,
     TENANT_STATUS_ACTIVE,
-    ControlBot,
     Tenant,
     TenantReminder,
-    User,
 )
-from app.services import bot_service, tenant_status_service
+from app.services import tenant_status_service
 
 # 代理阶段与会员阶段（天）
 AGENT_STAGES = (7, 3, 1)
@@ -84,141 +73,12 @@ async def _existing(
     return {(row.tenant_id, row.stage, row.audience) for row in rows}
 
 
-def format_message(
-    *,
-    audience: str,
-    display_name: str,
-    stage: str,
-    expires_at: datetime | None,
-    tz_name: str | None = None,
-) -> str:
-    """提醒文案（TG 通知用）。"""
-    label = stage_label(stage)
-    deadline = ""
-    if expires_at is not None:
-        moment = as_utc(expires_at).astimezone(resolve_timezone(tz_name))
-        deadline = f"，到期时间 {moment:%Y-%m-%d %H:%M:%S}"
-    if audience == AUDIENCE_AGENT:
-        return (
-            f"【额度提醒】你名下的会员「{display_name}」还有 {label} 到期{deadline}。{AGENT_HINT}。"
-        )
-    return f"【到期提醒】你的账号「{display_name}」还有 {label} 到期{deadline}。{MEMBER_HINT}。"
+async def deliver(reminders: list[TenantReminder]) -> list[TenantReminder]:
+    """把提醒发出去。当前只有站内渠道，所以这里只负责记录。
 
-
-async def _notify_bots(session: AsyncSession, tenant_ids: list[int]) -> dict[int, ControlBot]:
-    """租户 → 该租户启用的默认通知 Bot（取不到就由调用方退回自营）。"""
-    wanted = sorted(set(tenant_ids) | {SELF_TENANT_ID})
-    rows = list(
-        await session.scalars(
-            select(ControlBot)
-            .where(
-                ControlBot.tenant_id.in_(wanted),
-                ControlBot.is_default.is_(True),
-                ControlBot.enabled.is_(True),
-            )
-            .order_by(ControlBot.id)
-        )
-    )
-    resolved: dict[int, ControlBot] = {}
-    for bot in rows:
-        resolved.setdefault(bot.tenant_id, bot)
-    return resolved
-
-
-async def _display_names(session: AsyncSession, tenant_ids: list[int]) -> dict[int, str]:
-    """租户 → 展示名（优先会员用户名，取不到用租户名）。"""
-    if not tenant_ids:
-        return {}
-    tenants = list(await session.scalars(select(Tenant).where(Tenant.id.in_(tenant_ids))))
-    owner_ids = [item.owner_user_id for item in tenants if item.owner_user_id]
-    usernames: dict[int, str] = {}
-    if owner_ids:
-        rows = await session.execute(select(User.id, User.username).where(User.id.in_(owner_ids)))
-        usernames = {int(row[0]): str(row[1]) for row in rows}
-    return {item.id: usernames.get(item.owner_user_id or 0) or item.name for item in tenants}
-
-
-async def _default_sender(_config: AppConfig, token: str) -> Any:
-    """真实通道：Bot API（只有真发消息时才联网）。"""
-    return BotApiClient(token)
-
-
-async def deliver(
-    session: AsyncSession,
-    reminders: list[TenantReminder],
-    *,
-    config: AppConfig,
-    sender_factory: Any = None,
-) -> dict[str, Any]:
-    """把站内提醒补一条 TG 通知（P4-05 的第 2 个渠道）。
-
-    出口取「租户自己的默认通知 Bot」，没配就退回自营租户的默认 Bot；收件人是
-    Bot 里的「管理员 TG 用户 ID」。没 Bot / 没管理员 / 发送失败都只留在站内渠道，
-    单条失败不影响其他提醒，也不影响到期强停。
+    返回真正"发出"的提醒；接 TG / 邮件时在这里分流，其余调用方不用改。
     """
-    pending = [row for row in reminders if row.channel == CHANNEL_INAPP]
-    outcome: dict[str, Any] = {"sent": 0, "failed": 0, "skipped": 0, "messages": 0}
-    if not pending:
-        return outcome
-    if config.app.demo_mode:
-        # 本地演练：不真发 TG（Bot API 会联网），提醒留在站内
-        outcome["skipped"] = len(pending)
-        return outcome
-
-    tenant_ids = [row.tenant_id for row in pending]
-    bots = await _notify_bots(session, tenant_ids)
-    names = await _display_names(session, tenant_ids)
-    factory = sender_factory or _default_sender
-    clients: dict[int, Any] = {}
-    try:
-        for row in pending:
-            bot = bots.get(row.tenant_id) or bots.get(SELF_TENANT_ID)
-            targets = bot_service.load_admin_ids(bot) if bot is not None else []
-            if bot is None or not targets:
-                outcome["skipped"] += 1
-                continue
-            client = clients.get(bot.id)
-            if client is None:
-                try:
-                    client = await factory(config, bot_service.decrypt_token(config, bot))
-                except Exception as exc:  # noqa: BLE001 - 单个 Bot 不可用不该拖垮整批
-                    logger.warning("到期提醒：通知 Bot「{}」不可用：{}", bot.name, exc)
-                    outcome["skipped"] += 1
-                    continue
-                clients[bot.id] = client
-            text = format_message(
-                audience=row.audience,
-                display_name=names.get(row.tenant_id) or f"#{row.tenant_id}",
-                stage=row.stage,
-                expires_at=row.expires_at,
-                tz_name=config.app.timezone,
-            )
-            sent = False
-            for chat_id in targets:
-                try:
-                    await client.send_message(str(chat_id), text)
-                except Exception as exc:  # noqa: BLE001 - 单个收件人失败不影响其他
-                    logger.warning(
-                        "到期提醒发送失败（租户 #{} → {}）：{}",
-                        row.tenant_id,
-                        chat_id,
-                        exc,
-                    )
-                    continue
-                sent = True
-                outcome["messages"] += 1
-            if sent:
-                row.channel = CHANNEL_TELEGRAM
-                outcome["sent"] += 1
-            else:
-                outcome["failed"] += 1
-        if outcome["sent"]:
-            await session.commit()
-    finally:
-        for client in clients.values():
-            with contextlib.suppress(Exception):
-                await client.close()
-    return outcome
+    return [row for row in reminders if row.channel == CHANNEL_INAPP]
 
 
 async def sweep(
@@ -279,8 +139,6 @@ async def sweep(
             for row in created
         ],
         "count": len(created),
-        # 内部用：TG 渠道直接拿这批记录去发，不用再查一次库
-        "rows": created,
         "generated_at": moment,
     }
 

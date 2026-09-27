@@ -69,8 +69,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         await _warn_if_no_super_admin()
         # 停机期间到期的租户，启动时先补一次巡检（幂等，重复跑没关系）
-        await sweep_expired_once(config)
-        sweep_task = asyncio.create_task(_expiry_sweep_loop(config))
+        await sweep_expired_once()
+        sweep_task = asyncio.create_task(_expiry_sweep_loop())
         try:
             yield
         finally:
@@ -83,11 +83,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await dispose_database()
 
 
-async def sweep_expired_once(config: AppConfig | None = None) -> None:
-    """跑一次到期巡检：强停、释放额度、取消在途任务（幂等）。
-
-    ``config`` 给了就顺带把新生成的到期提醒推到 TG（没配通知 Bot 时自动跳过）。
-    """
+async def sweep_expired_once() -> None:
+    """跑一次到期巡检：强停、释放额度、取消在途任务（幂等）。"""
     from app.db.session import session_scope
 
     try:
@@ -100,21 +97,8 @@ async def sweep_expired_once(config: AppConfig | None = None) -> None:
         # P4-05：同一趟巡检里补到期提醒（幂等，一个阶段只提醒一次）
         async with session_scope() as session:
             reminders = await reminder_service.sweep(session)
-            if reminders["count"]:
-                logger.info("到期提醒：新生成 {} 条", reminders["count"])
-            if reminders["count"] and config is not None:
-                outcome = await reminder_service.deliver(
-                    session,
-                    reminders["rows"],
-                    config=config,
-                )
-                if outcome["sent"] or outcome["failed"]:
-                    logger.info(
-                        "到期提醒 TG 通知：发出 {} 条 / 失败 {} 条 / 跳过 {} 条",
-                        outcome["sent"],
-                        outcome["failed"],
-                        outcome["skipped"],
-                    )
+        if reminders["count"]:
+            logger.info("到期提醒：新生成 {} 条", reminders["count"])
     except Exception as exc:  # noqa: BLE001 - 提醒失败不影响强停
         logger.warning("到期提醒生成失败：{}", exc)
     if summary is None:
@@ -129,7 +113,7 @@ async def sweep_expired_once(config: AppConfig | None = None) -> None:
         )
 
 
-async def _expiry_sweep_loop(config: AppConfig) -> None:
+async def _expiry_sweep_loop() -> None:
     """每 60 秒巡检一次（P4-03 第二层）。
 
     只有 API 进程跑这一个巡检，运行时进程不跑——两个进程同时释放额度会重复加额度
@@ -138,7 +122,7 @@ async def _expiry_sweep_loop(config: AppConfig) -> None:
     """
     while True:
         await asyncio.sleep(tenant_runtime_service.SWEEP_INTERVAL_SECONDS)
-        await sweep_expired_once(config)
+        await sweep_expired_once()
 
 
 async def _warn_if_no_super_admin() -> None:

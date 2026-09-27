@@ -65,6 +65,18 @@ def resolve_initial_password(password: str | None) -> tuple[str, bool]:
     return user_service.INITIAL_PASSWORD, True
 
 
+PLAN_REQUIRED_MESSAGE = (
+    "请至少选择一个功能块（搬运帖子 / 监听会员 / 资源发现）或一个功能包模板。"
+    "没有功能块的账号只有「账号与机器人」，客户进去看不到也用不了任何业务功能"
+)
+
+
+def _ensure_plan_selected(modules: list[str] | None, template_code: str | None) -> None:
+    """开号 / 改功能包时必须给出至少一个功能块，挡住"空白账号"。"""
+    if not modules and not template_code:
+        raise ValidationFailedError(PLAN_REQUIRED_MESSAGE)
+
+
 def _is_agent(actor: User) -> bool:
     """代理开号才占额度；平台开号跳过额度校验。"""
     return actor.account_type == ACCOUNT_TYPE_AGENT
@@ -244,6 +256,7 @@ async def open_member(
     额度从 **payer** 账上扣 1 个——指定归属代理时扣那个代理的，否则扣代理自己的；
     平台直开（没有归属代理）不占任何额度，记 ``quota_type='none'``。
     """
+    _ensure_plan_selected(modules, template_code)
     wanted, limits = await _resolve_plan(session, template_code=template_code, modules=modules)
     payer = owner_agent if owner_agent is not None else (actor if _is_agent(actor) else None)
     user, tenant, password_value = await _create_member_account(
@@ -610,6 +623,7 @@ async def set_plan(
     """
     if tenant.kind != TENANT_KIND_MEMBER:
         raise ValidationFailedError("只有会员租户可以改功能包")
+    _ensure_plan_selected(modules, template_code)
     wanted, limits = await _resolve_plan(session, template_code=template_code, modules=modules)
     await _apply_plan(
         session,

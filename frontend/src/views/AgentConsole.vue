@@ -131,6 +131,14 @@ function afterIssue(data, message) {
 }
 
 async function submitMember() {
+  if (!memberForm.username.trim()) {
+    ElMessage.warning("请填写会员登录账号");
+    return;
+  }
+  if (!memberForm.modules.length && !memberForm.template_code) {
+    ElMessage.warning("请至少勾一个功能块（或选一个功能包模板）：没功能块的账号进去只有「账号与机器人」");
+    return;
+  }
   submitting.value = true;
   try {
     const { data } = await agentApi.openMember({

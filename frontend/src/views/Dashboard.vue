@@ -54,7 +54,7 @@ const runtimeOff = computed(
 // 会员看得到自己开了哪些功能块，省得对着菜单猜
 const moduleText = computed(() => {
   const names = auth.modules.map((code) => MODULE_LABELS[code] || code);
-  return names.length ? names.join(" · ") : "仅基础功能";
+  return names.length ? names.join(" · ") : "未授权业务功能";
 });
 
 async function act(action) {

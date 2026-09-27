@@ -129,7 +129,7 @@ async def test_open_member_expiry_is_end_of_last_local_day(db) -> None:
     async with session_scope() as session:
         actor = await _load(session, agent_id)
         result = await provision_service.open_member(
-            session, db, actor=actor, username="pn-customer", days=1
+            session, db, actor=actor, username="pn-customer", days=1, modules=["carry"]
         )
 
     assert as_utc(result["tenant"]["expires_at"]) == expiry_for_days(1)
@@ -149,7 +149,7 @@ async def test_open_member_without_quota_rolls_back_everything(db) -> None:
         async with session_scope() as session:
             actor = await _load(session, agent_id)
             await provision_service.open_member(
-                session, db, actor=actor, username="po-customer", days=30
+                session, db, actor=actor, username="po-customer", days=30, modules=["carry"]
             )
 
     async with session_scope() as session:
@@ -171,7 +171,7 @@ async def test_platform_open_member_holds_no_quota(db) -> None:
     async with session_scope() as session:
         actor = await _load(session, admin_id)
         result = await provision_service.open_member(
-            session, db, actor=actor, username="pp-customer", days=30
+            session, db, actor=actor, username="pp-customer", days=30, modules=["carry"]
         )
 
     assert result["tenant"]["quota_type"] == "none"
@@ -274,7 +274,7 @@ async def test_expire_release_is_idempotent(db) -> None:
     async with session_scope() as session:
         actor = await _load(session, agent_id)
         result = await provision_service.open_member(
-            session, db, actor=actor, username="pe-customer", days=1
+            session, db, actor=actor, username="pe-customer", days=1, modules=["carry"]
         )
         tenant_id = result["tenant"]["id"]
 
@@ -308,7 +308,7 @@ async def test_renew_extends_when_quota_still_held(db) -> None:
     async with session_scope() as session:
         actor = await _load(session, agent_id)
         result = await provision_service.open_member(
-            session, db, actor=actor, username="pr-customer", days=1
+            session, db, actor=actor, username="pr-customer", days=1, modules=["carry"]
         )
         tenant_id = result["tenant"]["id"]
 
@@ -338,7 +338,7 @@ async def test_renew_recharges_after_expiry_released(db) -> None:
     async with session_scope() as session:
         actor = await _load(session, agent_id)
         result = await provision_service.open_member(
-            session, db, actor=actor, username="ps-customer", days=1
+            session, db, actor=actor, username="ps-customer", days=1, modules=["carry"]
         )
         tenant_id = result["tenant"]["id"]
 
@@ -371,7 +371,7 @@ async def test_renew_without_quota_and_not_held_fails(db) -> None:
     async with session_scope() as session:
         actor = await _load(session, agent_id)
         result = await provision_service.open_member(
-            session, db, actor=actor, username="pv-customer", days=1
+            session, db, actor=actor, username="pv-customer", days=1, modules=["carry"]
         )
         tenant_id = result["tenant"]["id"]
 
@@ -446,7 +446,7 @@ async def test_upgrade_non_trial_is_rejected(db) -> None:
     async with session_scope() as session:
         actor = await _load(session, agent_id)
         result = await provision_service.open_member(
-            session, db, actor=actor, username="px-customer", days=30
+            session, db, actor=actor, username="px-customer", days=30, modules=["carry"]
         )
         tenant_id = result["tenant"]["id"]
 
@@ -492,3 +492,36 @@ def test_expiry_helper_matches_design() -> None:
     assert one_day == expiry_for_days(1)
     later = expiry_for_days(3)
     assert later - expiry_for_days(1) == timedelta(days=2)
+
+
+async def test_open_member_requires_a_module(db) -> None:
+    """没选功能块的会员是空白账号（进去只有「账号与机器人」）：开号直接挡掉，不落数据、不扣额度。"""
+    from sqlalchemy import func, select
+
+    from app.db.models import User
+    from app.db.session import session_scope
+    from app.services import provision_service, quota_service
+
+    agent_id, _admin_id = await _agent_with_quota(db, "pz-agent", member=1)
+
+    for empty in (None, []):
+        with pytest.raises(ValidationFailedError) as excinfo:
+            async with session_scope() as session:
+                actor = await _load(session, agent_id)
+                await provision_service.open_member(
+                    session,
+                    db,
+                    actor=actor,
+                    username="pz-customer",
+                    days=30,
+                    modules=empty,
+                )
+        assert "至少选择一个功能块" in str(excinfo.value)
+
+    async with session_scope() as session:
+        exists = await session.scalar(
+            select(func.count()).select_from(User).where(User.username == "pz-customer")
+        )
+        balance = await quota_service.balance_of(session, agent_id, "member")
+    assert exists == 0
+    assert balance == 1

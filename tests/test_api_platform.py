@@ -824,3 +824,54 @@ async def test_delete_agent_needs_clean_tree_and_reclaimed_quota(admin_client, a
         )
     assert int(left_quota or 0) == 0
     assert int(kept_ledger or 0) >= 2
+
+
+async def test_open_member_without_module_is_rejected(admin_client, api_config) -> None:
+    """空白账号挡在开号这一步：平台 / 代理开会员都要勾功能块，改功能包也不许清空。"""
+    platform = await _platform_token(admin_client)
+    agent_id = await _make_agent(api_config, "p7-agent")
+    await _grant(admin_client, platform, agent_id, "member", 1)
+    agent_token = await _agent_token(admin_client, "p7-agent")
+
+    for path, token, username in (
+        ("/api/platform/members", platform, "p7-blank-a"),
+        ("/api/agent/members", agent_token, "p7-blank-b"),
+    ):
+        response = await admin_client.post(
+            path,
+            json={"username": username, "days": 30},
+            headers=auth_header(token),
+        )
+        assert response.status_code == 400, response.text
+        assert response.json()["code"] == "VALIDATION_ERROR"
+
+    # 两个请求都没留下账号，代理的额度也没被扣
+    members = await admin_client.get(
+        "/api/platform/members",
+        params={"keyword": "p7-blank"},
+        headers=auth_header(platform),
+    )
+    assert members.json()["total"] == 0, members.text
+    assert await _balance_of(agent_id, "member") == 1
+
+    # 已经开好的会员，也不许用「改功能包」把功能全清成空白
+    opened = await _open_member(
+        admin_client,
+        platform,
+        "p7-plan",
+        modules=["carry"],
+        owner_agent_id=agent_id,
+    )
+    user_id = int(opened["account"]["id"])
+    cleared = await admin_client.post(
+        f"/api/platform/members/{user_id}/plan",
+        json={"modules": []},
+        headers=auth_header(platform),
+    )
+    assert cleared.status_code == 400, cleared.text
+    kept = await admin_client.get(
+        "/api/platform/members",
+        params={"keyword": "p7-plan"},
+        headers=auth_header(platform),
+    )
+    assert kept.json()["items"][0]["modules"] == ["carry"], kept.text

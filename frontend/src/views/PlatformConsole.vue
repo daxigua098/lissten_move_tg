@@ -141,7 +141,7 @@ function quotaText(row) {
 }
 
 function memberNames(row) {
-  return (row.module_labels || []).join(" · ") || "仅基础功能";
+  return (row.module_labels || []).join(" · ");
 }
 
 function remindedTip(stages) {
@@ -266,6 +266,10 @@ async function submitAgent() {
 async function submitMember() {
   if (!memberForm.username.trim()) {
     ElMessage.warning("请填写会员登录账号");
+    return;
+  }
+  if (!memberForm.modules.length && !memberForm.template_code) {
+    ElMessage.warning("请至少勾一个功能块（或选一个功能包模板）：没功能块的账号进去只有「账号与机器人」");
     return;
   }
   submitting.value = true;
@@ -784,7 +788,12 @@ onMounted(loadAll);
               <template #default="{ row }">{{ row.agent_username || "平台直开" }}</template>
             </el-table-column>
             <el-table-column label="功能包" min-width="170">
-              <template #default="{ row }">{{ memberNames(row) }}</template>
+              <template #default="{ row }">
+                <el-tag v-if="!row.module_labels?.length" size="small" type="danger">
+                  未授权业务功能
+                </el-tag>
+                <span v-else>{{ memberNames(row) }}</span>
+              </template>
             </el-table-column>
             <el-table-column label="到期日" width="115">
               <template #default="{ row }">{{ fmtDay(row.expires_at) }}</template>
@@ -1220,7 +1229,7 @@ onMounted(loadAll);
         <div class="issued-line">账号：{{ issued.account.username }}</div>
         <div class="issued-line">初始密码：{{ issued.initial_password }}</div>
         <div class="issued-line">
-          功能块：{{ (issued.module_labels || []).join(" · ") || "仅基础功能" }}
+          功能块：{{ (issued.module_labels || []).join(" · ") || "未授权业务功能" }}
         </div>
         <div class="tip">这是平台统一下发的临时口令，对方登录后必须自己改掉。</div>
       </div>

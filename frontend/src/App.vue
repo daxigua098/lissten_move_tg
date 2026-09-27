@@ -58,7 +58,7 @@ const menuItems = computed(() => {
 const moduleHint = computed(() => {
   if (!auth.isMember) return "";
   const names = auth.modules.map((code) => MODULE_LABELS[code] || code);
-  return names.length ? names.join(" · ") : "仅基础功能";
+  return names.length ? names.join(" · ") : "未授权业务功能";
 });
 
 const expiryHint = computed(() => {

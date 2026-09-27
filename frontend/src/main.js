@@ -1,4 +1,49 @@
-import ElementPlus from "element-plus";
+import {
+  ElAlert,
+  ElAside,
+  ElButton,
+  ElCard,
+  ElCheckbox,
+  ElCheckboxGroup,
+  ElCol,
+  ElCollapse,
+  ElConfigProvider,
+  ElCollapseItem,
+  ElContainer,
+  ElDatePicker,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDialog,
+  ElDivider,
+  ElDrawer,
+  ElEmpty,
+  ElForm,
+  ElFormItem,
+  ElHeader,
+  ElInput,
+  ElInputNumber,
+  ElLoading,
+  ElMain,
+  ElMenu,
+  ElMenuItem,
+  ElOption,
+  ElPagination,
+  ElProgress,
+  ElRadio,
+  ElRadioButton,
+  ElRadioGroup,
+  ElResult,
+  ElRow,
+  ElSelect,
+  ElSwitch,
+  ElTabPane,
+  ElTable,
+  ElTableColumn,
+  ElTabs,
+  ElTag,
+  ElTooltip,
+  ElUpload,
+} from "element-plus";
 import zhCn from "element-plus/es/locale/lang/zh-cn";
 import { createApp } from "vue";
 import "element-plus/dist/index.css";
@@ -9,7 +54,56 @@ import router from "./router";
 import { auth } from "./stores/auth";
 import "./style.css";
 
-createApp(App).use(router).use(ElementPlus, { locale: zhCn }).mount("#app");
+const app = createApp(App);
+const components = [
+  ElAlert,
+  ElAside,
+  ElButton,
+  ElCard,
+  ElCheckbox,
+  ElCheckboxGroup,
+  ElCol,
+  ElCollapse,
+  ElConfigProvider,
+  ElCollapseItem,
+  ElContainer,
+  ElDatePicker,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDialog,
+  ElDivider,
+  ElDrawer,
+  ElEmpty,
+  ElForm,
+  ElFormItem,
+  ElHeader,
+  ElInput,
+  ElInputNumber,
+  ElMain,
+  ElMenu,
+  ElMenuItem,
+  ElOption,
+  ElPagination,
+  ElProgress,
+  ElRadio,
+  ElRadioButton,
+  ElRadioGroup,
+  ElResult,
+  ElRow,
+  ElSelect,
+  ElSwitch,
+  ElTabPane,
+  ElTable,
+  ElTableColumn,
+  ElTabs,
+  ElTag,
+  ElTooltip,
+  ElUpload,
+];
+components.forEach((component) => app.component(component.name, component));
+app.use(ElLoading);
+app.use(router);
+app.mount("#app");
 
 // 刷新页面后补一次身份同步：菜单与路由守卫依赖 account_type / modules，
 // 老会话（P2 之前存的）里没有这些字段。401 由响应拦截器统一处理。

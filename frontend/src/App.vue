@@ -1,5 +1,6 @@
 <script setup>
 import { ElMessage, ElMessageBox } from "element-plus";
+import zhCn from "element-plus/es/locale/lang/zh-cn";
 import { computed, onMounted, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -140,57 +141,59 @@ function logoutAll() {
 </script>
 
 <template>
-  <router-view v-if="!showShell" />
+  <el-config-provider :locale="zhCn">
+    <router-view v-if="!showShell" />
 
-  <el-container v-else class="shell">
-    <el-aside width="212px" class="shell-aside">
-      <div class="brand">
-        <span class="brand-logo">TG</span>
-        <div>
-          <div class="brand-name">线索运营</div>
-          <div class="brand-sub">后台管理</div>
+    <el-container v-else class="shell">
+      <el-aside width="212px" class="shell-aside">
+        <div class="brand">
+          <span class="brand-logo">TG</span>
+          <div>
+            <div class="brand-name">线索运营</div>
+            <div class="brand-sub">后台管理</div>
+          </div>
         </div>
-      </div>
-      <el-menu :default-active="route.path" router class="shell-menu">
-        <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
-          {{ item.label }}
-        </el-menu-item>
-      </el-menu>
-      <div class="aside-footer">
-        <span class="card-hint version">页面版本 {{ pageVersion }}</span>
-        <el-button link type="primary" @click="logout">退出登录</el-button>
-        <el-button link @click="logoutAll">退出所有设备</el-button>
-      </div>
-    </el-aside>
+        <el-menu :default-active="route.path" router class="shell-menu">
+          <el-menu-item v-for="item in menuItems" :key="item.index" :index="item.index">
+            {{ item.label }}
+          </el-menu-item>
+        </el-menu>
+        <div class="aside-footer">
+          <span class="card-hint version">页面版本 {{ pageVersion }}</span>
+          <el-button link type="primary" @click="logout">退出登录</el-button>
+          <el-button link @click="logoutAll">退出所有设备</el-button>
+        </div>
+      </el-aside>
 
-    <el-container>
-      <el-alert
-        v-if="expiryBanner"
-        class="expiry-banner"
-        :type="expiryBanner.type"
-        :title="expiryBanner.title"
-        :description="expiryBanner.description"
-        :closable="false"
-        show-icon
-      />
-      <el-header class="shell-header">
-        <span class="page-title">{{ route.name === "dashboard" ? "运行总览" : "" }}</span>
-        <div class="header-right">
-          <el-tag type="success" effect="light">后台服务正常</el-tag>
-          <el-tag v-if="auth.isMember && moduleHint" type="info" effect="plain">
-            {{ moduleHint }}
-          </el-tag>
-          <el-tag v-if="auth.isMember && expiryHint" type="warning" effect="plain">
-            有效期至 {{ expiryHint }}
-          </el-tag>
-          <span class="card-hint">{{ auth.username }} · {{ auth.roleLabel }}</span>
-        </div>
-      </el-header>
-      <el-main class="shell-main">
-        <router-view />
-      </el-main>
+      <el-container>
+        <el-alert
+          v-if="expiryBanner"
+          class="expiry-banner"
+          :type="expiryBanner.type"
+          :title="expiryBanner.title"
+          :description="expiryBanner.description"
+          :closable="false"
+          show-icon
+        />
+        <el-header class="shell-header">
+          <span class="page-title">{{ route.name === "dashboard" ? "运行总览" : "" }}</span>
+          <div class="header-right">
+            <el-tag type="success" effect="light">后台服务正常</el-tag>
+            <el-tag v-if="auth.isMember && moduleHint" type="info" effect="plain">
+              {{ moduleHint }}
+            </el-tag>
+            <el-tag v-if="auth.isMember && expiryHint" type="warning" effect="plain">
+              有效期至 {{ expiryHint }}
+            </el-tag>
+            <span class="card-hint">{{ auth.username }} · {{ auth.roleLabel }}</span>
+          </div>
+        </el-header>
+        <el-main class="shell-main">
+          <router-view />
+        </el-main>
+      </el-container>
     </el-container>
-  </el-container>
+  </el-config-provider>
 </template>
 
 <style scoped>

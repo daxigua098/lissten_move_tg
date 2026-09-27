@@ -1,17 +1,18 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import { auth, ROLE_RANK } from "../stores/auth";
-import AgentConsole from "../views/AgentConsole.vue";
-import ChangePassword from "../views/ChangePassword.vue";
-import ConfigTabs from "../views/ConfigTabs.vue";
-import LibraryTabs from "../views/LibraryTabs.vue";
-import Leads from "../views/Leads.vue";
-import Login from "../views/Login.vue";
-import OpsTabs from "../views/OpsTabs.vue";
-import OverviewTabs from "../views/OverviewTabs.vue";
-import PlatformConsole from "../views/PlatformConsole.vue";
-import ResourceTabs from "../views/ResourceTabs.vue";
-import SystemTabs from "../views/SystemTabs.vue";
+
+const AgentConsole = () => import("../views/AgentConsole.vue");
+const ChangePassword = () => import("../views/ChangePassword.vue");
+const ConfigTabs = () => import("../views/ConfigTabs.vue");
+const LibraryTabs = () => import("../views/LibraryTabs.vue");
+const Leads = () => import("../views/Leads.vue");
+const Login = () => import("../views/Login.vue");
+const OpsTabs = () => import("../views/OpsTabs.vue");
+const OverviewTabs = () => import("../views/OverviewTabs.vue");
+const PlatformConsole = () => import("../views/PlatformConsole.vue");
+const ResourceTabs = () => import("../views/ResourceTabs.vue");
+const SystemTabs = () => import("../views/SystemTabs.vue");
 
 // 路由 meta 约定（三层一致的前端那两层：菜单 + 路由）：
 //   role        平台账号内部角色下限

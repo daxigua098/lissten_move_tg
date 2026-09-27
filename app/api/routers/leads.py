@@ -84,6 +84,28 @@ async def export_leads(
     )
 
 
+@router.post("/purge-all")
+async def purge_all_leads(
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """清空全部线索与会员档案；删前先归档线索，操作不可撤销。"""
+    config: AppConfig = request.app.state.config
+    result = await lead_service.purge_all(
+        session,
+        archive_dir=config.path("data/archive"),
+    )
+    return {
+        "deleted": result["deleted"],
+        "profiles": result["profiles"],
+        "archived": result["archived"],
+        "message": (
+            f"已清空 {result['deleted']} 条线索和 {result['profiles']} 个会员档案"
+            f"（归档 {result['archived']} 条线索）"
+        ),
+    }
+
+
 @router.post("/purge-delivered")
 async def purge_delivered_leads(
     request: Request,

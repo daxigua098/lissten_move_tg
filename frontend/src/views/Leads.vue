@@ -81,6 +81,32 @@ async function purgeDelivered() {
   }
 }
 
+async function purgeAll() {
+  const leadCount = Math.max(0, Number(stats.value?.total || 0));
+  const memberCount = Math.max(0, Number(stats.value?.members || 0));
+  try {
+    await ElMessageBox.confirm(
+      `将删除全部 ${leadCount} 条线索和 ${memberCount} 个会员档案。删除前会自动归档线索，操作不可撤销。`,
+      "清空全部",
+      {
+        type: "warning",
+        confirmButtonText: "确认清空全部",
+        cancelButtonText: "取消",
+      },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const { data } = await leadsApi.purgeAll();
+    ElMessage.success(data.message || `已清空 ${data.deleted} 条线索`);
+    filters.offset = 0;
+    await load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
 async function exportCsv() {
   try {
     const url = leadsApi.exportUrl({
@@ -116,6 +142,7 @@ onMounted(async () => {
       <div class="spacer" />
       <el-button size="small" @click="load">刷新</el-button>
       <el-button size="small" @click="purgeDelivered">清空已完成</el-button>
+      <el-button size="small" type="danger" @click="purgeAll">清空全部</el-button>
       <el-button size="small" type="primary" @click="exportCsv">导出 CSV</el-button>
     </div>
 

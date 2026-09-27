@@ -513,6 +513,22 @@ async def purge_delivered(session: AsyncSession, *, archive_dir: Path) -> dict[s
     return {"deleted": len(rows), "archived": archived}
 
 
+async def purge_all(session: AsyncSession, *, archive_dir: Path) -> dict[str, int]:
+    """清空线索池：删除全部线索与会员档案，删除前先归档线索。"""
+    leads = list(await session.scalars(select(Lead)))
+    profiles = list(await session.scalars(select(MemberProfile)))
+    archived = 0
+    if leads:
+        archived = await asyncio.to_thread(_archive_leads, leads, archive_dir)
+        for row in leads:
+            await session.delete(row)
+    for row in profiles:
+        await session.delete(row)
+    if leads or profiles:
+        await session.commit()
+    return {"deleted": len(leads), "profiles": len(profiles), "archived": archived}
+
+
 def _archive_leads(rows: list[Lead], archive_dir: Path) -> int:
     """把即将删除的线索追加写进当天的 JSONL 归档文件。"""
     archive_dir.mkdir(parents=True, exist_ok=True)

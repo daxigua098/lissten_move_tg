@@ -281,3 +281,59 @@ async def test_purge_delivered_clears_only_pushed(admin_client, api_config) -> N
     again = await admin_client.post("/api/leads/purge-delivered", headers=_headers())
     assert again.status_code == 200, again.text
     assert again.json()["deleted"] == 0
+
+
+async def test_purge_all_clears_leads_and_profiles_but_keeps_suppression(
+    admin_client, api_config
+) -> None:
+    """「清空全部」清线索与档案，但不动全局免打扰名单。"""
+    from sqlalchemy import select
+
+    from app.core.lead_extractor import SenderInfo
+    from app.db.models import ContactSuppression
+    from app.db.session import session_scope
+    from app.services import lead_service
+
+    await _seed_lead(api_config)
+    async with session_scope() as session:
+        rows, _total = await lead_service.list_leads(session, limit=10)
+        await lead_service.upsert_member(
+            session,
+            SenderInfo(
+                tg_user_id=rows[0].sender_tg_id,
+                username=rows[0].sender_username,
+                display_name=rows[0].sender_name,
+            ),
+            hit=True,
+            tenant_id=rows[0].tenant_id,
+        )
+        session.add(
+            ContactSuppression(
+                tenant_id=rows[0].tenant_id,
+                tg_user_id=6660001,
+                reason="manual",
+            )
+        )
+        await session.commit()
+
+    purged = await admin_client.post("/api/leads/purge-all", headers=_headers())
+    assert purged.status_code == 200, purged.text
+    assert purged.json()["deleted"] == 1
+    assert purged.json()["profiles"] == 1
+    assert purged.json()["archived"] == 1
+
+    after = (await admin_client.get("/api/leads", headers=_headers())).json()
+    stats = (await admin_client.get("/api/leads/stats", headers=_headers())).json()
+    assert after["total"] == 0
+    assert stats["members"] == 0
+
+    async with session_scope() as session:
+        suppression = await session.scalar(
+            select(ContactSuppression).where(ContactSuppression.tg_user_id == 6660001)
+        )
+        assert suppression is not None
+
+    again = await admin_client.post("/api/leads/purge-all", headers=_headers())
+    assert again.status_code == 200, again.text
+    assert again.json()["deleted"] == 0
+    assert again.json()["profiles"] == 0

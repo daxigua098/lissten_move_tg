@@ -269,6 +269,14 @@ async def open_member(
     if not modules and not template_code:
         template_code = DEFAULT_MEMBER_TEMPLATE
     wanted, limits = await _resolve_plan(session, template_code=template_code, modules=modules)
+    if not wanted:
+        # 兜底：模板里一个功能块都没有（历史遗留的「常规开通」就是这种）也按全功能下发，
+        # 保证正式会员绝不会被开成只有「账号与机器人」的空白账号。
+        wanted, limits = await _resolve_plan(
+            session,
+            template_code=DEFAULT_MEMBER_TEMPLATE,
+            modules=None,
+        )
     payer = owner_agent if owner_agent is not None else (actor if _is_agent(actor) else None)
     user, tenant, password_value = await _create_member_account(
         session,
@@ -636,6 +644,9 @@ async def set_plan(
         raise ValidationFailedError("只有会员租户可以改功能包")
     _ensure_plan_selected(modules, template_code)
     wanted, limits = await _resolve_plan(session, template_code=template_code, modules=modules)
+    if not wanted:
+        # 选中的模板一个功能块都没有：不许悄悄把客户功能清空
+        raise ValidationFailedError(PLAN_REQUIRED_MESSAGE)
     await _apply_plan(
         session,
         tenant_id=tenant.id,

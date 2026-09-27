@@ -218,17 +218,20 @@ async function loadAll() {
 }
 function onMemberTemplate(code) {
   const template = templates.value.find((item) => item.code === code);
-  if (template) memberForm.modules = [...template.modules];
+  // 模板没有功能块（历史遗留的空模板）时保留当前勾选，别把客户功能清空
+  if (template && template.modules.length) memberForm.modules = [...template.modules];
 }
 
 function onRenewTemplate(code) {
   const template = templates.value.find((item) => item.code === code);
-  if (template) renewForm.modules = [...template.modules];
+  // 模板没有功能块（历史遗留的空模板）时保留当前勾选，别把客户功能清空
+  if (template && template.modules.length) renewForm.modules = [...template.modules];
 }
 
 function onPlanTemplate(code) {
   const template = templates.value.find((item) => item.code === code);
-  if (template) planForm.modules = [...template.modules];
+  // 模板没有功能块（历史遗留的空模板）时保留当前勾选，别把客户功能清空
+  if (template && template.modules.length) planForm.modules = [...template.modules];
 }
 
 async function submitAgent() {

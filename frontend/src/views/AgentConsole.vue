@@ -121,7 +121,8 @@ async function loadLedger() {
 
 function onTemplateChange(code) {
   const template = templates.value.find((item) => item.code === code);
-  if (template) memberForm.modules = [...template.modules];
+  // 模板没有功能块（历史遗留的空模板）时保留当前勾选，别把客户功能清空
+  if (template && template.modules.length) memberForm.modules = [...template.modules];
 }
 
 function afterIssue(data, message) {

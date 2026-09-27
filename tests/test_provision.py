@@ -12,7 +12,7 @@ from app.core.errors import (
     NotFoundError,
     ValidationFailedError,
 )
-from app.core.expiry import expiry_for_days
+from app.core.expiry import expiry_for_days, resolve_timezone
 from app.services.user_service import INITIAL_PASSWORD
 
 
@@ -487,11 +487,14 @@ def test_initial_password_is_the_platform_default() -> None:
 
 def test_expiry_helper_matches_design() -> None:
     """1 天 = 当天 23:59:59；N 天 = 第 N 天 23:59:59。"""
-    start = datetime(2026, 9, 27, tzinfo=UTC)
-    one_day = expiry_for_days(1, start=start.date() if hasattr(start, "date") else None)
-    assert one_day == expiry_for_days(1)
-    later = expiry_for_days(3)
-    assert later - expiry_for_days(1) == timedelta(days=2)
+    # 固定起算日，避免用例跟着"今天"漂
+    start = datetime(2026, 9, 27, tzinfo=UTC).date()
+    one_day = expiry_for_days(1, start=start)
+    later = expiry_for_days(3, start=start)
+    assert later - one_day == timedelta(days=2)
+    # 缺省 start 就是"今天"：1 天的到期时刻 = 今天 23:59:59
+    today = datetime.now(resolve_timezone(None)).date()
+    assert expiry_for_days(1) == expiry_for_days(1, start=today)
 
 
 async def test_open_member_without_plan_defaults_to_full(db) -> None:
@@ -519,3 +522,63 @@ async def test_open_member_without_plan_defaults_to_full(db) -> None:
     async with session_scope() as session:
         balance = await quota_service.balance_of(session, agent_id, "member")
     assert balance == 0
+
+
+async def test_standard_plan_and_empty_template_grant_full(db) -> None:
+    """「常规开通」= 全功能；就算有人手工建了个没功能块的模板，也开不出空白会员。"""
+    from sqlalchemy import select
+
+    from app.db.session import session_scope
+    from app.services import provision_service, tenant_module_service
+
+    agent_id, _admin_id = await _agent_with_quota(db, "pz-agent2", member=3)
+
+    async with session_scope() as session:
+        actor = await _load(session, agent_id)
+        standard = await provision_service.open_member(
+            session,
+            db,
+            actor=actor,
+            username="pz-standard",
+            days=30,
+            template_code="standard",
+        )
+    assert standard["modules"] == ["carry", "discovery", "monitor"]
+
+    # 手工塞一个「没有任何功能块」的模板，用来验证兜底
+    async with session_scope() as session:
+        await tenant_module_service.create_plan_template(
+            session,
+            code="blank-plan",
+            name="空模板",
+            modules=[],
+        )
+        await session.commit()
+
+    async with session_scope() as session:
+        actor = await _load(session, agent_id)
+        fallback = await provision_service.open_member(
+            session,
+            db,
+            actor=actor,
+            username="pz-blank-template",
+            days=30,
+            template_code="blank-plan",
+        )
+    assert fallback["modules"] == ["carry", "discovery", "monitor"]
+
+    # 但「改功能包」选空模板要直接报错，不许把老客户功能清空
+    async with session_scope() as session:
+        from app.db.models import Tenant, User
+
+        user = await session.scalar(select(User).where(User.username == "pz-standard"))
+        tenant = await session.get(Tenant, user.tenant_id)
+        actor = await _load(session, agent_id)
+        with pytest.raises(ValidationFailedError) as excinfo:
+            await provision_service.set_plan(
+                session,
+                actor=actor,
+                tenant=tenant,
+                template_code="blank-plan",
+            )
+        assert "至少选择一个功能块" in str(excinfo.value)

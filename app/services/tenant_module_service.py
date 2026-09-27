@@ -392,7 +392,8 @@ async def seed_plan_templates(session: AsyncSession) -> int:
             ["monitor"],
             {"max_routes": 1, "allow_export": False},
         ),
-        ("standard", "常规开通", "standard", [], {}),
+        # 常规开通 = 全功能（与 app/db/session.py 的预置保持一致）
+        ("standard", "常规开通", "standard", ["carry", "monitor", "discovery"], {}),
         (
             "full",
             "全功能",

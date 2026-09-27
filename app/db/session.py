@@ -137,7 +137,8 @@ _PLAN_TEMPLATE_SEEDS: tuple[tuple[str, str, str, str, str], ...] = (
         '["monitor"]',
         '{"max_routes": 1, "allow_export": false}',
     ),
-    ("standard", "常规开通", "standard", "[]", "{}"),
+    # 常规开通 = 全功能：只要开通了会员，就能用全部实用功能（代理系统除外）
+    ("standard", "常规开通", "standard", '["carry", "monitor", "discovery"]', "{}"),
     ("full", "全功能", "standard", '["carry", "monitor", "discovery"]', "{}"),
 )
 

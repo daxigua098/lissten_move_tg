@@ -56,19 +56,31 @@ async def get_account_by_name(session: AsyncSession, name: str) -> TgAccount | N
     return await session.scalar(select(TgAccount).where(TgAccount.name == (name or "").strip()))
 
 
-async def get_default_account(session: AsyncSession) -> TgAccount | None:
-    """返回默认执行账号；没有默认则退回第一个未停用账号。"""
-    account = await session.scalar(
-        select(TgAccount).where(TgAccount.is_default.is_(True)).order_by(TgAccount.id)
-    )
-    if account is not None:
-        return account
-    return await session.scalar(
+async def get_default_account(
+    session: AsyncSession,
+    *,
+    tenant_id: int | None = None,
+) -> TgAccount | None:
+    """返回默认执行账号；没有默认则退回第一个未停用账号。
+
+    ``tenant_id`` 非空时只在这个租户里找（P1-06）：运行时按线路的租户取号，
+    不能拿别的租户的账号去发帖。传 None 保持旧口径（全库第一个可用账号），
+    只给"还没按租户切分"的老调用方用。
+    """
+    statement = select(TgAccount).where(TgAccount.is_default.is_(True)).order_by(TgAccount.id)
+    fallback = (
         select(TgAccount)
         .where(TgAccount.status != ACCOUNT_DISABLED)
         .order_by(TgAccount.id)
         .limit(1)
     )
+    if tenant_id is not None:
+        statement = statement.where(TgAccount.tenant_id == tenant_id)
+        fallback = fallback.where(TgAccount.tenant_id == tenant_id)
+    account = await session.scalar(statement)
+    if account is not None:
+        return account
+    return await session.scalar(fallback)
 
 
 def decrypt_credentials(config: AppConfig, account: TgAccount) -> tuple[str, int, str]:

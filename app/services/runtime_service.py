@@ -108,6 +108,10 @@ class RuntimeService:
         self._album_buffer: dict[int, _AlbumBuffer] = {}
         # 本次启动注册了哪些线路（写进心跳，界面上用来发现"改了但没重启"）
         self._registered: dict[str, Any] = {}
+        # P1-06：执行连接按租户各一条（tenant_id → client），用到哪个租户才建哪个
+        self._clients: dict[int, Any] = {}
+        # 测试 / 演练注入的连接：给了就顶替所有租户的连接（生产为 None）
+        self._fallback_client: Any = None
         # 机器人（Bot API）客户端缓存：sender_mode=bot 的线路用它们发言
         self._bot_apis: dict[int, Any] = {}
         # 目录站抓取器（不需要 Telegram 账号，用到时才建）
@@ -124,24 +128,28 @@ class RuntimeService:
         return self.config.path(self.config.runtime.status_file)
 
     async def run(self, *, client: Any = None) -> int:
-        """启动运行：获取锁、注册监听、进入心跳与队列循环。"""
+        """启动运行：获取锁、按租户注册监听、进入心跳与队列循环。
+
+        ``client`` 只在测试与演练里注入：给了它就顶替所有租户的执行连接。
+        生产路径（``client=None``）按线路所属租户各开一条连接（P1-06），
+        某个租户没有可用账号时只跳过它，不影响其他租户。
+        """
         try:
             self._lock.acquire()
         except RuntimeLockError as exc:
             logger.error("启动失败：{}", exc)
             return 1
 
-        owns_client = client is None
+        self._fallback_client = client
         try:
-            if client is None:
-                client = await self._open_client()
-            handlers = await self._register_handlers(client)
+            handlers = await self._register_handlers()
             self._registered = handlers
             logger.info(
-                "实时监听已启动：{} 个源（A 线 {} 条 / B 线 {} 条）",
+                "实时监听已启动：{} 个源（A 线 {} 条 / B 线 {} 条，覆盖 {} 个租户）",
                 handlers["sources"],
                 handlers["carry"],
                 handlers["monitor"],
+                len(handlers["tenants"]),
             )
             await self._publish(status="running", extra={"routes": handlers})
             # 上次异常退出可能留下「处理中」的任务，先放回队列再开工
@@ -152,7 +160,7 @@ class RuntimeService:
             # 心跳独立跑：投递循环里在下载大文件时，界面也不会显示成掉线
             heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             try:
-                await self._loop(client)
+                await self._loop()
             finally:
                 # 停止前把还没入队的相册冲出去，别丢掉刚发的帖子
                 with contextlib.suppress(Exception):
@@ -161,9 +169,7 @@ class RuntimeService:
                 with contextlib.suppress(asyncio.CancelledError):
                     await heartbeat_task
         finally:
-            if owns_client and client is not None:
-                with contextlib.suppress(Exception):
-                    await client.disconnect()
+            await self._close_clients()
             await self._close_bot_clients()
             self._lock.release()
             await self._publish(status="stopped", extra={})
@@ -176,28 +182,61 @@ class RuntimeService:
             with contextlib.suppress(Exception):
                 await self._publish(status="running", extra={})
 
-    async def _open_client(self) -> Any:
+    async def _client_for(self, tenant_id: int, session: Any = None) -> Any:
+        """取这个租户的执行连接（P1-06）。
+
+        顺序：注入的连接 > 已有缓存 > 现开一条。懒建立，所以某个租户没有
+        线路（或者没配账号）时根本不会去连它。
+        """
+        if self._fallback_client is not None:
+            return self._fallback_client
+        cached = self._clients.get(tenant_id)
+        if cached is not None:
+            return cached
+        if session is None:
+            async with session_scope() as own_session:
+                client = await self._open_client(tenant_id, own_session)
+        else:
+            client = await self._open_client(tenant_id, session)
+        self._clients[tenant_id] = client
+        return client
+
+    async def _close_clients(self) -> None:
+        """断开本进程自己开的执行连接（注入的连接由注入方负责）。"""
+        for tenant_id, client in list(self._clients.items()):
+            with contextlib.suppress(Exception):
+                await client.disconnect()
+            self._clients.pop(tenant_id, None)
+
+    async def _account_for(self, session: Any, tenant_id: int) -> Any:
+        """该租户的默认执行账号；没有就报错（带上租户号，便于排查）。"""
+        account = await tg_account_service.get_default_account(session, tenant_id=tenant_id)
+        if account is None:
+            raise RuntimeError(
+                f"租户 #{tenant_id} 没有可用的执行账号，请先在「执行账号池」登记并登录"
+            )
+        return account
+
+    async def _open_client(self, tenant_id: int, session: Any) -> Any:
+        """给一个租户开一条执行连接（账号取该租户自己的默认账号）。"""
         from app.core.demo_client import DemoAccountClient
 
-        async with session_scope() as session:
-            account = await tg_account_service.get_default_account(session)
-            if account is None:
-                raise RuntimeError("没有可用的执行账号，请先在「执行账号池」登记并登录")
-            if self.config.app.demo_mode:
-                logger.warning("本地演练模式：使用模拟客户端，不会连接 Telegram")
-                return DemoAccountClient()
-            if account.status != ACCOUNT_ACTIVE:
-                raise RuntimeError(
-                    f"执行账号「{account.name}」状态为 {account.status}，"
-                    "请先执行 python main.py account-login 完成登录"
-                )
-            phone, api_id, api_hash = tg_account_service.decrypt_credentials(
-                self.config,
-                account,
+        account = await self._account_for(session, tenant_id)
+        if self.config.app.demo_mode:
+            logger.warning("本地演练模式：使用模拟客户端，不会连接 Telegram")
+            return DemoAccountClient()
+        if account.status != ACCOUNT_ACTIVE:
+            raise RuntimeError(
+                f"执行账号「{account.name}」状态为 {account.status}，"
+                "请先执行 python main.py account-login 完成登录"
             )
-            from app.core.telegram_client import session_file_path
+        phone, api_id, api_hash = tg_account_service.decrypt_credentials(
+            self.config,
+            account,
+        )
+        from app.core.telegram_client import session_file_path
 
-            session_path = session_file_path(self.config, account.session_name)
+        session_path = session_file_path(self.config, account.session_name)
 
         factory = self.client_factory
         if factory is not None:
@@ -263,27 +302,67 @@ class RuntimeService:
             self._directory_fetcher = DirectoryFetcher()
         return self._directory_fetcher
 
-    async def _register_handlers(self, client: Any) -> int:
-        """给每条启用的线路源注册新消息监听（A 线搬运 + B 线监听共用一次注册）。"""
-        from telethon import events
+    async def _register_handlers(self) -> dict[str, Any]:
+        """给每条启用的线路源注册新消息监听（A 线搬运 + B 线监听共用一次注册）。
 
+        P1-06：先按线路所属租户分组，再用**该租户自己的连接**去监听它的源——
+        会员的线路只会用会员自己的账号看群。某个租户没有可用账号时只跳过它，
+        其他租户照常起（单租户异常不拖垮其他租户）。
+        """
         async with session_scope() as session:
             from sqlalchemy import select
 
             records = list(await session.scalars(select(Route).where(Route.enabled.is_(True))))
-            sources: dict[int, dict[str, list[Route]]] = {}
+            by_tenant: dict[int, list[Route]] = {}
             for route in records:
-                bucket = sources.setdefault(route.source_chat_id, {"A": [], "B": []})
-                bucket.setdefault(route.business_type, []).append(route)
-            source_entities: dict[int, int] = {}
-            for chat_id in sources:
-                chat = await session.get(TenantChat, chat_id)
+                by_tenant.setdefault(route.tenant_id, []).append(route)
+            chat_tg_ids: dict[int, int] = {}
+            for route in records:
+                if route.source_chat_id in chat_tg_ids:
+                    continue
+                chat = await session.get(TenantChat, route.source_chat_id)
                 if chat is not None and chat.tg_id:
-                    source_entities[chat_id] = int(chat.tg_id)
+                    chat_tg_ids[route.source_chat_id] = int(chat.tg_id)
 
-        counts: dict[str, Any] = {"sources": 0, "carry": 0, "monitor": 0, "ids": []}
+        counts: dict[str, Any] = {
+            "sources": 0,
+            "carry": 0,
+            "monitor": 0,
+            "ids": [],
+            "tenants": [],
+        }
+        for tenant_id, routes in by_tenant.items():
+            try:
+                client = await self._client_for(tenant_id)
+            except Exception as exc:  # noqa: BLE001 - 单个租户没号不该拖垮其他租户
+                logger.warning(
+                    "租户 #{} 的执行账号不可用，跳过它的 {} 条线路：{}",
+                    tenant_id,
+                    len(routes),
+                    exc,
+                )
+                continue
+            counts["tenants"].append(tenant_id)
+            await self._register_tenant_handlers(client, routes, chat_tg_ids, counts)
+        return counts
+
+    async def _register_tenant_handlers(
+        self,
+        client: Any,
+        routes: list[Route],
+        chat_tg_ids: dict[int, int],
+        counts: dict[str, Any],
+    ) -> None:
+        """注册一个租户的监听源（用这个租户自己的连接）。"""
+        from telethon import events
+
+        sources: dict[int, dict[str, list[Route]]] = {}
+        for route in routes:
+            bucket = sources.setdefault(route.source_chat_id, {"A": [], "B": []})
+            bucket.setdefault(route.business_type, []).append(route)
+
         for chat_id, buckets in sources.items():
-            tg_id = source_entities.get(chat_id)
+            tg_id = chat_tg_ids.get(chat_id)
             if not tg_id:
                 continue
             try:
@@ -314,7 +393,6 @@ class RuntimeService:
                 counts["ids"].extend(route.id for route in monitor_routes)
 
             counts["sources"] += 1
-        return counts
 
     async def _on_new_message(self, event: Any, routes: list[Route]) -> None:
         """实时消息入队；相册先攒一下，收齐后当成一条帖子处理。"""
@@ -767,8 +845,11 @@ class RuntimeService:
         except Exception as exc:  # noqa: BLE001 - 清理失败不影响监听
             logger.warning("保留策略清理失败：{}", exc)
 
-    async def _loop(self, client: Any) -> None:
-        """心跳 + 串行投递循环，直到收到停止请求。"""
+    async def _loop(self) -> None:
+        """心跳 + 串行投递循环，直到收到停止请求。
+
+        投递与资源发现的连接都按"这条任务属于哪个租户"现取（P1-06）。
+        """
         last_heartbeat = 0.0
         while not self._stop:
             if is_stop_requested(self.control_path):
@@ -784,7 +865,7 @@ class RuntimeService:
                 await self._purge()
 
             try:
-                delivered = await self._deliver_once(client)
+                delivered = await self._deliver_once()
             except Exception as exc:  # noqa: BLE001 - 单次循环异常不应终止进程
                 logger.exception("投递循环异常：{}", exc)
                 delivered = 0
@@ -792,7 +873,7 @@ class RuntimeService:
             if now - self._last_resource_tick >= RESOURCE_TICK_SECONDS:
                 self._last_resource_tick = now
                 try:
-                    await self._resource_tick(client)
+                    await self._resource_tick()
                 except Exception as exc:  # noqa: BLE001 - 资源发现失败不影响搬运
                     logger.warning("资源发现循环异常：{}", exc)
 
@@ -803,22 +884,23 @@ class RuntimeService:
             if delivered == 0:
                 await asyncio.sleep(self.poll_interval)
 
-    async def _resource_tick(self, client: Any) -> None:
+    async def _resource_tick(self, client: Any = None) -> None:
         """资源发现的节奏：加群队列 → 目录同步 → 探测候选，一轮只做一件。
 
         每轮只做一件事是刻意设计的：加群、搜索、探测都要消耗账号的请求额度，
         串行执行时"是哪一步在触发风控"一目了然，也天然满足 F-R12 的"同账号串行"。
+
+        P1-06：加群与探测都用**这条任务所属租户**的账号和连接（账号 ID 也跟着走），
+        不是全库第一个可用账号。
         """
         async with session_scope() as session:
-            account = await tg_account_service.get_default_account(session)
-            account_id = account.id if account else None
-
             task = await resource_join_service.next_due_task(session)
             if task is not None:
+                connection = client or await self._client_for(task.tenant_id, session)
                 await resource_join_service.run_task(
                     session,
                     self.config,
-                    client,
+                    connection,
                     task,
                     actor="runtime",
                 )
@@ -845,22 +927,32 @@ class RuntimeService:
             candidates = await resource_service.next_probe_candidates(session, limit=1)
             if not candidates:
                 return
+            resource = candidates[0]
+            connection = client or await self._client_for(resource.tenant_id, session)
+            account = await tg_account_service.get_default_account(
+                session,
+                tenant_id=resource.tenant_id,
+            )
             outcome = await resource_probe_service.probe_resource(
                 session,
                 self.config,
-                client,
-                candidates[0],
-                account_id=account_id,
+                connection,
+                resource,
+                account_id=account.id if account else None,
             )
             if outcome.new_resources:
                 logger.info(
                     "探测资源 {} 时滚出 {} 条新候选",
-                    candidates[0].id,
+                    resource.id,
                     outcome.new_resources,
                 )
 
-    async def _deliver_once(self, client: Any) -> int:
-        """投递一条就绪任务；返回 1 表示有投递，0 表示队列空。"""
+    async def _deliver_once(self, client: Any = None) -> int:
+        """投递一条就绪任务；返回 1 表示有投递，0 表示队列空。
+
+        P1-06：用**线路所属租户**的执行账号投递。该租户没有可用账号时跳过这条
+        任务并记下原因——不能让一条取不到号的任务卡住其他租户的队列。
+        """
         from app.core.route_config import load_a_config as _load_a
 
         async with session_scope() as session:
@@ -880,6 +972,15 @@ class RuntimeService:
                     reason="账号已停止运行，投递任务已取消",
                 )
                 return 1
+            try:
+                connection = client or await self._client_for(route.tenant_id, session)
+            except Exception as exc:  # noqa: BLE001 - 该租户没号：跳过这条，别卡住队列
+                await delivery_service.skip_job(
+                    session,
+                    job,
+                    reason=f"线路所属租户没有可用的执行账号：{exc}",
+                )
+                return 1
             source_chat = await session.get(TenantChat, route.source_chat_id)
             target_chat = await session.get(TenantChat, job.target_chat_id)
             if source_chat is None or target_chat is None:
@@ -894,13 +995,13 @@ class RuntimeService:
                 ad_asset = await session.get(AdAsset, a_config.ad_asset_id)
 
             try:
-                source_entity = await resolve_entity(client, int(source_chat.tg_id))
+                source_entity = await resolve_entity(connection, int(source_chat.tg_id))
             except Exception as exc:  # noqa: BLE001 - 解析失败按投递失败处理
                 await delivery_service.mark_failure(session, job, error=str(exc))
                 return 1
 
             try:
-                target_entity = await resolve_entity(client, int(target_chat.tg_id))
+                target_entity = await resolve_entity(connection, int(target_chat.tg_id))
             except Exception as exc:  # noqa: BLE001 - 解析失败按投递失败处理
                 await delivery_service.mark_failure(session, job, error=str(exc))
                 return 1
@@ -909,7 +1010,7 @@ class RuntimeService:
             caption = None
             if a_config.text_mode == "clean":
                 source_messages, caption = await self._load_clean_source(
-                    client,
+                    connection,
                     source_entity=source_entity,
                     job=job,
                     a_config=a_config,
@@ -920,7 +1021,7 @@ class RuntimeService:
                 self.config,
                 job=job,
                 route=route,
-                client=client,
+                client=connection,
                 source_chat=source_chat,
                 target_chat=target_chat,
                 a_config=a_config,

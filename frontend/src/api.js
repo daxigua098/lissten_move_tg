@@ -138,6 +138,11 @@ export const accountsApi = {
   loginCancel: (id) => http.post(`/api/accounts/${id}/login/cancel`),
   loginStatus: (id) => http.get(`/api/accounts/${id}/login/status`),
   refreshCredentials: (id) => http.post(`/api/accounts/${id}/credentials/refresh`),
+  importAccounts: (payload) => http.post("/api/accounts/import", payload),
+  autoLogin: (accountIds) => http.post("/api/accounts/auto-login", { account_ids: accountIds }),
+  autoLoginStatus: () => http.get("/api/accounts/auto-login/status"),
+  autoLoginStop: (accountIds) =>
+    http.post("/api/accounts/auto-login/stop", { account_ids: accountIds }),
 };
 
 export const outreachApi = {

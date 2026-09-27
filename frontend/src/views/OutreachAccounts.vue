@@ -32,7 +32,22 @@ const BATCH_LABELS = {
   password_required: "需要二级密码",
   active: "已登录",
   error: "失败",
+  resolving: "解析接码地址",
+  sending: "发送验证码",
+  waiting_code: "等待接码平台",
+  verifying: "提交验证码",
+  success: "登录成功",
+  failed: "失败",
+  stopped: "已停止",
 };
+
+// 导入：每行「+手机号 接码地址」
+const importDialog = ref(false);
+const importText = ref("");
+const importConfirmed = ref(false);
+const importBusy = ref(false);
+const importResult = ref(null);
+let batchTimer = null;
 
 const STATUS_TYPE = {
   pending_login: "warning",
@@ -140,6 +155,101 @@ async function toggleState(row) {
   }
 }
 
+function openImport() {
+  importText.value = "";
+  importConfirmed.value = false;
+  importResult.value = null;
+  importDialog.value = true;
+}
+
+async function submitImport() {
+  if (!importConfirmed.value) {
+    ElMessage.warning("请先确认这些账号归你所有并已获授权用于发送消息");
+    return;
+  }
+  importBusy.value = true;
+  try {
+    const { data } = await accountsApi.importAccounts({
+      text: importText.value,
+      owner_confirmed: true,
+    });
+    importResult.value = data;
+    ElMessage.success(`已导入 ${data.total} 个账号`);
+    load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  } finally {
+    importBusy.value = false;
+  }
+}
+
+function importErrorText(result) {
+  if (!result?.errors?.length) return "";
+  return result.errors.map((item) => item.message).join("；");
+}
+
+function stopBatchPolling() {
+  if (batchTimer) {
+    clearInterval(batchTimer);
+    batchTimer = null;
+  }
+}
+
+async function pollBatchStatus() {
+  try {
+    const { data } = await accountsApi.autoLoginStatus();
+    const byId = new Map(data.items.map((item) => [item.account_id, item]));
+    let running = 0;
+    for (const row of batchRows.value) {
+      const item = byId.get(row.id);
+      if (!item) continue;
+      row.stage = item.stage;
+      row.message = item.message;
+      row.error = item.status === "failed" ? item.message : "";
+      if (item.status === "pending") running += 1;
+    }
+    if (!running) {
+      stopBatchPolling();
+      load();
+    }
+  } catch (error) {
+    stopBatchPolling();
+    ElMessage.error(error.message);
+  }
+}
+
+async function autoLoginBatch() {
+  const targets = batchRows.value.filter((row) => row.stage !== "active");
+  if (!targets.length) {
+    ElMessage.warning("没有需要登录的账号");
+    return;
+  }
+  const withoutCode = targets.filter((row) => !row.code_host);
+  try {
+    await accountsApi.autoLogin(targets.map((row) => row.id));
+    ElMessage.success("已开始自动登录，正在等接码平台返回验证码");
+    if (withoutCode.length) {
+      ElMessage.warning(`其中 ${withoutCode.length} 个账号没有接码地址，会直接失败`);
+    }
+    stopBatchPolling();
+    batchTimer = setInterval(pollBatchStatus, 3000);
+    pollBatchStatus();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function stopAutoLogin() {
+  try {
+    await accountsApi.autoLoginStop(batchRows.value.map((row) => row.id));
+    stopBatchPolling();
+    ElMessage.success("已请求停止自动登录");
+    pollBatchStatus();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
 function openBatch() {
   const targets = selected.value.length
     ? selected.value
@@ -152,11 +262,14 @@ function openBatch() {
     id: row.id,
     name: row.name,
     phone_masked: row.phone_masked,
+    code_host: row.code_host || "",
     stage: "idle",
     code: "",
     password: "",
+    message: "",
     error: "",
   }));
+  stopBatchPolling();
   sharedPassword.value = "";
   batchDialog.value = true;
 }
@@ -229,6 +342,7 @@ async function submitAllPasswords() {
 }
 
 async function closeBatch() {
+  stopBatchPolling();
   for (const item of batchRows.value) {
     if (item.stage === "code_sent" || item.stage === "password_required") {
       try {
@@ -315,6 +429,7 @@ onMounted(load);
       <span class="card-hint">共 {{ total }} 个账号</span>
       <div class="spacer" />
       <el-button size="small" type="primary" @click="openCreate">登记发信息账号</el-button>
+      <el-button size="small" @click="openImport">导入账号</el-button>
       <el-button size="small" @click="openBatch">批量登录</el-button>
       <el-button size="small" :disabled="!selected.length" @click="retireBatch(false)">
         批量停用
@@ -456,6 +571,39 @@ onMounted(load);
       @logged-in="load"
     />
 
+    <el-dialog v-model="importDialog" title="导入发信息账号" width="640px">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="每行一个账号：+手机号 接码地址"
+        description="例如：+14135030718 https://logincode.add4533.com/?token=... （同一个接码地址同时提供登录验证码和二级密码）"
+      />
+      <el-input
+        v-model="importText"
+        type="textarea"
+        :rows="8"
+        class="panel"
+        placeholder="+14135030718 https://logincode.add4533.com/?token=..."
+      />
+      <el-checkbox v-model="importConfirmed" class="panel">
+        我确认这些账号归我本人或我的组织所有，并已获授权用于发送消息
+      </el-checkbox>
+      <el-alert
+        v-if="importResult"
+        class="panel"
+        :type="importResult.errors.length ? 'warning' : 'success'"
+        :closable="false"
+        show-icon
+        :title="`已导入 ${importResult.total} 个账号`"
+        :description="importErrorText(importResult) || '全部成功'"
+      />
+      <template #footer>
+        <el-button @click="importDialog = false">关闭</el-button>
+        <el-button type="primary" :loading="importBusy" @click="submitImport">导入</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog
       v-model="batchDialog"
       title="批量登录发信息账号"
@@ -477,6 +625,8 @@ onMounted(load);
         </el-button>
         <el-button :loading="batchBusy" @click="submitAllCodes">提交所有验证码</el-button>
         <el-button :loading="batchBusy" @click="submitAllPasswords">提交二级密码</el-button>
+        <el-button type="success" @click="autoLoginBatch">从接码平台自动登录</el-button>
+        <el-button @click="stopAutoLogin">停止</el-button>
         <span class="card-hint">统一二级密码</span>
         <el-input
           v-model="sharedPassword"
@@ -491,6 +641,12 @@ onMounted(load);
       <el-table :data="batchRows" size="small" border class="panel">
         <el-table-column prop="name" label="别名" min-width="120" />
         <el-table-column prop="phone_masked" label="手机号" width="120" />
+        <el-table-column label="接码地址" min-width="150">
+          <template #default="{ row }">
+            <span v-if="row.code_host">{{ row.code_host }}</span>
+            <span v-else class="card-hint">未填</span>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="120">
           <template #default="{ row }">{{ BATCH_LABELS[row.stage] || row.stage }}</template>
         </el-table-column>
@@ -516,8 +672,8 @@ onMounted(load);
             />
           </template>
         </el-table-column>
-        <el-table-column label="错误" min-width="150">
-          <template #default="{ row }">{{ row.error || "-" }}</template>
+        <el-table-column label="说明" min-width="180">
+          <template #default="{ row }">{{ row.error || row.message || "-" }}</template>
         </el-table-column>
       </el-table>
 

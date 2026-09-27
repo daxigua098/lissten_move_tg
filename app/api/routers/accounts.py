@@ -10,17 +10,26 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import current_identity, require_member_or_platform, session_dependency
 from app.api.schemas.telegram import (
     AccountCreateRequest,
+    AccountImportRequest,
     AccountUpdateRequest,
+    AutoLoginRequest,
+    AutoLoginStopRequest,
     LoginCodeRequest,
     LoginPasswordRequest,
     LoginStartRequest,
 )
+from app.core import account_import
 from app.core.config import AppConfig, ConfigError, load_config
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.core.telegram_client import session_file_path
 from app.db.base import as_utc
 from app.db.models import ACCOUNT_PURPOSE_OUTREACH, ROLE_SUPER_ADMIN, TgAccount
-from app.services import outreach_account_service, tg_account_service, tg_login_service
+from app.services import (
+    outreach_account_service,
+    outreach_auto_login_service,
+    tg_account_service,
+    tg_login_service,
+)
 
 router = APIRouter(
     prefix="/api/accounts",
@@ -49,6 +58,8 @@ def serialize_account(config: AppConfig, account: TgAccount) -> dict[str, Any]:
         "last_used_at": as_utc(account.last_used_at),
         "last_error": account.last_error,
         "note": account.note,
+        "has_code_url": bool(account.code_url_enc),
+        "code_host": _code_host(config, account),
         "owner_confirmed_at": as_utc(account.owner_confirmed_at),
         "owner_confirmed_by": account.owner_confirmed_by,
         "created_at": as_utc(account.created_at),
@@ -62,6 +73,17 @@ async def serialize(session: AsyncSession, config: AppConfig, account: TgAccount
     if account.purpose == ACCOUNT_PURPOSE_OUTREACH:
         data["outreach"] = await outreach_account_service.snapshot(session, account)
     return data
+
+
+def _code_host(config: AppConfig, account: TgAccount) -> str | None:
+    """接码地址只对外暴露主机名，token 不外泄。"""
+    from urllib.parse import urlparse
+
+    try:
+        url = tg_account_service.decrypt_code_url(config, account)
+    except Exception:  # noqa: BLE001 - 解密失败不该拖垮列表
+        return None
+    return urlparse(url).netloc if url else None
 
 
 def _account_client_factory(request: Request) -> Any:
@@ -197,6 +219,74 @@ async def refresh_credentials(
         api_hash=fresh.telegram.api_hash,
     )
     return await serialize(session, config, account)
+
+
+@router.post("/import")
+async def import_accounts(
+    payload: AccountImportRequest,
+    request: Request,
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """粘贴「+手机号 接码地址」批量登记发信息账号。"""
+    config: AppConfig = request.app.state.config
+    if not payload.owner_confirmed:
+        raise ValidationFailedError("请先确认这些账号归你所有并已获授权用于发送消息")
+
+    parsed, errors = account_import.parse_account_lines(payload.text)
+    created: list[dict[str, Any]] = []
+    for item in parsed:
+        existing = await tg_account_service.get_account_by_name(session, item.phone)
+        if existing is not None:
+            errors.append({"line": 0, "message": f"{item.phone} 已存在（别名 {existing.name}）"})
+            continue
+        try:
+            account = await tg_account_service.create_account(
+                session,
+                config,
+                name=item.phone,
+                phone=item.phone,
+                session_name=f"outreach-{item.phone.lstrip('+')}",
+                purpose=ACCOUNT_PURPOSE_OUTREACH,
+                owner_confirmed=True,
+                owner_confirmed_by=identity.get("username"),
+                code_url=item.code_url,
+            )
+        except Exception as exc:  # noqa: BLE001 - 逐条回报，不让一行失败中断整批
+            errors.append({"line": 0, "message": f"{item.phone}：{exc}"})
+            continue
+        created.append(await serialize(session, config, account))
+    return {"created": created, "errors": errors, "total": len(created)}
+
+
+@router.post("/auto-login")
+async def start_auto_login(
+    payload: AutoLoginRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """从接码平台自动取码，批量完成登录。"""
+    if not payload.account_ids:
+        raise ValidationFailedError("请先选择要自动登录的账号")
+    config: AppConfig = request.app.state.config
+    factory = _account_client_factory(request)
+    return await outreach_auto_login_service.start(
+        config,
+        payload.account_ids,
+        http_get=getattr(request.app.state, "logincode_http_get", None),
+        client_factory=factory,
+    )
+
+
+@router.get("/auto-login/status")
+async def auto_login_status() -> dict[str, Any]:
+    """自动登录进度（界面轮询用）。"""
+    return {"items": outreach_auto_login_service.to_payload()}
+
+
+@router.post("/auto-login/stop")
+async def stop_auto_login(payload: AutoLoginStopRequest) -> dict[str, Any]:
+    """停止自动登录（留空表示全部）。"""
+    return {"stopped": outreach_auto_login_service.stop(payload.account_ids or None)}
 
 
 @router.post("/{account_id}/login/start")

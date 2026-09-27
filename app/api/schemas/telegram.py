@@ -89,3 +89,22 @@ class LoginPasswordRequest(BaseModel):
     """提交两步验证密码。"""
 
     password: str = Field(min_length=1, max_length=256)
+
+
+class AccountImportRequest(BaseModel):
+    """粘贴「+手机号 接码地址」批量导入发信息账号。"""
+
+    text: str = Field(min_length=1, max_length=20000)
+    owner_confirmed: bool = False
+
+
+class AutoLoginRequest(BaseModel):
+    """批量自动登录的账号列表。"""
+
+    account_ids: list[int] = Field(default_factory=list, max_length=200)
+
+
+class AutoLoginStopRequest(BaseModel):
+    """停止自动登录（留空表示全部）。"""
+
+    account_ids: list[int] = Field(default_factory=list, max_length=200)

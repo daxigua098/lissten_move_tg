@@ -160,6 +160,7 @@ async def create_account(
     owner_confirmed: bool = False,
     owner_confirmed_by: str | None = None,
     owner_confirm_version: str | None = None,
+    code_url: str | None = None,
 ) -> TgAccount:
     """登记账号（凭据加密保存，登录另用 CLI / 网页完成）。
 
@@ -212,7 +213,14 @@ async def create_account(
         note=(note or "").strip() or None,
         purpose=purpose,
     )
+    code_url_text = (code_url or "").strip()
+    if code_url_text:
+        # 地址不合法直接拒绝，别把坏数据存进来
+        from app.core.logincode import parse_login_url
+
+        parse_login_url(code_url_text)
     if purpose == ACCOUNT_PURPOSE_OUTREACH:
+        account.code_url_enc = cipher.encrypt(code_url_text) if code_url_text else None
         account.owner_confirmed_at = utc_now()
         account.owner_confirmed_by = (owner_confirmed_by or "").strip() or None
         account.owner_confirm_version = (owner_confirm_version or "").strip() or None
@@ -386,6 +394,13 @@ async def _clear_other_defaults(session: AsyncSession, keep_id: int, purpose: st
     )
     for item in others:
         item.is_default = False
+
+
+def decrypt_code_url(config: AppConfig, account: TgAccount) -> str | None:
+    """解密发信息账号的接码地址（没有则返回 None）。"""
+    if not account.code_url_enc:
+        return None
+    return FieldCipher.from_config(config).decrypt(account.code_url_enc)
 
 
 def describe_purpose(purpose: str) -> str:

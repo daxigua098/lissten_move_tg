@@ -15,8 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_identity, require_module, session_dependency
 from app.api.schemas.resource import (
-    DirectorySyncRequest,
-    DirectoryTaskRequest,
     OnlineSearchRequest,
     ResourceAdoptRequest,
     ResourceImportRequest,
@@ -272,75 +270,8 @@ async def directory_sources(
     request: Request,
     session: AsyncSession = Depends(session_dependency),
 ) -> dict[str, Any]:
-    """目录站与范围的状态（P-R05 的站点卡片，纯读库）。"""
+    """Combot 后台同步状态（纯读库，供资源发现页展示）。"""
     return await directory_sync_service.overview(session, _config(request))
-
-
-@router.get("/directory/runs")
-async def directory_runs(
-    source: str | None = Query(default=None),
-    scope: str | None = Query(default=None),
-    limit: int = Query(default=50, ge=1, le=500),
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """目录同步历史（P-R05 的表）。"""
-    rows = await directory_sync_service.list_runs(
-        session,
-        source=source,
-        scope=scope,
-        limit=limit,
-    )
-    return {"items": [directory_sync_service.serialize_run(row) for row in rows]}
-
-
-@router.post("/directory/sync")
-async def directory_sync(
-    payload: DirectorySyncRequest,
-    request: Request,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """同步一次目录站（显式动作，会出网；默认从上次的断点继续）。"""
-    fetcher = _directory_fetcher(request)
-    try:
-        return await directory_sync_service.sync_once(
-            session,
-            _config(request),
-            payload.source,
-            payload.scope,
-            fetcher=fetcher,
-            max_pages=payload.max_pages,
-            resume=payload.resume,
-        )
-    finally:
-        with contextlib.suppress(Exception):
-            await fetcher.aclose()
-
-
-@router.post("/directory/tasks", status_code=201)
-async def create_directory_task(
-    payload: DirectoryTaskRequest,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """把某个站点某个范围设为「每天自动同步」（同站同范围幂等）。"""
-    task = await directory_sync_service.create_task(
-        session,
-        source=payload.source,
-        scope=payload.scope,
-        enabled=payload.enabled,
-    )
-    return directory_sync_service.serialize_task(task)
-
-
-@router.delete("/directory/tasks/{task_id}")
-async def delete_directory_task(
-    task_id: int,
-    session: AsyncSession = Depends(session_dependency),
-) -> dict[str, Any]:
-    """取消「每天自动同步」（已经同步下来的资源不动）。"""
-    deleted = await directory_sync_service.delete_task(session, task_id)
-    if not deleted:
-        raise NotFoundError("目录任务不存在")
-    return {"id": task_id, "deleted": True}
 
 
 # ------------------------------------------------------------------ 显式动作

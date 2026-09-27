@@ -203,10 +203,6 @@ class ResourceSection(BaseModel):
     join_retry_backoff_seconds: int = Field(default=900, ge=10, le=86400)
     # 三方目录站（v1.2 F-R20 / F-R21 / F-R24）
     directory_enabled: bool = True
-    # 启用的站点，按顺序尝试（combot 有数字 ID，tgme 补关键词覆盖面）
-    directory_sites: list[str] = Field(default_factory=lambda: ["combot", "tgme"])
-    # 默认同步范围：语言代码（zh / en …）、global、channels；global 与 channels 建议手动
-    directory_scopes: list[str] = Field(default_factory=lambda: ["zh"])
     # 目录任务的默认间隔（小时）
     directory_sync_hours: int = Field(default=24, ge=1, le=720)
     # 目录同步的每日请求上限（combot 全量群榜需要 381 页 + 频道 198 页）

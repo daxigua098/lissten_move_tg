@@ -41,14 +41,18 @@ from app.db.models import (
     BUSINESS_CARRY,
     BUSINESS_MONITOR,
     DISCOVER_LINK,
+    MODULE_DISCOVERY,
+    SELF_TENANT_ID,
     SENDER_MODE_BOT,
     TASK_TRIGGER_SCHEDULER,
     OutreachContact,
     OutreachSettings,
     Route,
+    Tenant,
     TenantChat,
 )
 from app.db.session import session_scope
+from app.db.tenant_context import tenant_scope
 from app.services import (
     bot_service,
     delivery_service,
@@ -66,6 +70,7 @@ from app.services import (
     resource_join_service,
     resource_probe_service,
     resource_service,
+    tenant_module_service,
     tenant_runtime_service,
     tg_account_service,
 )
@@ -183,6 +188,19 @@ class RuntimeService:
             # 上次异常退出可能留下「处理中」的任务，先放回队列再开工
             async with session_scope() as session:
                 requeued = await delivery_service.requeue_stale_jobs(session)
+                tenant_ids = list(
+                    await session.scalars(select(Tenant.id).where(Tenant.runtime_enabled.is_(True)))
+                )
+                for tenant_id in tenant_ids:
+                    if tenant_id == SELF_TENANT_ID or await tenant_module_service.has_module(
+                        session, tenant_id, MODULE_DISCOVERY
+                    ):
+                        await directory_sync_service.ensure_default_task(
+                            session,
+                            tenant_id=tenant_id,
+                            commit=False,
+                        )
+                await session.commit()
             if requeued:
                 logger.warning("上次中断留下 {} 条处理中任务，已重新入队", requeued)
             # 心跳独立跑：投递循环里在下载大文件时，界面也不会显示成掉线
@@ -1225,12 +1243,13 @@ class RuntimeService:
 
             directory = await directory_sync_service.next_due_task(session)
             if directory is not None:
-                outcome = await directory_sync_service.run_task(
-                    session,
-                    self.config,
-                    directory,
-                    fetcher=self._directory_fetcher_for_tick(),
-                )
+                with tenant_scope(directory.tenant_id):
+                    outcome = await directory_sync_service.run_task(
+                        session,
+                        self.config,
+                        directory,
+                        fetcher=self._directory_fetcher_for_tick(),
+                    )
                 run = outcome.get("run") or {}
                 if run.get("items_added"):
                     logger.info(

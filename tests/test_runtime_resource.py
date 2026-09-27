@@ -168,7 +168,7 @@ async def test_resource_tick_runs_due_directory_task(
 
     db.resource.directory_request_interval = 0
     async with session_scope() as session:
-        await directory_sync_service.create_task(session, source="combot", scope="zh")
+        await directory_sync_service.ensure_default_task(session, tenant_id=1)
 
     service = RuntimeService(db)
     # 注入抓取替身：运行时不该真的去访问三方站
@@ -179,6 +179,46 @@ async def test_resource_tick_runs_due_directory_task(
         rows = list(await session.scalars(select(TgResource)))
     assert {row.username for row in rows} == {"qqpp", "rongcheng_travel"}
     assert all(row.source_site == "combot" for row in rows)
+
+
+async def test_directory_tick_writes_to_task_tenant(db, fake_resource_client) -> None:
+    """目录任务属于哪个租户，运行记录和候选资源就写进哪个租户。"""
+    from sqlalchemy import select
+
+    from app.db.models import ResourceDirectoryRun, ResourceDiscoverTask, Tenant, TgResource
+    from app.db.session import session_scope
+    from app.services import directory_sync_service
+    from app.services.runtime_service import RuntimeService
+    from tests.test_directory_sync_service import _combot_fetcher
+
+    db.resource.directory_request_interval = 0
+    async with session_scope() as session:
+        session.add(
+            Tenant(
+                id=2,
+                name="目录租户",
+                kind="self",
+                status="active",
+                runtime_enabled=True,
+            )
+        )
+        await session.flush()
+        task = await directory_sync_service.ensure_default_task(session, tenant_id=2)
+        task_id = task.id
+        await session.commit()
+
+    service = RuntimeService(db)
+    service._directory_fetcher = _combot_fetcher()
+    await service._resource_tick(fake_resource_client)
+
+    async with session_scope() as session:
+        task = await session.get(ResourceDiscoverTask, task_id)
+        resources = list(await session.scalars(select(TgResource)))
+        runs = list(await session.scalars(select(ResourceDirectoryRun)))
+
+    assert task is not None and task.tenant_id == 2
+    assert resources and {row.tenant_id for row in resources} == {2}
+    assert runs and {row.tenant_id for row in runs} == {2}
 
 
 async def test_resource_tick_probes_never_probed_candidate(
@@ -248,7 +288,7 @@ async def test_resource_tick_prefers_join_queue(db, fake_resource_client, probe_
             jitter=False,
         )
         task_id = task.id
-        await directory_sync_service.create_task(session, source="combot", scope="zh")
+        await directory_sync_service.ensure_default_task(session, tenant_id=1)
 
     service = RuntimeService(db)
     service._directory_fetcher = directory_fetcher

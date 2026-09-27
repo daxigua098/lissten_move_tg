@@ -334,10 +334,6 @@ export const resourcesApi = {
   // 加盟是同步执行的：实测一次约 30 秒，必须给它更长的超时
   join: (payload) => http.post("/api/resources/join", payload, { timeout: TELEGRAM_TIMEOUT }),
   directorySources: () => http.get("/api/resources/directory/sources"),
-  directoryRuns: (params) => http.get("/api/resources/directory/runs", { params }),
-  directorySync: (payload) => http.post("/api/resources/directory/sync", payload),
-  createDirectoryTask: (payload) => http.post("/api/resources/directory/tasks", payload),
-  removeDirectoryTask: (id) => http.delete(`/api/resources/directory/tasks/${id}`),
   exportUrl: (params) => {
     const query = new URLSearchParams();
     Object.entries(params || {}).forEach(([key, value]) => {

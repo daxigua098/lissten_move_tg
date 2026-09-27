@@ -45,11 +45,23 @@ from app.db.models import (
     SYNC_FAILED,
     SYNC_OK,
     SYNC_PARTIAL,
+    TENANT_STATUS_ACTIVE,
     ResourceDirectoryRun,
     ResourceDiscoverTask,
+    Tenant,
 )
 from app.services import resource_quota_service, resource_service
 from app.services.resource_service import ResourceRef
+
+# 后台只维护这一条默认目录。tg-me 仍由“在线补搜”按关键词实时抓取，
+# 不再进入无人值守的目录任务。
+DEFAULT_DIRECTORY_SOURCE = COMBOT
+DEFAULT_DIRECTORY_SCOPE = "zh"
+
+# 每轮最多抓 3 页，避免一次同步占用资源发现循环太久。
+DIRECTORY_PAGES_PER_TICK = 3
+DIRECTORY_CONTINUE_SECONDS = 60
+DIRECTORY_RETRY_SECONDS = 900
 
 SITE_LABELS = {
     COMBOT: "Combot 目录",
@@ -85,23 +97,6 @@ async def last_run(
         )
         .order_by(ResourceDirectoryRun.started_at.desc(), ResourceDirectoryRun.id.desc())
     )
-
-
-async def list_runs(
-    session: AsyncSession,
-    *,
-    source: str | None = None,
-    scope: str | None = None,
-    limit: int = 50,
-) -> list[ResourceDirectoryRun]:
-    """同步历史（P-R05 的表）。"""
-    statement = select(ResourceDirectoryRun)
-    if source:
-        statement = statement.where(ResourceDirectoryRun.source == source)
-    if scope:
-        statement = statement.where(ResourceDirectoryRun.scope == scope)
-    statement = statement.order_by(ResourceDirectoryRun.started_at.desc())
-    return list(await session.scalars(statement.limit(max(1, limit))))
 
 
 def resume_page(run: ResourceDirectoryRun | None) -> int:
@@ -206,16 +201,16 @@ async def sync_once(
     result = SYNC_OK
     error: str | None = None
     while True:
+        # 目录规模是实测值：抓满 pages_total 就收工，别去请求越界页
+        # （combot 对越界 offset 返回的是非 JSON，会被误判成失败）
+        if run.pages_total is not None and page > run.pages_total:
+            break
         if max_pages is not None and done_in_call >= max_pages:
             result = SYNC_PARTIAL
             break
         if run.requests_used >= remaining:
             result = SYNC_PARTIAL
             error = "今日目录请求额度已用完，剩下的页下次继续"
-            break
-        # 目录规模是实测值：抓满 pages_total 就收工，别去请求越界页
-        # （combot 对越界 offset 返回的是非 JSON，会被误判成失败）
-        if run.pages_total is not None and page > run.pages_total:
             break
         try:
             entries = await fetch_page(
@@ -314,9 +309,15 @@ async def next_due_task(session: AsyncSession) -> ResourceDiscoverTask | None:
     moment = utc_now()
     return await session.scalar(
         select(ResourceDiscoverTask)
+        .join(Tenant, Tenant.id == ResourceDiscoverTask.tenant_id)
         .where(
             ResourceDiscoverTask.kind == DISCOVER_DIRECTORY,
+            ResourceDiscoverTask.source == DEFAULT_DIRECTORY_SOURCE,
+            ResourceDiscoverTask.category == DEFAULT_DIRECTORY_SCOPE,
             ResourceDiscoverTask.enabled.is_(True),
+            Tenant.runtime_enabled.is_(True),
+            Tenant.status == TENANT_STATUS_ACTIVE,
+            (Tenant.expires_at.is_(None)) | (Tenant.expires_at > moment),
         )
         .where(
             (ResourceDiscoverTask.next_run_at.is_(None))
@@ -326,56 +327,48 @@ async def next_due_task(session: AsyncSession) -> ResourceDiscoverTask | None:
     )
 
 
-async def create_task(
+async def ensure_default_task(
     session: AsyncSession,
     *,
-    source: str,
-    scope: str = SCOPE_GLOBAL,
-    enabled: bool = True,
+    tenant_id: int,
+    commit: bool = True,
 ) -> ResourceDiscoverTask:
-    """建一个目录同步任务（同站同范围只允许一条）。"""
-    if source not in DIRECTORY_SITES:
-        raise ValidationFailedError(f"目录站必须是 {'/'.join(DIRECTORY_SITES)} 之一")
-    clean_scope = (scope or SCOPE_GLOBAL).strip() or SCOPE_GLOBAL
+    """确保租户有一条 Combot / 中文榜后台同步任务。"""
     existing = await session.scalar(
         select(ResourceDiscoverTask).where(
+            ResourceDiscoverTask.tenant_id == int(tenant_id),
             ResourceDiscoverTask.kind == DISCOVER_DIRECTORY,
-            ResourceDiscoverTask.source == source,
-            ResourceDiscoverTask.category == clean_scope,
+            ResourceDiscoverTask.source == DEFAULT_DIRECTORY_SOURCE,
+            ResourceDiscoverTask.category == DEFAULT_DIRECTORY_SCOPE,
         )
     )
     if existing is not None:
+        existing.enabled = True
+        if existing.next_run_at is None:
+            existing.next_run_at = utc_now()
+        if commit:
+            await session.commit()
+            await session.refresh(existing)
+        else:
+            await session.flush()
         return existing
+
     task = ResourceDiscoverTask(
         kind=DISCOVER_DIRECTORY,
-        keyword=f"{source}:{clean_scope}"[:64],
-        category=clean_scope,
-        source=source,
-        enabled=enabled,
+        keyword=f"{DEFAULT_DIRECTORY_SOURCE}:{DEFAULT_DIRECTORY_SCOPE}"[:64],
+        category=DEFAULT_DIRECTORY_SCOPE,
+        source=DEFAULT_DIRECTORY_SOURCE,
+        enabled=True,
         next_run_at=utc_now(),
+        tenant_id=int(tenant_id),
     )
     session.add(task)
-    await session.commit()
-    await session.refresh(task)
+    if commit:
+        await session.commit()
+        await session.refresh(task)
+    else:
+        await session.flush()
     return task
-
-
-async def delete_task(session: AsyncSession, task_id: int) -> bool:
-    """取消一个目录定时任务（同步历史不受影响）。"""
-    task = await session.get(ResourceDiscoverTask, task_id)
-    if task is None or task.kind != DISCOVER_DIRECTORY:
-        return False
-    await session.delete(task)
-    await session.commit()
-    return True
-
-
-async def scoped_tasks(session: AsyncSession) -> dict[tuple[str, str], ResourceDiscoverTask]:
-    """按「站点 + 范围」索引的目录任务（界面判断某个范围有没有开自动同步）。"""
-    rows = await session.scalars(
-        select(ResourceDiscoverTask).where(ResourceDiscoverTask.kind == DISCOVER_DIRECTORY)
-    )
-    return {(row.source or "", row.category or ""): row for row in rows}
 
 
 async def run_task(
@@ -384,7 +377,7 @@ async def run_task(
     task: ResourceDiscoverTask,
     *,
     fetcher: Any,
-    max_pages: int | None = None,
+    max_pages: int | None = DIRECTORY_PAGES_PER_TICK,
 ) -> dict[str, Any]:
     """跑一个目录任务，并回写任务表的计数与下次执行时间。"""
     if task.kind != DISCOVER_DIRECTORY:
@@ -405,15 +398,25 @@ async def run_task(
     )
     run = outcome.get("run") or {}
     task.last_run_at = now
-    task.next_run_at = next_run_at(config, base=now)
     task.hits += int(run.get("items_seen") or 0)
     task.new_found += int(run.get("items_added") or 0)
     task.last_error = run.get("error")
+
+    run_result = run.get("result")
+    if run_result == SYNC_PARTIAL and "额度" in str(run.get("error") or ""):
+        # 今日总量已满：不要每分钟重试，等下一个自然日再继续。
+        task.next_run_at = next_run_at(config, base=now)
+    elif run_result == SYNC_PARTIAL:
+        task.next_run_at = now + timedelta(seconds=DIRECTORY_CONTINUE_SECONDS)
+    elif run_result == SYNC_FAILED:
+        task.next_run_at = now + timedelta(seconds=DIRECTORY_RETRY_SECONDS)
+    else:
+        task.next_run_at = next_run_at(config, base=now)
+
     await session.commit()
     await session.refresh(task)
     return {
         **outcome,
-        "task": serialize_task(task),
         "source": source,
         "scope": scope,
     }
@@ -443,69 +446,27 @@ def serialize_run(run: ResourceDirectoryRun) -> dict[str, Any]:
     }
 
 
-def serialize_task(task: ResourceDiscoverTask) -> dict[str, Any]:
-    """目录任务的对外结构。"""
-    last_run = as_utc(task.last_run_at)
-    next_run = as_utc(task.next_run_at)
-    return {
-        "id": task.id,
-        "kind": task.kind,
-        "source": task.source,
-        "keyword": task.keyword,
-        "category": task.category,
-        "enabled": task.enabled,
-        "hits": task.hits,
-        "new_found": task.new_found,
-        "flood_waits": task.flood_waits,
-        "last_error": task.last_error,
-        "last_run_at": last_run.isoformat() if last_run else None,
-        "next_run_at": next_run.isoformat() if next_run else None,
-        "due": bool(task.enabled and (next_run is None or next_run <= utc_now())),
-    }
-
-
 async def overview(session: AsyncSession, config: AppConfig) -> dict[str, Any]:
-    """站点与范围的状态（P-R05 的站点卡片）。"""
+    """资源发现页使用的 Combot 后台同步状态（纯读库）。"""
     section = config.resource
-    configured = set(section.directory_sites)
-    # 目录任务里出现过的范围也算进来，手动加过的范围不会从界面上消失
-    tasks = await scoped_tasks(session)
-    task_scopes = [scope for (_source, scope) in tasks if scope]
-    scopes = [item for item in dict.fromkeys([*section.directory_scopes, *task_scopes]) if item]
-
-    sites: list[dict[str, Any]] = []
-    for source in DIRECTORY_SITES:
-        scopes_payload: list[dict[str, Any]] = []
-        for scope in scopes:
-            run = await last_run(session, source, scope)
-            task = tasks.get((source, scope))
-            scopes_payload.append(
-                {
-                    "scope": scope,
-                    "pages_total": pages_total(
-                        source,
-                        scope,
-                        page_size=section.directory_page_size,
-                    ),
-                    "last_run": serialize_run(run) if run else None,
-                    "task_id": task.id if task else None,
-                    "auto": bool(task and task.enabled),
-                }
-            )
-        sites.append(
-            {
-                "source": source,
-                "label": SITE_LABELS.get(source, source),
-                "enabled": bool(section.directory_enabled and source in configured),
-                "scopes": scopes_payload,
-            }
+    task = await session.scalar(
+        select(ResourceDiscoverTask).where(
+            ResourceDiscoverTask.kind == DISCOVER_DIRECTORY,
+            ResourceDiscoverTask.source == DEFAULT_DIRECTORY_SOURCE,
+            ResourceDiscoverTask.category == DEFAULT_DIRECTORY_SCOPE,
         )
-
+    )
+    run = await last_run(session, DEFAULT_DIRECTORY_SOURCE, DEFAULT_DIRECTORY_SCOPE)
     return {
         "enabled": section.directory_enabled,
-        "sites": sites,
-        "page_size": section.directory_page_size,
-        "daily_requests_used": await daily_requests_used(session),
-        "daily_requests_limit": section.directory_daily_requests,
-        "sync_hours": section.directory_sync_hours,
+        "source": DEFAULT_DIRECTORY_SOURCE,
+        "scope": DEFAULT_DIRECTORY_SCOPE,
+        "pages_total": pages_total(
+            DEFAULT_DIRECTORY_SOURCE,
+            DEFAULT_DIRECTORY_SCOPE,
+            page_size=section.directory_page_size,
+        ),
+        "auto": bool(task and task.enabled),
+        "next_run_at": as_utc(task.next_run_at).isoformat() if task and task.next_run_at else None,
+        "last_run": serialize_run(run) if run else None,
     }

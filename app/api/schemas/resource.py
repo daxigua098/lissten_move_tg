@@ -63,24 +63,6 @@ class ResourceAdoptRequest(BaseModel):
     defer_join: bool = False
 
 
-class DirectorySyncRequest(BaseModel):
-    """目录同步一次（F-R20 / F-R21 / F-R24）。"""
-
-    source: str = Field(default="combot", pattern="^(combot|tgme)$")
-    # 语言代码（zh / en …）、global、channels，或 tg-me 的关键词
-    scope: str = Field(default="global", min_length=1, max_length=32)
-    max_pages: int | None = Field(default=None, ge=1, le=1000)
-    resume: bool = True
-
-
-class DirectoryTaskRequest(BaseModel):
-    """把某个站点某个范围设为每天自动同步（F-R24）。"""
-
-    source: str = Field(default="combot", pattern="^(combot|tgme)$")
-    scope: str = Field(default="zh", min_length=1, max_length=32)
-    enabled: bool = True
-
-
 class OnlineSearchRequest(BaseModel):
     """搜索时的在线补搜（F-R19）：本地结果已经先渲染，这一步只追加。"""
 

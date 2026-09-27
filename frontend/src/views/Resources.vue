@@ -26,6 +26,7 @@ const advanced = ref(false);
 const onlineEnabled = ref(true);
 const onlineRunning = ref(false);
 const onlineResult = ref(null);
+const directoryOverview = ref(null);
 const sensitiveVisible = ref(false);
 /** 正在执行「让账号加入」的资源 id：按钮转圈，避免连点。 */
 const joining = reactive(new Set());
@@ -104,6 +105,44 @@ const queryParams = computed(() => {
 
 const quick = computed(() => counts.value?.quick || {});
 const runtimeRunning = computed(() => overview.value?.runtime?.running ?? true);
+const directoryStatus = computed(() => {
+  const payload = directoryOverview.value;
+  if (!payload) return null;
+  if (!payload.enabled) return { type: "info", text: "目录更新已停用" };
+
+  const run = payload.last_run;
+  if (!run) {
+    return payload.auto
+      ? { type: "info", text: "目录等待首次同步" }
+      : { type: "warning", text: "目录等待运行时启动" };
+  }
+  if (!run.finished_at) {
+    return {
+      type: "warning",
+      text: `目录同步中 ${run.pages_done}/${run.pages_total || "?"}`,
+    };
+  }
+  if (run.result === "partial" && (!run.pages_total || run.pages_done < run.pages_total)) {
+    if ((run.error || "").includes("额度")) {
+      return { type: "info", text: "今日目录额度已用完，明日继续" };
+    }
+    return {
+      type: "warning",
+      text: `目录同步中 ${run.pages_done}/${run.pages_total}，稍后自动续传`,
+    };
+  }
+  if (run.result === "failed") {
+    return {
+      type: "danger",
+      text: "目录更新失败，系统会自动重试",
+      detail: run.error || "",
+    };
+  }
+  return {
+    type: "success",
+    text: `目录已更新 ${fmtTime(run.finished_at)}`,
+  };
+});
 
 /** 已采纳却没进群：链路建好了也收不到数据，必须显式提醒。 */
 function silentRisk(row) {
@@ -182,6 +221,15 @@ async function loadHotWords() {
     hotWords.value = data.items || [];
   } catch {
     hotWords.value = [];
+  }
+}
+
+async function loadDirectoryStatus() {
+  try {
+    const { data } = await resourcesApi.directorySources();
+    directoryOverview.value = data;
+  } catch {
+    directoryOverview.value = null;
   }
 }
 
@@ -581,7 +629,7 @@ function sparkPath(values) {
 
 onMounted(async () => {
   onlineEnabled.value = true;
-  await Promise.all([load(), loadHotWords()]);
+  await Promise.all([load(), loadHotWords(), loadDirectoryStatus()]);
 });
 </script>
 
@@ -614,6 +662,15 @@ onMounted(async () => {
           同时在线补搜
           <FieldHelp v-bind="RESOURCE_HELP.onlineSearch" />
         </el-checkbox>
+        <el-tag
+          v-if="directoryStatus"
+          size="small"
+          :type="directoryStatus.type"
+          effect="plain"
+          :title="directoryStatus.detail || ''"
+        >
+          {{ directoryStatus.text }}
+        </el-tag>
         <div class="spacer" />
         <el-button size="small" @click="openImport">手动添加</el-button>
         <el-button size="small" @click="exportCsv">导出</el-button>
@@ -685,7 +742,7 @@ onMounted(async () => {
         {{ item.label }} {{ item.count }}
       </el-tag>
       <span v-if="!(counts?.languages || []).length" class="card-hint">
-        还没有数据——去「目录同步」拉一批，或用上面的搜索框搜一个词。
+        还没有数据——用上面的搜索框搜一个词；Combot 目录会由运行时自动更新。
       </span>
     </div>
 
@@ -884,7 +941,7 @@ onMounted(async () => {
         </div>
       </el-card>
       <div v-if="!rows.length" class="empty">
-        还没有资源。用上面的搜索框搜一个词，或去「目录同步」拉一批目录进来。
+        还没有资源。用上面的搜索框搜一个词；Combot 目录会由运行时自动更新。
       </div>
     </div>
 

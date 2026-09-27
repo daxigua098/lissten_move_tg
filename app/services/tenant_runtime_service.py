@@ -30,6 +30,8 @@ from app.core.errors import ValidationFailedError
 from app.core.expiry import is_expired
 from app.db.base import as_utc, utc_now
 from app.db.models import (
+    MODULE_DISCOVERY,
+    SELF_TENANT_ID,
     STOP_REASON_EXPIRED,
     STOP_REASON_MANUAL,
     STOP_REASON_SUSPENDED,
@@ -37,7 +39,12 @@ from app.db.models import (
     Route,
     Tenant,
 )
-from app.services import delivery_service, provision_service, tenant_status_service
+from app.services import (
+    delivery_service,
+    provision_service,
+    tenant_module_service,
+    tenant_status_service,
+)
 
 # 放行结果缓存 30 秒；被挡结果 5 秒后就回源（见模块 docstring）
 CACHE_TTL_SECONDS = 30.0
@@ -133,6 +140,16 @@ async def start_tenant_runtime(
     if commit:
         await session.commit()
         await session.refresh(tenant)
+    if tenant.id == SELF_TENANT_ID or await tenant_module_service.has_module(
+        session, tenant.id, MODULE_DISCOVERY
+    ):
+        from app.services import directory_sync_service
+
+        await directory_sync_service.ensure_default_task(
+            session,
+            tenant_id=tenant.id,
+            commit=commit,
+        )
     invalidate(tenant.id)
     return {
         "tenant_id": tenant.id,

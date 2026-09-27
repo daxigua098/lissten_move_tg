@@ -25,17 +25,30 @@ def _seed(fake_directory_fetcher) -> None:
     fake_directory_fetcher.add_page("/telegram-group/车友/1.html", TGME_HTML)
 
 
+async def _store_combot(api_config, fake_directory_fetcher) -> None:
+    from app.core.directory_sites import COMBOT
+    from app.db.session import session_scope
+    from app.services import directory_sync_service
+
+    async with session_scope() as session:
+        await directory_sync_service.sync_once(
+            session,
+            api_config,
+            COMBOT,
+            "zh",
+            fetcher=fake_directory_fetcher,
+            max_pages=1,
+        )
+
+
 async def test_counts_endpoint_gives_chips_and_quick(
     directory_api_client,
+    api_config,
     fake_directory_fetcher,
 ) -> None:
     headers = await _token(directory_api_client)
     _seed(fake_directory_fetcher)
-    await directory_api_client.post(
-        "/api/resources/directory/sync",
-        headers=headers,
-        json={"source": "combot", "scope": "zh", "max_pages": 1},
-    )
+    await _store_combot(api_config, fake_directory_fetcher)
 
     response = await directory_api_client.get("/api/resources/counts", headers=headers)
 
@@ -59,15 +72,12 @@ async def test_counts_endpoint_gives_chips_and_quick(
 
 async def test_sensitive_is_hidden_by_default(
     directory_api_client,
+    api_config,
     fake_directory_fetcher,
 ) -> None:
     headers = await _token(directory_api_client)
     _seed(fake_directory_fetcher)
-    await directory_api_client.post(
-        "/api/resources/directory/sync",
-        headers=headers,
-        json={"source": "combot", "scope": "zh", "max_pages": 1},
-    )
+    await _store_combot(api_config, fake_directory_fetcher)
 
     default = await directory_api_client.get("/api/resources", headers=headers)
     shown = await directory_api_client.get(
@@ -91,17 +101,14 @@ async def test_sensitive_is_hidden_by_default(
 
 async def test_discover_online_endpoint_aggregates_channels(
     directory_api_client,
+    api_config,
     fake_directory_fetcher,
     fake_resource_client,
 ) -> None:
     headers = await _token(directory_api_client)
     _seed(fake_directory_fetcher)
     # 本地先有一批 combot 目录，供 combot 渠道匹配
-    await directory_api_client.post(
-        "/api/resources/directory/sync",
-        headers=headers,
-        json={"source": "combot", "scope": "zh", "max_pages": 1},
-    )
+    await _store_combot(api_config, fake_directory_fetcher)
     chat = fake_resource_client.add_chat(4100, "车友交流群", username="car_chat")
     fake_resource_client.add_search("车友", [chat])
 
@@ -148,14 +155,14 @@ async def test_discover_online_rejects_empty_keywords(directory_api_client) -> N
     assert response.status_code == 422
 
 
-async def test_due_refresh_filter(directory_api_client, fake_directory_fetcher) -> None:
+async def test_due_refresh_filter(
+    directory_api_client,
+    api_config,
+    fake_directory_fetcher,
+) -> None:
     headers = await _token(directory_api_client)
     _seed(fake_directory_fetcher)
-    await directory_api_client.post(
-        "/api/resources/directory/sync",
-        headers=headers,
-        json={"source": "combot", "scope": "zh", "max_pages": 1},
-    )
+    await _store_combot(api_config, fake_directory_fetcher)
 
     due = await directory_api_client.get(
         "/api/resources",

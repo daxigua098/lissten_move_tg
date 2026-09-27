@@ -7,6 +7,7 @@ import json
 from sqlalchemy import select
 
 from app.core.directory_sites import COMBOT, TGME
+from app.db.base import utc_now
 from app.db.models import (
     DISCOVER_DIRECTORY,
     RATING_NORMAL,
@@ -15,10 +16,11 @@ from app.db.models import (
     SYNC_PARTIAL,
     ResourceDirectoryRun,
     ResourceDiscoverTask,
+    Tenant,
     TgResource,
 )
 from app.db.session import session_scope
-from app.services import directory_sync_service, resource_service
+from app.services import directory_sync_service, resource_service, tenant_runtime_service
 from app.services.resource_service import ResourceRef
 from tests.conftest import FakeDirectoryFetcher
 from tests.test_directory_sites import TGME_HTML
@@ -329,8 +331,8 @@ async def test_directory_task_counters_and_telegram_runner_ignores_it(db) -> Non
     fetcher = _combot_fetcher()
 
     async with session_scope() as session:
-        task = await directory_sync_service.create_task(session, source=COMBOT, scope="zh")
-        again = await directory_sync_service.create_task(session, source=COMBOT, scope="zh")
+        task = await directory_sync_service.ensure_default_task(session, tenant_id=1)
+        again = await directory_sync_service.ensure_default_task(session, tenant_id=1)
         task_id = task.id
 
     assert task.kind == DISCOVER_DIRECTORY
@@ -353,3 +355,88 @@ async def test_directory_task_counters_and_telegram_runner_ignores_it(db) -> Non
     assert stored.next_run_at > stored.last_run_at
     assert stored.last_error is None
     assert fetcher.requests and "combot.org" in fetcher.requests[0]
+
+
+async def test_scheduler_only_accepts_default_combot_task(db) -> None:
+    """后台只跑 Combot / zh；其它目录任务保留但不会被执行。"""
+    async with session_scope() as session:
+        default = await directory_sync_service.ensure_default_task(session, tenant_id=1)
+        session.add_all(
+            [
+                ResourceDiscoverTask(
+                    kind=DISCOVER_DIRECTORY,
+                    keyword="combot:global",
+                    category="global",
+                    source=COMBOT,
+                    enabled=True,
+                    next_run_at=utc_now(),
+                    tenant_id=1,
+                ),
+                ResourceDiscoverTask(
+                    kind=DISCOVER_DIRECTORY,
+                    keyword="tgme:zh",
+                    category="zh",
+                    source=TGME,
+                    enabled=True,
+                    next_run_at=utc_now(),
+                    tenant_id=1,
+                ),
+            ]
+        )
+        await session.commit()
+        due = await directory_sync_service.next_due_task(session)
+        default.enabled = False
+        await session.commit()
+        ignored = await directory_sync_service.next_due_task(session)
+
+    assert due is not None and due.id == default.id
+    assert ignored is None
+
+
+async def test_chunk_sync_marks_last_page_complete(db) -> None:
+    """按页切片时，抓到最后一页仍应记完成，下一轮才从头开始。"""
+    db.resource.directory_request_interval = 0
+
+    class AllPagesFetcher:
+        def __init__(self) -> None:
+            self.requests: list[str] = []
+
+        async def fetch(self, url: str) -> str:
+            self.requests.append(url)
+            return _payload(_item("群", "group_x", -1009999999999, 100))
+
+    fetcher = AllPagesFetcher()
+    async with session_scope() as session:
+        outcome = await directory_sync_service.sync_once(
+            session,
+            db,
+            COMBOT,
+            "zh",
+            fetcher=fetcher,
+            max_pages=24,
+        )
+
+    assert outcome["result"] == SYNC_OK
+    assert outcome["run"]["pages_done"] == 24
+    assert len(fetcher.requests) == 24
+
+
+async def test_start_runtime_ensures_default_directory_task(db) -> None:
+    """租户启动时自动补默认目录任务，不需要用户再进维护页。"""
+    tenant_runtime_service.clear_cache()
+    async with session_scope() as session:
+        tenant = await session.get(Tenant, 1)
+        tenant.runtime_enabled = False
+        await session.commit()
+        started = await tenant_runtime_service.start_tenant_runtime(session, tenant)
+        task = await session.scalar(
+            select(ResourceDiscoverTask).where(
+                ResourceDiscoverTask.tenant_id == 1,
+                ResourceDiscoverTask.kind == DISCOVER_DIRECTORY,
+            )
+        )
+
+    assert started["runtime_enabled"] is True
+    assert task is not None
+    assert task.source == COMBOT
+    assert task.category == "zh"

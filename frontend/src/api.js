@@ -135,7 +135,7 @@ export const accountsApi = {
     http.post(`/api/accounts/${id}/login/verify`, { code }, { timeout: TELEGRAM_TIMEOUT }),
   loginPassword: (id, password) =>
     http.post(`/api/accounts/${id}/login/password`, { password }, { timeout: TELEGRAM_TIMEOUT }),
-  loginCancel: (id) => http.post(`/api/accounts/${id}/login/cancel`),
+  loginCancel: (id) => http.post(`/api/accounts/${id}/login/cancel`, null, { timeout: 5000 }),
   loginStatus: (id) => http.get(`/api/accounts/${id}/login/status`),
   refreshCredentials: (id) => http.post(`/api/accounts/${id}/credentials/refresh`),
   importAccounts: (payload) => http.post("/api/accounts/import", payload),

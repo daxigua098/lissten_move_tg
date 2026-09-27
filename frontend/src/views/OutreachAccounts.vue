@@ -54,6 +54,7 @@ const importText = ref("");
 const importConfirmed = ref(false);
 const importBusy = ref(false);
 const importResult = ref(null);
+const importFileInput = ref(null);
 let batchTimer = null;
 
 const STATUS_TYPE = {
@@ -202,6 +203,23 @@ function openImport() {
   importDialog.value = true;
 }
 
+function pickImportFile() {
+  importFileInput.value?.click();
+}
+
+async function onImportFilePicked(event) {
+  const file = event.target.files?.[0];
+  event.target.value = ""; // 允许重复选同一个文件
+  if (!file) return;
+  try {
+    importText.value = await file.text();
+    importResult.value = null;
+    ElMessage.success(`已读取文件：${file.name}`);
+  } catch (error) {
+    ElMessage.error(`读取文件失败：${error.message}`);
+  }
+}
+
 async function submitImport() {
   if (!importConfirmed.value) {
     ElMessage.warning("请先确认这些账号归你所有并已获授权用于发送消息");
@@ -216,6 +234,12 @@ async function submitImport() {
     importResult.value = data;
     ElMessage.success(`已导入 ${data.total} 个账号`);
     load();
+    // 全部导入成功才自动关窗；有失败的留在窗口里让人看到原因
+    if (data.total > 0 && !data.errors.length) {
+      setTimeout(() => {
+        importDialog.value = false;
+      }, 600);
+    }
   } catch (error) {
     ElMessage.error(error.message);
   } finally {
@@ -632,11 +656,21 @@ onMounted(load);
         title="每行一个账号：+手机号 接码地址"
         description="例如：+14135030718 https://logincode.add4533.com/?token=... （同一个接码地址同时提供登录验证码和二级密码）"
       />
+      <div class="login-actions panel">
+        <el-button size="small" @click="pickImportFile">选择 txt 文件</el-button>
+        <span class="card-hint">每行一个账号，选完可再手工编辑</span>
+        <input
+          ref="importFileInput"
+          type="file"
+          accept=".txt,text/plain"
+          style="display: none"
+          @change="onImportFilePicked"
+        />
+      </div>
       <el-input
         v-model="importText"
         type="textarea"
         :rows="8"
-        class="panel"
         placeholder="+14135030718 https://logincode.add4533.com/?token=..."
       />
       <el-checkbox v-model="importConfirmed" class="panel">

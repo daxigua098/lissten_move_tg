@@ -105,7 +105,7 @@ async def count_active_super_admins(session: AsyncSession) -> int:
     return await count_users(session, role=ROLE_SUPER_ADMIN, enabled=True)
 
 
-async def create_user(
+async def build_user(
     session: AsyncSession,
     config: AppConfig,
     *,
@@ -114,12 +114,19 @@ async def create_user(
     role: str | None = None,
     account_type: str = ACCOUNT_TYPE_PLATFORM,
     parent_user_id: int | None = None,
+    tenant_id: int | None = None,
     display_name: str | None = None,
     is_builtin: bool = False,
     must_change_password: bool = True,
+    flush: bool = True,
 ) -> User:
-    """创建账号（平台账号、代理账号与会员账号共用）。
+    """构造账号并挂到当前事务上，**不提交**。
 
+    开号链路（P3）要在同一个事务里同时写 users / tenants / agent_quotas /
+    quota_ledger，任何一步失败都要整体回滚，所以提交由调用方决定。
+    单账号创建请用 :func:`create_user`。
+
+    规则：
     - 平台 / 代理账号：``role`` 必须在 ``ROLE_RANK`` 里，默认 ``viewer``；
     - 会员账号：一人一号，``role`` 固定 ``owner``，传别的值会被强制改写。
     """
@@ -149,11 +156,45 @@ async def create_user(
         role=resolved_role,
         account_type=account_type,
         parent_user_id=parent_user_id,
+        tenant_id=tenant_id,
         display_name=(display_name or "").strip() or None,
         is_builtin=is_builtin,
         must_change_password=must_change_password,
     )
     session.add(user)
+    if flush:
+        await session.flush()
+    return user
+
+
+async def create_user(
+    session: AsyncSession,
+    config: AppConfig,
+    *,
+    username: str,
+    password: str,
+    role: str | None = None,
+    account_type: str = ACCOUNT_TYPE_PLATFORM,
+    parent_user_id: int | None = None,
+    tenant_id: int | None = None,
+    display_name: str | None = None,
+    is_builtin: bool = False,
+    must_change_password: bool = True,
+) -> User:
+    """创建账号并提交（单账号场景的便捷入口）。"""
+    user = await build_user(
+        session,
+        config,
+        username=username,
+        password=password,
+        role=role,
+        account_type=account_type,
+        parent_user_id=parent_user_id,
+        tenant_id=tenant_id,
+        display_name=display_name,
+        is_builtin=is_builtin,
+        must_change_password=must_change_password,
+    )
     await session.commit()
     await session.refresh(user)
     return user

@@ -110,8 +110,9 @@ def _seed_self_tenant(connection: Connection) -> None:
     connection.execute(
         text(
             "INSERT INTO tenants "
-            "(id, name, kind, status, created_by, note, created_at, updated_at) "
-            "SELECT :tenant_id, :name, 'self', 'active', 'system', NULL, "
+            "(id, name, kind, status, quota_type, quota_held, created_by, note, "
+            "created_at, updated_at) "
+            "SELECT :tenant_id, :name, 'self', 'active', 'none', 0, 'system', NULL, "
             "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP "
             "WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE id = :tenant_id)"
         ),

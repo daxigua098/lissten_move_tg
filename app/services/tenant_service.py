@@ -17,6 +17,7 @@ from app.db.models import (
     TENANT_STATUS_ACTIVE,
     Tenant,
 )
+from app.db.models.quota import QUOTA_NONE, TENANT_QUOTA_TYPES
 
 TENANT_NAME_MAX_LENGTH = 64
 
@@ -83,24 +84,26 @@ async def list_tenants(
     return rows, total
 
 
-async def create_tenant(
+async def build_tenant(
     session: AsyncSession,
     *,
     name: str,
     kind: str = TENANT_KIND_MEMBER,
     owner_user_id: int | None = None,
+    owner_agent_id: int | None = None,
+    quota_type: str = QUOTA_NONE,
+    quota_held: bool = False,
     expires_at: datetime | None = None,
     created_by: str | None = None,
     note: str | None = None,
     status: str = TENANT_STATUS_ACTIVE,
+    flush: bool = True,
 ) -> Tenant:
-    """开通租户。
-
-    `kind='member'` 必须带 `owner_user_id`（一个登录账号最多属于一个租户，
-    由 `tenants.owner_user_id` 唯一约束兜底）。
-    """
+    """构造租户并挂到当前事务上，**不提交**（开号链路要整体回滚）。"""
     if kind not in TENANT_KINDS:
         raise ValidationFailedError(f"租户类型必须是 {'/'.join(TENANT_KINDS)} 之一")
+    if quota_type not in TENANT_QUOTA_TYPES:
+        raise ValidationFailedError(f"额度类型必须是 {'/'.join(TENANT_QUOTA_TYPES)} 之一")
     value = validate_tenant_name(name)
     if await get_tenant_by_name(session, value) is not None:
         raise ConflictError("租户名已存在")
@@ -115,14 +118,68 @@ async def create_tenant(
         kind=kind,
         status=status,
         owner_user_id=owner_user_id,
+        owner_agent_id=owner_agent_id,
+        quota_type=quota_type,
+        quota_held=quota_held,
         expires_at=expires_at,
         created_by=(created_by or "").strip() or None,
         note=(note or "").strip() or None,
     )
     session.add(tenant)
+    if flush:
+        await session.flush()
+    return tenant
+
+
+async def create_tenant(
+    session: AsyncSession,
+    *,
+    name: str,
+    kind: str = TENANT_KIND_MEMBER,
+    owner_user_id: int | None = None,
+    owner_agent_id: int | None = None,
+    quota_type: str = QUOTA_NONE,
+    quota_held: bool = False,
+    expires_at: datetime | None = None,
+    created_by: str | None = None,
+    note: str | None = None,
+    status: str = TENANT_STATUS_ACTIVE,
+) -> Tenant:
+    """开通租户并提交（单租户场景的便捷入口）。
+
+    `kind='member'` 必须带 `owner_user_id`（一个登录账号最多属于一个租户，
+    由 `tenants.owner_user_id` 唯一约束兜底）。
+    """
+    tenant = await build_tenant(
+        session,
+        name=name,
+        kind=kind,
+        owner_user_id=owner_user_id,
+        owner_agent_id=owner_agent_id,
+        quota_type=quota_type,
+        quota_held=quota_held,
+        expires_at=expires_at,
+        created_by=created_by,
+        note=note,
+        status=status,
+    )
     await session.commit()
     await session.refresh(tenant)
     return tenant
+
+
+async def unique_tenant_name(session: AsyncSession, base: str) -> str:
+    """生成一个还没被占用的租户名（开号时按用户名自动起名用）。"""
+    candidate = validate_tenant_name(base)
+    if await get_tenant_by_name(session, candidate) is None:
+        return candidate
+    for index in range(2, 200):
+        variant = f"{candidate}-{index}"
+        if len(variant) <= TENANT_NAME_MAX_LENGTH and (
+            await get_tenant_by_name(session, variant) is None
+        ):
+            return variant
+    raise ConflictError("租户名已用满，请换一个用户名")
 
 
 async def ensure_self_tenant(session: AsyncSession) -> Tenant:

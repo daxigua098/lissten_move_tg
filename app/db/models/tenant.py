@@ -12,10 +12,11 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
+from app.db.models.quota import QUOTA_NONE
 
 # 租户类型与状态
 TENANT_KIND_SELF = "self"
@@ -63,6 +64,16 @@ class Tenant(TimestampMixin, Base):
         nullable=True,
         unique=True,
     )
+    # 开设该租户的代理账号；到期释放额度时回到他这里（平台开的号为空）
+    owner_agent_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    # 当前占用的是哪类额度：member / trial / none（平台开的号记 none）
+    quota_type: Mapped[str] = mapped_column(String(8), default=QUOTA_NONE, index=True)
+    # 是否还占着这 1 个额度：到期释放靠它做幂等，续期靠它判断要不要再扣
+    quota_held: Mapped[bool] = mapped_column(Boolean, default=False)
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     note: Mapped[str | None] = mapped_column(String(255), nullable=True)
 

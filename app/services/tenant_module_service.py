@@ -132,14 +132,14 @@ async def revoke_module(
     return row
 
 
-async def set_modules(
+async def apply_modules(
     session: AsyncSession,
     *,
     tenant_id: int,
     modules: list[str],
     granted_by: str | None = None,
 ) -> list[str]:
-    """整体设置功能块：清单里有的开启，其余关闭。返回生效清单。"""
+    """整体设置功能块，**不提交**（开号链路用）。返回生效清单。"""
     wanted = {validate_module(item) for item in modules}
     existing = {row.module: row for row in await list_module_rows(session, tenant_id)}
     now = utc_now()
@@ -169,8 +169,23 @@ async def set_modules(
                 row.granted_by = actor or row.granted_by
                 row.granted_at = now
 
-    await session.commit()
+    await session.flush()
     return await list_modules(session, tenant_id)
+
+
+async def set_modules(
+    session: AsyncSession,
+    *,
+    tenant_id: int,
+    modules: list[str],
+    granted_by: str | None = None,
+) -> list[str]:
+    """整体设置功能块并提交：清单里有的开启，其余关闭。返回生效清单。"""
+    result = await apply_modules(
+        session, tenant_id=tenant_id, modules=modules, granted_by=granted_by
+    )
+    await session.commit()
+    return result
 
 
 async def clear_modules(session: AsyncSession, tenant_id: int) -> None:
@@ -188,7 +203,7 @@ async def get_limits(session: AsyncSession, tenant_id: int) -> TenantLimit | Non
     return await session.get(TenantLimit, tenant_id)
 
 
-async def set_limits(
+async def apply_limits(
     session: AsyncSession,
     *,
     tenant_id: int,
@@ -197,7 +212,7 @@ async def set_limits(
     max_sources: int | None = None,
     allow_export: bool = True,
 ) -> TenantLimit:
-    """整体写入用量限制；数值为 None 表示不限。"""
+    """整体写入用量限制，**不提交**（开号链路用）；数值为 None 表示不限。"""
     for key, value in (
         ("max_routes", max_routes),
         ("max_tg_accounts", max_tg_accounts),
@@ -215,6 +230,28 @@ async def set_limits(
     row.max_sources = max_sources
     row.allow_export = allow_export
     row.updated_at = utc_now()
+    await session.flush()
+    return row
+
+
+async def set_limits(
+    session: AsyncSession,
+    *,
+    tenant_id: int,
+    max_routes: int | None = None,
+    max_tg_accounts: int | None = None,
+    max_sources: int | None = None,
+    allow_export: bool = True,
+) -> TenantLimit:
+    """整体写入用量限制并提交；数值为 None 表示不限。"""
+    row = await apply_limits(
+        session,
+        tenant_id=tenant_id,
+        max_routes=max_routes,
+        max_tg_accounts=max_tg_accounts,
+        max_sources=max_sources,
+        allow_export=allow_export,
+    )
     await session.commit()
     await session.refresh(row)
     return row

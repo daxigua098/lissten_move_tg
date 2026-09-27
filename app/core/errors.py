@@ -131,6 +131,27 @@ class SelfOperationError(ConflictError):
     default_detail = "不能对自己执行该操作"
 
 
+class InsufficientQuotaError(ConflictError):
+    """额度不足。"""
+
+    code = "QUOTA_INSUFFICIENT"
+    default_detail = "额度不足，请先向上级申请划拨"
+
+
+class NotDirectSubordinateError(PermissionDeniedError):
+    """只能操作直属下级；隔层账号一律 403。"""
+
+    code = "AGENT_NOT_DIRECT_SUBORDINATE"
+    default_detail = "只能操作直属下级账号"
+
+
+class AgentHasSubordinatesError(ConflictError):
+    """代理名下还有下级，不能删除或改变归属。"""
+
+    code = "AGENT_HAS_SUBORDINATES"
+    default_detail = "该账号名下还有下级，请先处理下级"
+
+
 class AccountLockedError(AppError):
     """账号因失败次数过多被锁定。"""
 

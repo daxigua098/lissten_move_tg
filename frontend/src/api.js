@@ -57,6 +57,25 @@ export const authApi = {
     }),
 };
 
+// 代理工作台（P3）：代理与平台账号共用，会员账号访问会 403
+export const agentApi = {
+  quota: () => http.get("/api/agent/quota"),
+  stats: () => http.get("/api/agent/stats"),
+  expiring: (params) => http.get("/api/agent/expiring", { params }),
+  templates: () => http.get("/api/agent/templates"),
+  subordinates: () => http.get("/api/agent/subordinates"),
+  ledger: (params) => http.get("/api/agent/ledger", { params }),
+  openMember: (payload) => http.post("/api/agent/members", payload),
+  openTrial: (payload) => http.post("/api/agent/trials", payload),
+  openAgent: (payload) => http.post("/api/agent/agents", payload),
+  allocate: (payload) => http.post("/api/agent/allocate", payload),
+  reclaim: (payload) => http.post("/api/agent/reclaim", payload),
+  adjust: (id, payload) => http.post(`/api/agent/${id}/adjust`, payload),
+  renew: (id, payload) => http.post(`/api/agent/${id}/renew`, payload),
+  upgrade: (id, payload) => http.post(`/api/agent/${id}/upgrade`, payload),
+  setEnabled: (id, enabled) => http.post(`/api/agent/${id}/enable`, { enabled }),
+};
+
 export const usersApi = {
   list: (params) => http.get("/api/users", { params }),
   create: (payload) => http.post("/api/users", payload),

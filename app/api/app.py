@@ -17,6 +17,7 @@ from app.api.middleware import register_middlewares
 from app.api.routers import (
     accounts,
     ad_assets,
+    agent,
     auth,
     bots,
     health,
@@ -123,6 +124,7 @@ def create_app(
     app.include_router(system.router)
     app.include_router(accounts.router)
     app.include_router(bots.router)
+    app.include_router(agent.router)
     app.include_router(sources.router)
     app.include_router(targets.router)
     app.include_router(routes.router)

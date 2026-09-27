@@ -264,6 +264,42 @@ async def next_ready_task(
     return await session.scalar(statement)
 
 
+async def clear_queue(session: AsyncSession, *, tenant_id: int) -> dict[str, int]:
+    """清空冷触达队列。
+
+    删掉该租户的全部投递任务；只「排过队、还没真正联系过」的联系人与线索
+    退回「待发信息账号」，这样还能重新「生成队列」。已联系/已回复/已拒绝的
+    联系人属于历史，不动。
+    """
+    from sqlalchemy import delete, update
+
+    deleted = await session.execute(delete(OutreachTask).where(OutreachTask.tenant_id == tenant_id))
+
+    contacts = list(
+        await session.scalars(
+            select(OutreachContact).where(
+                OutreachContact.tenant_id == tenant_id,
+                OutreachContact.contact_state == CONTACT_QUEUED,
+            )
+        )
+    )
+    for contact in contacts:
+        contact.contact_state = OUTREACH_WAITING_SENDER_ACCOUNT
+
+    reset_leads = await session.execute(
+        update(Lead)
+        .where(Lead.tenant_id == tenant_id, Lead.outreach_status == CONTACT_QUEUED)
+        .values(outreach_status=OUTREACH_WAITING_SENDER_ACCOUNT)
+    )
+
+    await session.commit()
+    return {
+        "deleted_tasks": int(deleted.rowcount or 0),
+        "reset_contacts": len(contacts),
+        "reset_leads": int(reset_leads.rowcount or 0),
+    }
+
+
 async def capacity(session: AsyncSession, *, tenant_id: int) -> dict:
     """今日可用冷聊总量、排队数与受限账号数。"""
     settings = await outreach_settings_service.read_settings(session, tenant_id)

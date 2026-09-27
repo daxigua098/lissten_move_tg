@@ -167,6 +167,7 @@ export const outreachApi = {
   capacity: () => http.get("/api/outreach/capacity"),
   planQueue: (limit = 200) =>
     http.post("/api/outreach/queue/plan", null, { params: { limit } }),
+  clearQueue: () => http.post("/api/outreach/queue/clear"),
   tasks: (params) => http.get("/api/outreach/tasks", { params }),
   contacts: (params) => http.get("/api/outreach/contacts", { params }),
   templates: (params) => http.get("/api/outreach/templates", { params }),

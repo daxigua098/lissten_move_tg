@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from conftest import ADMIN_API_TOKEN, auth_header
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 
 def _headers() -> dict[str, str]:
@@ -268,3 +268,50 @@ async def test_templates_reject_link_and_support_platform_adopt(admin_client) ->
         json={"text": "改一下"},
     )
     assert readonly.status_code == 400
+
+
+async def test_clear_queue_resets_and_allows_replan(admin_client) -> None:
+    """清空队列：删任务、把只排过队的线索退回，之后还能重新生成。"""
+    from app.db.models import OutreachContact, OutreachTask
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        session.add(_lead(sender_tg_id=990100, message_id=101))
+        session.add(_lead(sender_tg_id=990101, message_id=102))
+        await session.commit()
+
+        planned = await outreach_queue_service.plan_pending(session, tenant_id=1, limit=50)
+        assert planned["created"] == 2
+
+        cleared = await outreach_queue_service.clear_queue(session, tenant_id=1)
+        assert cleared["deleted_tasks"] == 2
+        assert cleared["reset_leads"] == 2
+
+        remaining = await session.scalar(
+            select(func.count()).select_from(OutreachTask).where(OutreachTask.tenant_id == 1)
+        )
+        assert remaining == 0
+
+        contacts = list(
+            await session.scalars(select(OutreachContact).where(OutreachContact.tenant_id == 1))
+        )
+        assert contacts and all(item.contact_state == "WAITING_SENDER_ACCOUNT" for item in contacts)
+
+        # 线索退回「待生成」后可以重新排队
+        again = await outreach_queue_service.plan_pending(session, tenant_id=1, limit=50)
+        assert again["created"] == 2
+
+
+async def test_clear_queue_api(admin_client) -> None:
+    from app.db.session import session_scope
+    from app.services import outreach_queue_service
+
+    async with session_scope() as session:
+        session.add(_lead(sender_tg_id=990102, message_id=103))
+        await session.commit()
+        await outreach_queue_service.plan_pending(session, tenant_id=1, limit=50)
+
+    response = await admin_client.post("/api/outreach/queue/clear", headers=_headers())
+    assert response.status_code == 200
+    assert response.json()["deleted_tasks"] == 1

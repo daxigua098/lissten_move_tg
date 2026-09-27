@@ -1,5 +1,5 @@
 <script setup>
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { onMounted, ref } from "vue";
 
 import { outreachApi } from "../../api";
@@ -38,6 +38,31 @@ async function plan() {
     load();
   } catch (error) {
     ElMessage.error(error.message);
+  }
+}
+
+async function clearQueue() {
+  if (!total.value) {
+    ElMessage.info("队列已经是空的");
+    return;
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确认清空队列？将删除 ${total.value} 条待发送任务；` +
+        "只排过队、还没联系过的线索会退回「待生成」，已联系/已回复的记录不受影响。",
+      "清空队列",
+      { type: "warning", confirmButtonText: "清空", cancelButtonText: "取消" },
+    );
+    const { data } = await outreachApi.clearQueue();
+    ElMessage.success(
+      `已清空：删除 ${data.deleted_tasks} 条任务，退回 ${data.reset_leads} 条线索`,
+    );
+    planResult.value = null;
+    load();
+  } catch (error) {
+    if (error?.message && !error.message.includes("cancel")) {
+      ElMessage.error(error.message);
+    }
   }
 }
 
@@ -85,6 +110,7 @@ onMounted(load);
       <div class="spacer" />
       <el-button size="small" type="primary" :loading="loading" @click="plan">生成队列</el-button>
       <el-button size="small" :loading="loading" @click="dispatch">立即发送一条</el-button>
+      <el-button size="small" type="danger" plain @click="clearQueue">清空队列</el-button>
       <el-button size="small" @click="toggleRuntime">
         {{ runtime.paused ? "恢复冷触达" : "暂停冷触达" }}
       </el-button>

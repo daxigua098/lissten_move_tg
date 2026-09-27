@@ -333,6 +333,18 @@ async def plan_queue(
     )
 
 
+@router.post("/queue/clear")
+async def clear_queue(
+    identity: dict[str, Any] = Depends(current_identity),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """清空冷触达队列（删待发送任务；历史联系记录不动）。"""
+    return await outreach_queue_service.clear_queue(
+        session,
+        tenant_id=tenant_scope_of(identity),
+    )
+
+
 @router.get("/capacity")
 async def get_capacity(
     identity: dict[str, Any] = Depends(current_identity),

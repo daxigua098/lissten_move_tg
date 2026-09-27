@@ -139,6 +139,11 @@ function memberNames(row) {
   return (row.module_labels || []).join(" · ") || "仅基础功能";
 }
 
+function remindedTip(stages) {
+  if (!stages || !stages.length) return "";
+  return `已提醒 ${stages.map((stage) => String(stage).replace("d", " 天")).join(" / ")}`;
+}
+
 async function loadOverview() {
   const { data } = await platformApi.overview({ days: 7 });
   overview.value = data;
@@ -489,6 +494,14 @@ onMounted(loadAll);
                 <el-tag size="small" :type="row.days_left <= 1 ? 'danger' : 'warning'">
                   {{ row.days_left }} 天
                 </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="已提醒" width="150">
+              <template #default="{ row }">
+                <el-tag v-if="row.reminded_stages?.length" size="small" type="success">
+                  {{ remindedTip(row.reminded_stages) }}
+                </el-tag>
+                <span v-else class="muted">—</span>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="100">
@@ -909,6 +922,14 @@ onMounted(loadAll);
                   </el-tag>
                 </template>
               </el-table-column>
+              <el-table-column label="已提醒" width="150">
+                <template #default="{ row }">
+                  <el-tag v-if="row.reminded_stages?.length" size="small" type="success">
+                    {{ remindedTip(row.reminded_stages) }}
+                  </el-tag>
+                  <span v-else class="muted">—</span>
+                </template>
+              </el-table-column>
               <el-table-column label="操作" width="100">
                 <template #default="{ row }">
                   <el-button size="small" type="primary" @click="openRenew(row)">续期</el-button>
@@ -1167,6 +1188,9 @@ onMounted(loadAll);
 }
 .bucket {
   margin-bottom: 18px;
+}
+.muted {
+  color: #909399;
 }
 .bucket-title {
   display: flex;

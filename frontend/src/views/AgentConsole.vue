@@ -76,6 +76,11 @@ function quotaText(row) {
   return `会员 ${row.quota.member} / 代理 ${row.quota.agent} / 试用 ${row.quota.trial}`;
 }
 
+function remindedTip(stages) {
+  if (!stages || !stages.length) return "";
+  return `已提醒 ${stages.map((stage) => String(stage).replace("d", " 天")).join(" / ")}`;
+}
+
 async function loadAll() {
   loading.value = true;
   try {
@@ -295,6 +300,9 @@ onMounted(loadAll);
         <div class="warn-list">
           <el-tag v-for="item in expiring" :key="item.tenant_id" type="warning" size="small">
             {{ item.username }} · {{ fmt(item.expires_at) }}
+            <span v-if="item.reminded_stages?.length" class="reminded">
+              · {{ remindedTip(item.reminded_stages) }}
+            </span>
           </el-tag>
         </div>
       </el-alert>
@@ -641,6 +649,12 @@ onMounted(loadAll);
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 6px;
+}
+
+.reminded {
+  margin-left: 4px;
+  font-size: 12px;
+  opacity: 0.8;
 }
 
 .mode-row {

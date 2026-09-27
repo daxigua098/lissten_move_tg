@@ -490,6 +490,22 @@ async def purge_expired(
     return {"leads": len(expired), "profiles": len(profiles), "archived": archived}
 
 
+async def purge_delivered(session: AsyncSession, *, archive_dir: Path) -> dict[str, int]:
+    """清空「已完成」的线索：只删已推送的，未推送的一条不动。
+
+    删除前仍然先归档成 JSONL（跟保留策略清理同一套），删错了还能从归档里找回来。
+    """
+    rows = list(await session.scalars(select(Lead).where(Lead.delivered.is_(True))))
+    if not rows:
+        return {"deleted": 0, "archived": 0}
+    # 写文件是阻塞操作，丢到线程里，别卡住事件循环
+    archived = await asyncio.to_thread(_archive_leads, rows, archive_dir)
+    for row in rows:
+        await session.delete(row)
+    await session.commit()
+    return {"deleted": len(rows), "archived": archived}
+
+
 def _archive_leads(rows: list[Lead], archive_dir: Path) -> int:
     """把即将删除的线索追加写进当天的 JSONL 归档文件。"""
     archive_dir.mkdir(parents=True, exist_ok=True)

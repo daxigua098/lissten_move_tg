@@ -228,3 +228,56 @@ async def test_purge_keeps_hits_forever_and_drops_others(db) -> None:
     archived = archive_files[0].read_text(encoding="utf-8")
     assert "随便聊聊" in archived
     assert "求个篮球赛" not in archived
+
+
+async def test_purge_delivered_clears_only_pushed(admin_client, api_config) -> None:
+    """「清空已完成」只删已推送的线索，未推送的一条不动。"""
+    from app.core.lead_extractor import ContactInfo, SenderInfo
+    from app.db.session import session_scope
+    from app.services import lead_service
+
+    await _seed_lead(api_config)
+    # 再补一条：把第一条标成已推送，第二条保持未推送
+    async with session_scope() as session:
+        rows, _total = await lead_service.list_leads(session, limit=10)
+        await lead_service.mark_delivered(
+            session,
+            rows[0],
+            target_chat_id=8802,
+            target_message_id=9001,
+        )
+        await lead_service.record_lead(
+            session,
+            route_id=rows[0].route_id,
+            source_chat_id=rows[0].source_chat_id,
+            message_id=502,
+            message_at=None,
+            sender=SenderInfo(
+                tg_user_id=6660002,
+                username="talker02",
+                display_name="路人二号",
+            ),
+            contacts=ContactInfo(),
+            keyword=None,
+            keyword_group_id=None,
+            matched_mode="contains",
+            score=1.0,
+            text="全量监听入库的普通发言",
+            source_title="搜索资源群",
+        )
+
+    before = (await admin_client.get("/api/leads", headers=_headers())).json()
+    assert before["total"] == 2
+
+    purged = await admin_client.post("/api/leads/purge-delivered", headers=_headers())
+    assert purged.status_code == 200, purged.text
+    assert purged.json()["deleted"] == 1
+
+    after = (await admin_client.get("/api/leads", headers=_headers())).json()
+    assert after["total"] == 1
+    assert after["items"][0]["delivered"] is False
+
+    # 再点一次没有可删的，返回 0 而不是报错
+    again = await admin_client.post("/api/leads/purge-delivered", headers=_headers())
+    assert again.status_code == 200, again.text
+    assert again.json()["deleted"] == 0

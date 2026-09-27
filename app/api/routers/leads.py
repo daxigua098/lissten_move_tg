@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import require_module, session_dependency
+from app.core.config import AppConfig
 from app.db.models import MODULE_MONITOR
 from app.services import lead_service
 
@@ -81,3 +82,21 @@ async def export_leads(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="leads.csv"'},
     )
+
+
+@router.post("/purge-delivered")
+async def purge_delivered_leads(
+    request: Request,
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """清空已完成：删掉已推送的线索，未推送的一条不动（删前先归档）。"""
+    config: AppConfig = request.app.state.config
+    result = await lead_service.purge_delivered(
+        session,
+        archive_dir=config.path("data/archive"),
+    )
+    return {
+        "deleted": result["deleted"],
+        "archived": result["archived"],
+        "message": f"已清空 {result['deleted']} 条已完成线索（归档 {result['archived']} 条）",
+    }

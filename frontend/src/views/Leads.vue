@@ -1,5 +1,5 @@
 <script setup>
-import { ElMessage } from "element-plus";
+import { ElMessage, ElMessageBox } from "element-plus";
 import { onMounted, reactive, ref } from "vue";
 
 import { http, leadsApi, sourcesApi } from "../api";
@@ -59,6 +59,28 @@ function onPage(page) {
   load();
 }
 
+async function purgeDelivered() {
+  // 「已完成」= 已经推送到接收群的线索；未推送的一条都不动
+  const done = Math.max(0, Number(stats.value?.total || 0) - Number(stats.value?.undelivered || 0));
+  try {
+    await ElMessageBox.confirm(
+      `将删除 ${done} 条「已推送」的线索，未推送的会保留。删除前会自动归档到服务器，操作不可撤销。`,
+      "清空已完成",
+      { type: "warning", confirmButtonText: "确认清空", cancelButtonText: "取消" },
+    );
+  } catch {
+    return;
+  }
+  try {
+    const { data } = await leadsApi.purgeDelivered();
+    ElMessage.success(data.message || `已清空 ${data.deleted} 条`);
+    filters.offset = 0;
+    await load();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
 async function exportCsv() {
   try {
     const url = leadsApi.exportUrl({
@@ -93,6 +115,7 @@ onMounted(async () => {
       <span class="card-hint">共 {{ total }} 条</span>
       <div class="spacer" />
       <el-button size="small" @click="load">刷新</el-button>
+      <el-button size="small" @click="purgeDelivered">清空已完成</el-button>
       <el-button size="small" type="primary" @click="exportCsv">导出 CSV</el-button>
     </div>
 

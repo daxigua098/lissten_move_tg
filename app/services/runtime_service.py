@@ -1279,9 +1279,20 @@ def _spawn_runtime(config: AppConfig) -> subprocess.Popen:
 
     creationflags = 0
     new_session = True
+    startupinfo = None
     if os.name == "nt":  # pragma: no cover - Windows 分支
-        creationflags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+        # 用户点「启动」时不许弹黑色控制台窗口：
+        #   DETACHED_PROCESS 不继承父进程控制台，CREATE_NO_WINDOW 连新控制台也不建，
+        #   STARTF_USESHOWWINDOW + SW_HIDE 再兜一层（venv 的 python.exe 会再拉子进程）。
+        creationflags = (
+            subprocess.DETACHED_PROCESS
+            | subprocess.CREATE_NEW_PROCESS_GROUP
+            | subprocess.CREATE_NO_WINDOW
+        )
         new_session = False
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = subprocess.SW_HIDE
 
     with out_path.open("ab") as out, err_path.open("ab") as err:
         process = subprocess.Popen(  # noqa: S603 - 命令固定，参数不来自外部输入
@@ -1292,6 +1303,7 @@ def _spawn_runtime(config: AppConfig) -> subprocess.Popen:
             stderr=err,
             creationflags=creationflags,
             start_new_session=new_session,
+            startupinfo=startupinfo,
         )
     (data_dir / "runtime.pid").write_text(str(process.pid), encoding="utf-8")
     return process

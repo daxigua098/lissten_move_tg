@@ -233,6 +233,7 @@ export const keywordsApi = {
 export const leadsApi = {
   list: (params) => http.get("/api/leads", { params }),
   stats: () => http.get("/api/leads/stats"),
+  purgeDelivered: () => http.post("/api/leads/purge-delivered"),
   exportUrl: (params) => {
     const query = new URLSearchParams(
       Object.entries(params || {}).filter(([, value]) => value !== undefined && value !== null && value !== ""),

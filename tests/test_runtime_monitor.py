@@ -375,6 +375,32 @@ async def test_full_push_all_still_requires_direct_contact(db, fake_delivery_cli
     assert fake_delivery_client.sent == []
 
 
+async def test_keyword_hit_with_message_contact_is_captured(db, fake_delivery_client) -> None:
+    """正文里明确留了微信等联系方式，即使发送者没有用户名也应抓取。"""
+    from app.db.session import session_scope
+    from app.services import lead_service, route_service
+    from app.services.runtime_service import RuntimeService
+
+    route_id, _source_id, _target_id = await _prepare_monitor_route(db)
+    service = RuntimeService(db)
+
+    async with session_scope() as session:
+        route = await route_service.get_route(session, route_id)
+    await service._on_monitor_message(
+        fake_delivery_client,
+        _event("求个篮球赛推荐，微信 seller001", username=None),
+        [route],
+    )
+
+    async with session_scope() as session:
+        rows, total = await lead_service.list_leads(session)
+    assert total == 1
+    assert rows[0].wechat == "seller001"
+    assert rows[0].delivered is True
+    assert len(fake_delivery_client.sent) == 1
+    assert "微信 seller001" in fake_delivery_client.sent[0]["text"]
+
+
 async def test_global_suppression_blocks_capture(db, fake_delivery_client) -> None:
     from app.db.models import ContactSuppression
     from app.db.session import session_scope

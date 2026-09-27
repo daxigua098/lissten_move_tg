@@ -696,8 +696,14 @@ class RuntimeService:
                 if hit is None and config.listen_mode != "all":
                     continue
 
-                # 硬性准入：必须留有可用于冷触达的直接字段（用户名 / 手机号等）。
+                # 硬性准入：必须留有可用于冷触达的直接字段。
+                # 除发送者用户名 / 手机号外，正文里明确留下的手机号、微信、@用户名也算。
                 # 全量监听也不能绕过，否则卡片会出现“无用户名 + 未提供联系方式”的无效线索。
+                contacts = extract_contacts(
+                    text,
+                    capture_phone=config.capture_phone,
+                    capture_contact=config.capture_contact,
+                )
                 decision = await lead_service.evaluate_capture_eligibility(
                     session,
                     tenant_id=fresh.tenant_id,
@@ -705,6 +711,7 @@ class RuntimeService:
                     text=text,
                     capture_mode=config.capture_mode,
                     source_account_id=fresh.exec_account_id,
+                    contacts=contacts,
                 )
                 if not decision.allowed:
                     logger.debug(
@@ -725,11 +732,6 @@ class RuntimeService:
 
                 source_title = (
                     source_chat.display_name or source_chat.title or source_chat.username or ""
-                )
-                contacts = extract_contacts(
-                    text,
-                    capture_phone=config.capture_phone,
-                    capture_contact=config.capture_contact,
                 )
                 lead = await lead_service.record_lead(
                     session,

@@ -60,6 +60,7 @@ async def evaluate_capture_eligibility(
     text: str | None,
     capture_mode: str,
     source_account_id: int | None,
+    contacts: ContactInfo | None = None,
 ) -> CaptureDecision:
     """按“真人 + 可触达 + 未阻断 + 严格模式授权”判断是否入库。"""
     if not sender.is_user or sender.is_bot:
@@ -73,12 +74,13 @@ async def evaluate_capture_eligibility(
         has_peer_reference=sender.has_peer_reference,
         has_source_account=source_account_id is not None,
     )
-    if not routes:
+    has_message_contact = bool(contacts and not contacts.is_empty())
+    if not routes and not has_message_contact:
         return CaptureDecision(False, "NO_REACHABLE_ROUTE")
-    # 冷私聊必须能明确找到人：发送者自己的用户名或手机号。
+    # 冷私聊必须能明确找到人：发送者用户名 / 手机号，或正文里明确留下的联系方式。
     # PEER_REFERENCE / SHARED_GROUP 只能证明监听账号见过对方，卡面也可能显示“未提供”，
     # 因此不能单独构成入库条件。
-    if ROUTE_USERNAME not in routes and ROUTE_PHONE not in routes:
+    if ROUTE_USERNAME not in routes and ROUTE_PHONE not in routes and not has_message_contact:
         return CaptureDecision(False, "NO_DIRECT_CONTACT")
 
     suppressed = await session.scalar(
@@ -124,7 +126,8 @@ async def evaluate_capture_eligibility(
     route_owner_account_id = None
     if ROUTE_PEER_REFERENCE in routes or ROUTE_SHARED_GROUP in routes:
         route_owner_account_id = source_account_id
-    reason = f"ROUTES={','.join(routes)};CONSENT={consent_type}"
+    contact_note = ";CONTACT=MESSAGE" if has_message_contact else ""
+    reason = f"ROUTES={','.join(routes)}{contact_note};CONSENT={consent_type}"
     return CaptureDecision(
         True,
         reason,

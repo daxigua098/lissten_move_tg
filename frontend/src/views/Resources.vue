@@ -3,6 +3,7 @@ import { ElMessage, ElMessageBox } from "element-plus";
 import { computed, onMounted, reactive, ref } from "vue";
 
 import { hotKeywordsApi, resourcesApi, targetsApi } from "../api";
+import { isJoined, isReadable, joinState } from "../resourceJoinState";
 import FieldHelp from "../components/FieldHelp.vue";
 import { RESOURCE_HELP } from "../resourceHelp";
 
@@ -104,35 +105,6 @@ const queryParams = computed(() => {
 const quick = computed(() => counts.value?.quick || {});
 const runtimeRunning = computed(() => overview.value?.runtime?.running ?? true);
 
-const JOIN_LABEL = {
-  pending: "待加入",
-  running: "加入中",
-  success: "已加入",
-  waiting_approval: "待审批",
-  failed: "加入失败",
-};
-const JOIN_TAG = {
-  pending: "warning",
-  running: "warning",
-  success: "success",
-  waiting_approval: "warning",
-  failed: "danger",
-};
-
-/** 账号到底进群没有：探测确认过，或加群任务成功。 */
-function isJoined(row) {
-  return row.resource_state === "active" || row.join?.status === "success";
-}
-
-function joinState(row) {
-  if (isJoined(row)) return { label: "已在群里", type: "success" };
-  if (!row.join) return { label: "未加入", type: "info" };
-  return {
-    label: JOIN_LABEL[row.join.status] || row.join.status,
-    type: JOIN_TAG[row.join.status] || "info",
-  };
-}
-
 /** 已采纳却没进群：链路建好了也收不到数据，必须显式提醒。 */
 function silentRisk(row) {
   return row.status === "adopted" && !isJoined(row);
@@ -147,7 +119,8 @@ function joinDeferred(row) {
 
 function joinButtonLabel(row) {
   if (joining.has(row.id)) return "加入中…";
-  return joinDeferred(row) ? "立即重试" : "让账号加入";
+  if (joinDeferred(row)) return "立即重试";
+  return row.chat_type === "channel" ? "加入频道" : "加入群组";
 }
 
 function fmtCount(value) {
@@ -565,6 +538,7 @@ async function confirmAdopt() {
     });
     const routeText = data.routes?.length ? `，已建 ${data.routes.length} 条线路` : "";
     ElMessage.success(`已加入监听源${routeText}`);
+    if (data.route_error) ElMessage.warning(data.route_error);
     if (data.join_task?.status === "pending") {
       ElMessage.info("该资源还没确认在群里，已按限速排入加群队列");
     }
@@ -886,6 +860,7 @@ onMounted(async () => {
           <el-button v-if="row.link" size="small" link @click="copyLink(row)">复制链接</el-button>
           <span v-else class="card-hint">还没有公开链接</span>
           <el-tag size="small" :type="joinState(row).type">{{ joinState(row).label }}</el-tag>
+          <el-tag v-if="isReadable(row) && !isJoined(row)" size="small" type="info">可读取</el-tag>
           <el-tag v-if="silentRisk(row)" size="small" type="danger">账号没进群，收不到数据</el-tag>
         </div>
         <div class="card-source">{{ sourceText(row) }}</div>
@@ -974,6 +949,9 @@ onMounted(async () => {
         <el-table-column label="加群" width="120">
           <template #default="{ row }">
             <el-tag size="small" :type="joinState(row).type">{{ joinState(row).label }}</el-tag>
+            <el-tag v-if="isReadable(row) && !isJoined(row)" size="small" type="info" class="tag-gap">
+              可读取
+            </el-tag>
             <el-tag v-if="silentRisk(row)" size="small" type="danger" class="tag-gap">收不到</el-tag>
           </template>
         </el-table-column>
@@ -1115,6 +1093,14 @@ onMounted(async () => {
               <el-tag size="small" :type="joinState(detail).type">
                 {{ joinState(detail).label }}
               </el-tag>
+              <el-tag
+                v-if="isReadable(detail) && !isJoined(detail)"
+                size="small"
+                type="info"
+                class="tag-gap"
+              >
+                可读取
+              </el-tag>
               <span v-if="detail.join?.scheduled_at" class="card-hint">
                 计划 {{ fmtTime(detail.join.scheduled_at) }}
               </span>
@@ -1217,7 +1203,10 @@ onMounted(async () => {
         <p>
           把 <b>{{ adoptRow.name }}</b> 写进「监听源」。
         </p>
-        <el-checkbox v-model="adoptForm.create_route">顺手建一条线路</el-checkbox>
+        <el-checkbox v-model="adoptForm.create_route" :disabled="!isJoined(adoptRow)">
+          顺手建一条线路
+        </el-checkbox>
+        <p v-if="!isJoined(adoptRow)" class="card-hint">账号加入成功后才能建线。</p>
         <template v-if="adoptForm.create_route">
           <el-radio-group v-model="adoptForm.business_type" class="adopt-row">
             <el-radio value="A">A 线（搬运帖子）</el-radio>
@@ -1240,7 +1229,7 @@ onMounted(async () => {
           <el-input v-model="adoptForm.route_name" placeholder="线路名（留空自动生成）" class="adopt-row" />
         </template>
         <p class="card-hint">
-          采纳后系统会记录采纳时间与操作人；如果这个群还没确认在账号的群里，会自动按限速排一次加群。
+          采纳后系统会记录采纳时间与操作人；如果这个群还没确认在账号的群里，会先标记为未加入并自动按限速排一次加群。
         </p>
       </div>
       <template #footer>

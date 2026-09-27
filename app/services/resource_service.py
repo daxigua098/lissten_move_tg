@@ -28,6 +28,7 @@ from app.db.base import as_utc, utc_now
 from app.db.models import (
     CONTENT_RATINGS,
     JOIN_ACTION_JOIN,
+    JOIN_ACTION_LEAVE,
     PROBE_FAILED,
     PROBE_OK,
     RATING_SENSITIVE,
@@ -798,20 +799,29 @@ def _display_link(resource: TgResource) -> str | None:
 async def latest_join_states(
     session: AsyncSession,
     resource_ids: Sequence[int],
+    *,
+    account_id: int | None = None,
 ) -> dict[int, dict[str, Any]]:
-    """每条资源最近一次「让账号加入」的结果。
+    """每条资源在指定账号下的最近一次加群 / 退群结果。
 
     卡片上要能一眼看出「配置了监听源，但飞机号还没进群」——不然就会出现
-    "链路建好了却什么都收不到"。取每个资源最新的一条 join 任务即可。
+    "链路建好了却什么都收不到"。默认账号下没有任务时返回空，不拿其它账号
+    的结果冒充；退群动作会作为最新状态返回。
     """
     wanted = [int(item) for item in resource_ids]
     if not wanted:
+        return {}
+    from app.services import resource_join_service
+
+    resolved_account = await resource_join_service.resolve_account_id(session, account_id)
+    if resolved_account is None:
         return {}
     rows = await session.scalars(
         select(ResourceJoinTask)
         .where(
             ResourceJoinTask.resource_id.in_(wanted),
-            ResourceJoinTask.action == JOIN_ACTION_JOIN,
+            ResourceJoinTask.account_id == resolved_account,
+            ResourceJoinTask.action.in_((JOIN_ACTION_JOIN, JOIN_ACTION_LEAVE)),
         )
         .order_by(ResourceJoinTask.id.desc())
     )
@@ -823,6 +833,8 @@ async def latest_join_states(
         finished = as_utc(row.finished_at)
         states[row.resource_id] = {
             "task_id": row.id,
+            "account_id": row.account_id,
+            "action": row.action,
             "status": row.status,
             "attempts": row.attempts,
             "last_error": row.last_error,
@@ -835,10 +847,16 @@ async def latest_join_states(
 async def attach_join_states(
     session: AsyncSession,
     payloads: Sequence[dict[str, Any]],
+    *,
+    account_id: int | None = None,
 ) -> None:
     """把加群状态挂到已经序列化好的资源上（列表与详情共用）。"""
     items = [item for item in payloads if item.get("id") is not None]
-    states = await latest_join_states(session, [int(item["id"]) for item in items])
+    states = await latest_join_states(
+        session,
+        [int(item["id"]) for item in items],
+        account_id=account_id,
+    )
     for item in items:
         item["join"] = states.get(int(item["id"]))
 

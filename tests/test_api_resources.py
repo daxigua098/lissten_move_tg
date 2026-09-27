@@ -238,6 +238,14 @@ async def test_adopt_creates_source_and_route(resource_api_client, fake_resource
         "items"
     ][0]["id"]
 
+    joined = await resource_api_client.post(
+        "/api/resources/join",
+        headers=headers,
+        json={"ids": [resource_id], "execute_now": True},
+    )
+    assert joined.status_code == 201
+    assert joined.json()["executed"][0]["status"] == "success"
+
     from app.db.session import session_scope
     from app.services import chat_service
 
@@ -274,7 +282,7 @@ async def test_adopt_creates_source_and_route(resource_api_client, fake_resource
     assert body["resource"]["status"] == "adopted"
     assert body["resource"]["adopted_by"] == ADMIN_USERNAME
     assert len(body["routes"]) == 1
-    # 这条资源已经探测成功（说明账号在群里），不用再排队加群
+    # 已经成功加群，不用再排队加群
     assert body["join_task"] is None
 
     sources = await resource_api_client.get("/api/sources", headers=headers)
@@ -285,11 +293,11 @@ async def test_adopt_creates_source_and_route(resource_api_client, fake_resource
     assert routes.json()["items"][0]["name"] == "资源群 → 接收群"
 
 
-async def test_adopt_unprobed_resource_queues_join(
+async def test_adopt_unjoined_resource_blocks_route_until_join_success(
     resource_api_client,
     fake_resource_client,
 ) -> None:
-    """没探测过 = 还不知道在不在群里，采纳时顺手排一次加群。"""
+    """没成功加群前只允许采纳，不允许留下收不到数据的假链路。"""
     headers = await _token(resource_api_client)
     await _seed_resource(fake_resource_client, tg_id=4311, username="pending_join")
     await resource_api_client.post(
@@ -304,14 +312,34 @@ async def test_adopt_unprobed_resource_queues_join(
     response = await resource_api_client.post(
         f"/api/resources/{resource_id}/adopt",
         headers=headers,
-        json={},
+        json={"create_route": True, "target_chat_ids": []},
     )
 
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["resource"]["status"] == "adopted"
+    assert body["routes"] == []
+    assert "还没加入" in body["route_error"]
     assert body["join_task"] is not None
     assert body["join_task"]["status"] == "pending"
+
+    sources = await resource_api_client.get("/api/sources", headers=headers)
+    source = next(item for item in sources.json()["items"] if item["tg_id"] == 4311)
+    assert source["joined"] is False
+    assert source["source_enabled"] is False
+
+    joined = await resource_api_client.post(
+        "/api/resources/join",
+        headers=headers,
+        json={"ids": [resource_id], "execute_now": True},
+    )
+    assert joined.status_code == 201
+    assert joined.json()["executed"][0]["status"] == "success"
+
+    sources = await resource_api_client.get("/api/sources", headers=headers)
+    source = next(item for item in sources.json()["items"] if item["tg_id"] == 4311)
+    assert source["joined"] is True
+    assert source["source_enabled"] is True
 
 
 async def test_resource_exposes_public_link_and_join_state(
@@ -351,6 +379,65 @@ async def test_resource_exposes_public_link_and_join_state(
     detail = await resource_api_client.get(f"/api/resources/{item['id']}", headers=headers)
     assert detail.json()["join"]["status"] == "success"
     assert detail.json()["link"] == "https://t.me/public_group"
+
+
+async def test_join_state_is_scoped_to_default_account(
+    resource_api_client,
+    fake_resource_client,
+    api_config,
+) -> None:
+    """账号 A 加群成功，不能让账号 B 在资源页显示成已加入。"""
+    headers = await _token(resource_api_client)
+    for tg_id, username in ((4601, "default_join"), (4602, "other_join")):
+        await _seed_resource(fake_resource_client, tg_id=tg_id, username=username)
+        imported = await resource_api_client.post(
+            "/api/resources/import",
+            headers=headers,
+            json={"inputs": [f"https://t.me/{username}"]},
+        )
+        assert imported.status_code in (200, 201), imported.text
+
+    from app.db.session import session_scope
+    from app.services import tg_account_service
+
+    async with session_scope() as session:
+        other = await tg_account_service.create_account(
+            session,
+            api_config,
+            name="第二监听号",
+            phone="+8613900002222",
+            api_id=123456,
+            api_hash="abcdef0123456789abcdef0123456789",
+            is_default=False,
+        )
+        other_account_id = other.id
+
+    rows = (await resource_api_client.get("/api/resources", headers=headers)).json()["items"]
+    by_tg = {item["tg_id"]: item for item in rows}
+
+    default_joined = await resource_api_client.post(
+        "/api/resources/join",
+        headers=headers,
+        json={"ids": [by_tg[4601]["id"]], "execute_now": True},
+    )
+    assert default_joined.json()["executed"][0]["status"] == "success"
+
+    other_joined = await resource_api_client.post(
+        "/api/resources/join",
+        headers=headers,
+        json={
+            "ids": [by_tg[4602]["id"]],
+            "account_id": other_account_id,
+            "execute_now": True,
+        },
+    )
+    assert other_joined.json()["executed"][0]["status"] == "success"
+
+    rows = (await resource_api_client.get("/api/resources", headers=headers)).json()["items"]
+    by_tg = {item["tg_id"]: item for item in rows}
+    assert by_tg[4601]["join"]["status"] == "success"
+    assert by_tg[4601]["join"]["action"] == "join"
+    assert by_tg[4602]["join"] is None
 
 
 async def test_join_force_retries_during_backoff(

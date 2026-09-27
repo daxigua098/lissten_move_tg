@@ -630,32 +630,51 @@ async def adopt_resource(
     if resource.tg_id is None:
         raise ValidationFailedError("该资源还没有解析出数字 ID，请先探测一次再采纳")
 
-    chat = await _ensure_source_chat(session, resource)
+    resolved_account_id = await resource_join_service.resolve_account_id(
+        session,
+        payload.account_id,
+    )
+    joined = await resource_join_service.has_successful_join(
+        session,
+        resource.id,
+        account_id=resolved_account_id,
+    )
+
+    chat = await _ensure_source_chat(
+        session,
+        resource,
+        joined=joined,
+        enabled=joined,
+    )
     routes: list[dict[str, Any]] = []
+    route_error: str | None = None
     if payload.create_route:
-        if not payload.target_chat_ids:
-            raise ValidationFailedError("建线需要至少选一个接收目标")
-        created = await route_service.create_route_bundle(
-            session,
-            name=payload.route_name
-            or f"{resource.title or resource.username} → {payload.business_type} 线",
-            source_chat_ids=[chat.id],
-            business_type=payload.business_type,
-            target_chat_ids=payload.target_chat_ids,
-            created_by=str(identity.get("username")),
-        )
-        routes = [{"id": item.id, "name": item.name} for item in created]
+        if not joined:
+            route_error = "账号还没加入这个群 / 频道，已先采纳并排入加群；加入成功后再建线"
+        else:
+            if not payload.target_chat_ids:
+                raise ValidationFailedError("建线需要至少选一个接收目标")
+            created = await route_service.create_route_bundle(
+                session,
+                name=payload.route_name
+                or f"{resource.title or resource.username} → {payload.business_type} 线",
+                source_chat_ids=[chat.id],
+                business_type=payload.business_type,
+                target_chat_ids=payload.target_chat_ids,
+                created_by=str(identity.get("username")),
+            )
+            routes = [{"id": item.id, "name": item.name} for item in created]
 
     # 先排队再加"已采纳"标记：加群队列会拒绝已采纳的资源，顺序反了就排不进去
     queued = None
-    if not payload.defer_join and resource.resource_state != "active":
+    if not payload.defer_join and not joined:
         # 还没确认在群里：排进加群队列（限速执行），而不是立刻猛加
         try:
             task = await resource_join_service.enqueue(
                 session,
                 config,
                 resource,
-                account_id=payload.account_id,
+                account_id=resolved_account_id,
             )
             queued = resource_join_service.serialize_task(task, resource)
         except Exception as exc:  # noqa: BLE001 - 采纳本身已经成功，排队失败只提示
@@ -665,7 +684,7 @@ async def adopt_resource(
         session,
         resource,
         adopted_by=str(identity.get("username")),
-        account_id=payload.account_id,
+        account_id=resolved_account_id,
         review_days=config.resource.review_days,
     )
 
@@ -673,11 +692,18 @@ async def adopt_resource(
         "resource": resource_service.serialize_resource(resource),
         "chat_id": chat.id,
         "routes": routes,
+        "route_error": route_error,
         "join_task": queued,
     }
 
 
-async def _ensure_source_chat(session: AsyncSession, resource: Any) -> Any:
+async def _ensure_source_chat(
+    session: AsyncSession,
+    resource: Any,
+    *,
+    joined: bool,
+    enabled: bool,
+) -> Any:
     """把资源写成监听源（复用群组池，不新建一套表）。"""
     profile = ChatProfile(
         tg_id=int(resource.tg_id),
@@ -687,5 +713,5 @@ async def _ensure_source_chat(session: AsyncSession, resource: Any) -> Any:
         is_private=not bool(resource.username),
         member_count=resource.member_count,
     )
-    chat = await chat_service.upsert_chat_from_profile(session, profile, joined=True)
-    return await chat_service.set_source(session, chat, enabled=True)
+    chat = await chat_service.upsert_chat_from_profile(session, profile, joined=joined)
+    return await chat_service.set_source(session, chat, enabled=enabled)

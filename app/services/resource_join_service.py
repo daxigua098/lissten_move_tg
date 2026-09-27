@@ -64,6 +64,30 @@ async def resolve_account_id(session: AsyncSession, account_id: int | None) -> i
     return account.id if account is not None else None
 
 
+async def has_successful_join(
+    session: AsyncSession,
+    resource_id: int,
+    *,
+    account_id: int | None = None,
+) -> bool:
+    """指定账号最近一次成功的进退群动作，是否最终停在已加入。"""
+    resolved_account = await resolve_account_id(session, account_id)
+    if resolved_account is None:
+        return False
+    latest = await session.scalar(
+        select(ResourceJoinTask)
+        .where(
+            ResourceJoinTask.resource_id == int(resource_id),
+            ResourceJoinTask.account_id == resolved_account,
+            ResourceJoinTask.action.in_((JOIN_ACTION_JOIN, JOIN_ACTION_LEAVE)),
+            ResourceJoinTask.status == JOIN_SUCCESS,
+        )
+        .order_by(ResourceJoinTask.id.desc())
+        .limit(1)
+    )
+    return latest is not None and latest.action == JOIN_ACTION_JOIN
+
+
 async def count_since(
     session: AsyncSession,
     account_id: int | None,
@@ -298,9 +322,11 @@ async def run_task(
     if task.action == JOIN_ACTION_LEAVE:
         resource.status = RESOURCE_RETIRED
         resource.resource_state = STATE_LEFT
+        await _sync_chat_membership(session, resource, joined=False)
     else:
         # 加群成功＝账号已经在这个群里，探测/采纳都不用再排一次加群
         resource.resource_state = STATE_ACTIVE
+        await _sync_chat_membership(session, resource, joined=True)
     await session.commit()
     await resource_quota_service.bump(
         session,
@@ -316,6 +342,29 @@ async def run_task(
         task.account_id,
     )
     return {"status": JOIN_SUCCESS, "resource_id": resource.id, "action": task.action}
+
+
+async def _sync_chat_membership(
+    session: AsyncSession,
+    resource: TgResource,
+    *,
+    joined: bool,
+) -> None:
+    """把加群结果同步到监听源；未成功前不要留假的“已接入”。"""
+    if resource.tg_id is None:
+        return
+    from app.services import chat_service
+
+    chat = await chat_service.get_chat_by_tg_id(
+        session,
+        int(resource.tg_id),
+        tenant_id=resource.tenant_id,
+    )
+    if chat is None:
+        return
+    chat.joined = joined
+    if chat.is_source:
+        chat.source_enabled = joined
 
 
 async def _perform(client: Any, resource: TgResource, *, action: str) -> None:
@@ -363,6 +412,8 @@ async def _handle_failure(
         # 其实已经在群里了，算成功
         task.status = JOIN_SUCCESS
         task.finished_at = utc_now()
+        resource.resource_state = STATE_ACTIVE
+        await _sync_chat_membership(session, resource, joined=True)
         await session.commit()
         await resource_quota_service.bump(session, task.account_id, joins=1)
         await _write_audit(session, task, resource, actor=actor, ok=True)

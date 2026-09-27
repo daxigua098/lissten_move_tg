@@ -15,7 +15,14 @@ from app.db import models as _models  # noqa: F401  导入以注册全部模型
 from app.db.base import Base
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_TABLES = {"users", "web_sessions", "login_history", "audit_logs", "system_settings"}
+EXPECTED_TABLES = {
+    "users",
+    "tenants",
+    "web_sessions",
+    "login_history",
+    "audit_logs",
+    "system_settings",
+}
 
 
 def _alembic_config(database_path: Path) -> AlembicConfig:

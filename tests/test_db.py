@@ -27,7 +27,14 @@ from app.db.session import (
     session_scope,
 )
 
-EXPECTED_TABLES = {"users", "web_sessions", "login_history", "audit_logs", "system_settings"}
+EXPECTED_TABLES = {
+    "users",
+    "tenants",
+    "web_sessions",
+    "login_history",
+    "audit_logs",
+    "system_settings",
+}
 VALID_SECRET_KEY = "A" * 43 + "="
 
 

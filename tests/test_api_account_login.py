@@ -388,3 +388,37 @@ async def test_two_accounts_can_login_in_parallel(login_client) -> None:
     after = await login_client.get("/api/accounts", headers=_headers())
     active = [item for item in after.json()["items"] if item["status"] == "active"]
     assert {item["id"] for item in active} == {first_id, second_id}
+
+
+async def test_cancel_returns_even_when_disconnect_hangs(
+    login_client, fake_login_client, monkeypatch
+) -> None:
+    """取消登录不能被"断开连接卡住"拖死：超时就返回，窗口才能立刻关掉。"""
+    import asyncio
+    import time
+
+    from app.services import tg_login_service
+
+    monkeypatch.setattr(tg_login_service, "DISCONNECT_TIMEOUT_SECONDS", 0.2)
+    account_id = await _account_id(login_client)
+    await login_client.post(
+        f"/api/accounts/{account_id}/login/start",
+        headers=_headers(),
+        json={},
+    )
+
+    async def hanging_disconnect() -> None:
+        await asyncio.sleep(30)
+
+    fake_login_client.disconnect = hanging_disconnect
+
+    started = time.monotonic()
+    response = await login_client.post(
+        f"/api/accounts/{account_id}/login/cancel",
+        headers=_headers(),
+    )
+    elapsed = time.monotonic() - started
+
+    assert response.status_code == 200
+    assert response.json()["cancelled"] is True
+    assert elapsed < 2, f"取消等了 {elapsed:.2f}s，太慢"

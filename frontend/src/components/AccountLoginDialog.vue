@@ -19,6 +19,17 @@ const form = reactive({ code: "", password: "", force_sms: false });
 const platformBusy = ref(false);
 const platformMessage = ref("");
 
+watch(
+  () => props.modelValue,
+  (open) => {
+    if (!open) return;
+    stage.value = "idle";
+    result.value = null;
+    platformMessage.value = "";
+    Object.assign(form, { code: "", password: "", force_sms: false });
+  },
+);
+
 async function startPlatformLogin() {
   platformBusy.value = true;
   platformMessage.value = "正在让 Telegram 发送验证码…";
@@ -53,6 +64,19 @@ async function openPlatform() {
 function cooldownMinutes() {
   const left = Number(props.account?.code_cooldown_remaining || 0);
   return left > 0 ? Math.max(1, Math.ceil(left / 60)) : 0;
+}
+
+function close(force = false) {
+  const account = props.account;
+  const needCancel =
+    !force && account && ["code_sent", "password_required"].includes(stage.value);
+  // 先关窗口，再后台取消：后端断开 Telegram 连接慢也不影响按钮响应
+  emit("update:modelValue", false);
+  if (needCancel) {
+    accountsApi.loginCancel(account.id).catch(() => {
+      // 取消失败不影响窗口关闭
+    });
+  }
 }
 
 async function sendCode() {

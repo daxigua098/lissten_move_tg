@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,8 @@ from app.db.models import TgAccount
 from app.services import tg_account_service
 
 LOGIN_TTL_SECONDS = 600
+# 断开连接最多等这么久：Telethon 卡住时也要让「取消」立刻返回
+DISCONNECT_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass
@@ -160,12 +163,12 @@ async def submit_password(
 
 
 async def cancel_login(account_id: int) -> bool:
-    """取消未完成的登录并断开连接。"""
+    """取消未完成的登录并断开连接（断开超时也不阻塞响应）。"""
     item = _PENDING.pop(account_id, None)
     if item is None:
         return False
-    with contextlib.suppress(Exception):
-        await item.client.disconnect()
+    with contextlib.suppress(Exception, asyncio.TimeoutError):
+        await asyncio.wait_for(item.client.disconnect(), timeout=DISCONNECT_TIMEOUT_SECONDS)
     return True
 
 
@@ -240,8 +243,6 @@ def _sweep() -> None:
         if item is None:
             continue
         logger.warning("账号 {} 的登录会话已超时，已断开连接", item.account_id)
-        import asyncio
-
         with contextlib.suppress(RuntimeError, Exception):
             asyncio.get_running_loop().create_task(item.client.disconnect())
 

@@ -9,6 +9,7 @@ from conftest import auth_header, login
 from app.db.base import utc_now
 from app.db.models import Tenant
 from app.db.session import session_scope
+from app.services.user_service import INITIAL_PASSWORD
 
 MEMBER_PASSWORD = "MemberPass123"
 AGENT_PASSWORD = "AgentPass123"
@@ -533,3 +534,293 @@ async def test_platform_writes_land_in_audit(admin_client, api_config) -> None:
     assert "/api/platform/members" in paths
     assert f"/api/platform/members/{user_id}/renew" in paths
     assert f"/api/platform/accounts/{user_id}/enable" in paths
+
+
+# --------------------------------------------------------------------------- #
+# 开号初始密码（a123456）与平台编辑 / 删除账号
+# --------------------------------------------------------------------------- #
+async def _add_lead(tenant_id: int, text: str) -> None:
+    """给某个租户塞一条线索，用来验证删账号会连业务数据一起清。"""
+    from app.db.models import Lead
+    from app.db.tenant_context import tenant_scope
+
+    with tenant_scope(tenant_id):
+        async with session_scope() as session:
+            session.add(Lead(message_id=1, text=text))
+            await session.commit()
+
+
+async def _count_leads(tenant_id: int) -> int:
+    from sqlalchemy import func, select
+
+    from app.db.models import Lead
+
+    async with session_scope() as session:
+        return int(
+            await session.scalar(
+                select(func.count()).select_from(Lead).where(Lead.tenant_id == tenant_id)
+            )
+            or 0
+        )
+
+
+async def _balance_of(user_id: int, quota_type: str) -> int:
+    from app.services import quota_service
+
+    async with session_scope() as session:
+        return await quota_service.balance_of(session, user_id, quota_type)
+
+
+async def test_open_uses_fixed_initial_password(admin_client, api_config) -> None:
+    """开代理、开会员都下发 a123456，并且首登必须自己改密。"""
+    platform = await _platform_token(admin_client)
+
+    opened_agent = await admin_client.post(
+        "/api/agent/agents",
+        json={"username": "p6-fixed-agent"},
+        headers=auth_header(platform),
+    )
+    assert opened_agent.status_code == 201, opened_agent.text
+    assert opened_agent.json()["initial_password"] == INITIAL_PASSWORD
+    assert opened_agent.json()["account"]["must_change_password"] is True
+
+    opened_member = await _open_member(admin_client, platform, "p6-fixed-member")
+    assert opened_member["initial_password"] == INITIAL_PASSWORD
+    assert opened_member["account"]["must_change_password"] is True
+
+    response = await login(admin_client, "p6-fixed-member", INITIAL_PASSWORD)
+    assert response.status_code == 200, response.text
+    check = await admin_client.get("/api/auth/check", headers=auth_header(response.json()["token"]))
+    assert check.status_code == 200, check.text
+    assert check.json()["must_change_password"] is True
+
+
+async def test_platform_can_rename_and_reset_password(admin_client, api_config) -> None:
+    """平台改显示名 / 重置密码：重置后旧密码失效、旧会话被踢、首登必改。"""
+    platform = await _platform_token(admin_client)
+    agent_id = await _make_agent(api_config, "p6-edit-agent")
+    agent_token = await _agent_token(admin_client, "p6-edit-agent")
+
+    renamed = await admin_client.patch(
+        f"/api/platform/accounts/{agent_id}",
+        json={"display_name": "渠道一号"},
+        headers=auth_header(platform),
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["account"]["display_name"] == "渠道一号"
+    assert renamed.json()["initial_password"] is None
+    assert renamed.json()["revoked_sessions"] == 0
+    # 只改名不动密码：原来的会话照常能用
+    still_ok = await admin_client.get("/api/agent/quota", headers=auth_header(agent_token))
+    assert still_ok.status_code == 200, still_ok.text
+
+    reset = await admin_client.patch(
+        f"/api/platform/accounts/{agent_id}",
+        json={"reset_password": True},
+        headers=auth_header(platform),
+    )
+    assert reset.status_code == 200, reset.text
+    assert reset.json()["initial_password"] == INITIAL_PASSWORD
+    assert reset.json()["revoked_sessions"] == 1
+
+    kicked = await admin_client.get("/api/agent/quota", headers=auth_header(agent_token))
+    assert kicked.status_code == 401, kicked.text
+    old_password = await login(admin_client, "p6-edit-agent", AGENT_PASSWORD)
+    assert old_password.status_code == 401, old_password.text
+    fresh = await login(admin_client, "p6-edit-agent", INITIAL_PASSWORD)
+    assert fresh.status_code == 200, fresh.text
+    check = await admin_client.get("/api/auth/check", headers=auth_header(fresh.json()["token"]))
+    assert check.json()["must_change_password"] is True
+
+    # 平台也可以手填新密码；弱密码 / 什么都没有都挡回去
+    custom = await admin_client.patch(
+        f"/api/platform/accounts/{agent_id}",
+        json={"password": "Custom12345"},
+        headers=auth_header(platform),
+    )
+    assert custom.status_code == 200, custom.text
+    assert custom.json()["initial_password"] == "Custom12345"
+    assert (await login(admin_client, "p6-edit-agent", "Custom12345")).status_code == 200
+
+    weak = await admin_client.patch(
+        f"/api/platform/accounts/{agent_id}",
+        json={"password": "abc"},
+        headers=auth_header(platform),
+    )
+    assert weak.status_code == 400, weak.text
+    assert weak.json()["code"] == "AUTH_PASSWORD_WEAK"
+
+    nothing = await admin_client.patch(
+        f"/api/platform/accounts/{agent_id}", json={}, headers=auth_header(platform)
+    )
+    assert nothing.status_code == 400, nothing.text
+
+    missing = await admin_client.patch(
+        "/api/platform/accounts/999999",
+        json={"display_name": "没有这个号"},
+        headers=auth_header(platform),
+    )
+    assert missing.status_code == 404, missing.text
+
+
+async def test_platform_edit_and_delete_are_platform_only(admin_client, api_config) -> None:
+    """编辑 / 删除只给平台后台：代理与会员一律 403。"""
+    platform = await _platform_token(admin_client)
+    await _make_agent(api_config, "p6-iso-agent")
+    agent_token = await _agent_token(admin_client, "p6-iso-agent")
+    opened = await _open_member(admin_client, platform, "p6-iso-member")
+    member_id = int(opened["account"]["id"])
+    member_token = await _member_token(admin_client, "p6-iso-member", opened["initial_password"])
+
+    for token in (agent_token, member_token):
+        patched = await admin_client.patch(
+            f"/api/platform/accounts/{member_id}",
+            json={"display_name": "改名"},
+            headers=auth_header(token),
+        )
+        assert patched.status_code == 403, patched.text
+        removed = await admin_client.delete(
+            f"/api/platform/accounts/{member_id}", headers=auth_header(token)
+        )
+        assert removed.status_code == 403, removed.text
+
+    # 内置超管删自己连"自删"那条规则都到不了：先被"内置管理员不可删除"挡住
+    admin_id = await _user_id_by_name("admin")
+    builtin = await admin_client.delete(
+        f"/api/platform/accounts/{admin_id}", headers=auth_header(platform)
+    )
+    assert builtin.status_code == 409, builtin.text
+    assert builtin.json()["code"] == "CONFLICT"
+
+    # 普通平台管理员删自己 → USER_SELF_DELETE
+    from app.services import user_service
+
+    async with session_scope() as session:
+        me = await user_service.create_user(
+            session,
+            api_config,
+            username="p6-self-admin",
+            password="SelfPass123",
+            account_type="platform",
+            role="super_admin",
+            must_change_password=False,
+        )
+        my_id = me.id
+    my_token = (await login(admin_client, "p6-self-admin", "SelfPass123")).json()["token"]
+    mine = await admin_client.delete(
+        f"/api/platform/accounts/{my_id}", headers=auth_header(my_token)
+    )
+    assert mine.status_code == 409, mine.text
+    assert mine.json()["code"] == "USER_SELF_DELETE"
+
+
+async def test_delete_member_releases_quota_and_purges_tenant_data(
+    admin_client, api_config
+) -> None:
+    """删会员：租户与业务数据级联清除，占用的额度按到期释放还给开设它的代理。"""
+    from sqlalchemy import func, select
+
+    from app.db.models import QuotaLedger
+
+    platform = await _platform_token(admin_client)
+    agent_id = await _make_agent(api_config, "p6-purge-agent")
+    await _grant(admin_client, platform, agent_id, "member", 1)
+    agent_token = await _agent_token(admin_client, "p6-purge-agent")
+    opened = await admin_client.post(
+        "/api/agent/members",
+        json={"username": "p6-purge-member", "days": 30, "modules": ["carry"]},
+        headers=auth_header(agent_token),
+    )
+    assert opened.status_code == 201, opened.text
+    member_id = int(opened.json()["account"]["id"])
+    tenant_id = int(opened.json()["tenant"]["id"])
+    await _add_lead(tenant_id, "这条线索要跟着账号一起消失")
+    assert await _count_leads(tenant_id) == 1
+
+    response = await admin_client.delete(
+        f"/api/platform/accounts/{member_id}", headers=auth_header(platform)
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["tenant_deleted"] is True
+    assert response.json()["quota_released"] is True
+
+    async with session_scope() as session:
+        assert await session.get(Tenant, tenant_id) is None
+    assert await _count_leads(tenant_id) == 0
+    assert await _balance_of(agent_id, "member") == 1
+
+    # 账号删了，额度流水还留着（subject_username 是快照，能继续对账）
+    async with session_scope() as session:
+        kept = await session.scalar(
+            select(func.count())
+            .select_from(QuotaLedger)
+            .where(
+                QuotaLedger.subject_username == "p6-purge-agent",
+                QuotaLedger.action == "expire_release",
+            )
+        )
+    assert int(kept or 0) == 1
+
+
+async def test_delete_agent_needs_clean_tree_and_reclaimed_quota(admin_client, api_config) -> None:
+    """删代理：名下有下级 → 409；额度没回收 → 409；清干净了才删得掉。"""
+    from sqlalchemy import func, select
+
+    from app.db.models import AgentQuota, QuotaLedger, User
+
+    platform = await _platform_token(admin_client)
+    agent_id = await _make_agent(api_config, "p6-del-agent")
+    await _grant(admin_client, platform, agent_id, "member", 1)
+    agent_token = await _agent_token(admin_client, "p6-del-agent")
+    opened = await admin_client.post(
+        "/api/agent/members",
+        json={"username": "p6-del-member", "days": 30, "modules": ["carry"]},
+        headers=auth_header(agent_token),
+    )
+    assert opened.status_code == 201, opened.text
+    member_id = int(opened.json()["account"]["id"])
+
+    blocked = await admin_client.delete(
+        f"/api/platform/accounts/{agent_id}", headers=auth_header(platform)
+    )
+    assert blocked.status_code == 409, blocked.text
+    assert blocked.json()["code"] == "AGENT_HAS_SUBORDINATES"
+
+    removed_member = await admin_client.delete(
+        f"/api/platform/accounts/{member_id}", headers=auth_header(platform)
+    )
+    assert removed_member.status_code == 200, removed_member.text
+    # 会员被删，占用的那 1 格额度回到代理账上
+    assert await _balance_of(agent_id, "member") == 1
+
+    still_quota = await admin_client.delete(
+        f"/api/platform/accounts/{agent_id}", headers=auth_header(platform)
+    )
+    assert still_quota.status_code == 409, still_quota.text
+    assert "没回收的额度" in still_quota.json()["detail"]
+
+    cleaned = await admin_client.post(
+        f"/api/agent/{agent_id}/adjust",
+        json={"quota_type": "member", "delta": -1, "note": "删除前回收"},
+        headers=auth_header(platform),
+    )
+    assert cleaned.status_code == 200, cleaned.text
+
+    removed_agent = await admin_client.delete(
+        f"/api/platform/accounts/{agent_id}", headers=auth_header(platform)
+    )
+    assert removed_agent.status_code == 200, removed_agent.text
+    assert removed_agent.json()["account_type"] == "agent"
+
+    async with session_scope() as session:
+        assert await session.get(User, agent_id) is None
+        left_quota = await session.scalar(
+            select(func.count()).select_from(AgentQuota).where(AgentQuota.user_id == agent_id)
+        )
+        kept_ledger = await session.scalar(
+            select(func.count())
+            .select_from(QuotaLedger)
+            .where(QuotaLedger.subject_username == "p6-del-agent")
+        )
+    assert int(left_quota or 0) == 0
+    assert int(kept_ledger or 0) >= 2

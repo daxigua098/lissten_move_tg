@@ -66,14 +66,23 @@ async def revoke_web_session(session: AsyncSession, token: str) -> bool:
     return True
 
 
-async def revoke_all_web_sessions(session: AsyncSession, username: str) -> int:
-    """撤销某个账号的全部会话，返回撤销数量。"""
+async def revoke_all_web_sessions(
+    session: AsyncSession,
+    username: str,
+    *,
+    commit: bool = True,
+) -> int:
+    """撤销某个账号的全部会话，返回撤销数量。
+
+    ``commit=False`` 供平台重置密码那种"要和别的写操作放同一个事务"的场景使用。
+    """
     result = await session.execute(
         update(WebSession)
         .where(WebSession.username == username, WebSession.revoked.is_(False))
         .values(revoked=True)
     )
-    await session.commit()
+    if commit:
+        await session.commit()
     return int(result.rowcount or 0)
 
 

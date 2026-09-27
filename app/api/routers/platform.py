@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import current_identity, require_platform, session_dependency
 from app.api.schemas.platform import (
+    PlatformAccountUpdateRequest,
     PlatformAdjustRequest,
     PlatformEnableRequest,
     PlatformMemberOpenRequest,
@@ -27,6 +28,7 @@ from app.core.config import AppConfig
 from app.core.errors import NotFoundError, ValidationFailedError
 from app.db.models import ACCOUNT_TYPE_AGENT, User
 from app.services import (
+    account_service,
     agent_service,
     platform_service,
     provision_service,
@@ -245,6 +247,42 @@ async def enable_account(
         enabled=payload.enabled,
         reason=payload.reason,
     )
+
+
+@router.patch("/accounts/{user_id}")
+async def update_account(
+    user_id: int,
+    payload: PlatformAccountUpdateRequest,
+    request: Request,
+    actor: User = Depends(current_actor),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """编辑任意代理 / 会员账号：改显示名、重置密码（重置后对方要重新登录并自己改密）。"""
+    target = await user_service.get_user(session, int(user_id))
+    if target is None:
+        raise NotFoundError("账号不存在")
+    return await account_service.update_account(
+        session,
+        request.app.state.config,
+        actor=actor,
+        target=target,
+        display_name=payload.display_name,
+        password=payload.password,
+        reset_password=payload.reset_password,
+    )
+
+
+@router.delete("/accounts/{user_id}")
+async def delete_account(
+    user_id: int,
+    actor: User = Depends(current_actor),
+    session: AsyncSession = Depends(session_dependency),
+) -> dict[str, Any]:
+    """删除代理 / 会员账号（硬删）：名下还有下级或没回收的额度时会被拒绝。"""
+    target = await user_service.get_user(session, int(user_id))
+    if target is None:
+        raise NotFoundError("账号不存在")
+    return await account_service.delete_account(session, actor=actor, target=target)
 
 
 @router.post("/accounts/{user_id}/adjust")

@@ -52,3 +52,15 @@ class PlatformAdjustRequest(BaseModel):
     quota_type: QuotaType
     delta: int
     note: str = Field(min_length=1, max_length=255)
+
+
+class PlatformAccountUpdateRequest(BaseModel):
+    """平台编辑代理 / 会员：改显示名、重置密码（二选一或同时）。
+
+    ``reset_password=True`` 表示下发统一初始密码 ``a123456``；
+    ``password`` 是平台手填的新密码（按正常强度校验）。
+    """
+
+    display_name: str | None = Field(default=None, max_length=64)
+    password: str | None = Field(default=None, max_length=256)
+    reset_password: bool = False

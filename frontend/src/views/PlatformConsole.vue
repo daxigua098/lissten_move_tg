@@ -87,6 +87,11 @@ const adjustVisible = ref(false);
 const adjustRow = ref(null);
 const adjustForm = reactive({ quota_type: "member", delta: 10, note: "" });
 
+// 平台编辑账号：改显示名 / 重置密码（代理与会员共用同一个弹窗）
+const editVisible = ref(false);
+const editRow = ref(null);
+const editForm = reactive({ display_name: "", mode: "keep", password: "" });
+
 const drawerVisible = ref(false);
 const drawerAgent = ref(null);
 const drawerTree = ref([]);
@@ -328,6 +333,73 @@ function openAdjust(row) {
   adjustRow.value = row;
   Object.assign(adjustForm, { quota_type: "member", delta: 10, note: "" });
   adjustVisible.value = true;
+}
+
+function openEdit(row) {
+  editRow.value = row;
+  Object.assign(editForm, {
+    display_name: row.display_name || "",
+    mode: "keep",
+    password: "",
+  });
+  editVisible.value = true;
+}
+
+async function submitEdit() {
+  const payload = {};
+  if (editForm.display_name.trim() !== (editRow.value.display_name || "")) {
+    payload.display_name = editForm.display_name.trim();
+  }
+  if (editForm.mode === "reset") {
+    payload.reset_password = true;
+  } else if (editForm.mode === "custom") {
+    if (!editForm.password) {
+      ElMessage.warning("请填写新密码");
+      return;
+    }
+    payload.password = editForm.password;
+  }
+  if (!Object.keys(payload).length) {
+    ElMessage.warning("没有要修改的内容");
+    return;
+  }
+  try {
+    const { data } = await platformApi.updateAccount(editRow.value.user_id, payload);
+    editVisible.value = false;
+    if (data.initial_password) {
+      ElMessageBox.alert(
+        `账号：${data.account.username}\n新密码：${data.initial_password}\n\n对方原来的密码与登录状态都已失效，重新登录后必须自己改密。`,
+        "密码已重置",
+        { confirmButtonText: "知道了" },
+      ).catch(() => {});
+    } else {
+      ElMessage.success("已保存");
+    }
+    await loadAll();
+  } catch (error) {
+    ElMessage.error(error.message);
+  }
+}
+
+async function removeAccount(row, type) {
+  const tip =
+    type === "agent"
+      ? "名下还有下级代理或会员时删不掉；还有没回收的额度时，先用「回收」或「调账」清零。\n\n"
+      : "这个账号的配置、TG 账号、线路与线索会一起删除（线索不再保留）。\n\n";
+  try {
+    await ElMessageBox.confirm(
+      `确认删除账号 ${row.username}？\n\n${tip}删除后不可恢复。`,
+      "删除账号",
+      { type: "warning", confirmButtonText: "确认删除", cancelButtonText: "取消" },
+    );
+    await platformApi.removeAccount(row.user_id);
+    ElMessage.success("已删除");
+    await loadAll();
+  } catch (error) {
+    if (error && error.message && !error.message.includes("cancel")) {
+      ElMessage.error(error.message);
+    }
+  }
 }
 
 async function submitAdjust() {
@@ -574,7 +646,7 @@ onMounted(loadAll);
                 </el-tag>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="330">
+            <el-table-column label="操作" width="360">
               <template #default="{ row }">
                 <el-button
                   size="small"
@@ -600,6 +672,10 @@ onMounted(loadAll);
                   @click="toggleEnabled(row)"
                 >
                   {{ row.enabled ? "停用" : "解停" }}
+                </el-button>
+                <el-button size="small" link type="primary" @click="openEdit(row)">编辑</el-button>
+                <el-button size="small" link type="danger" @click="removeAccount(row, 'agent')">
+                  删除
                 </el-button>
               </template>
             </el-table-column>
@@ -634,6 +710,7 @@ onMounted(loadAll);
                 开通一级代理（开号与划拨是两笔）
               </el-button>
               <span class="tip inline">停用代理不影响名下已开会员，会员照常跑到自己的到期日</span>
+              <span class="tip inline">初始密码统一 a123456，代理首登必须自己改密</span>
             </el-form-item>
           </el-form>
         </el-tab-pane>
@@ -736,6 +813,10 @@ onMounted(loadAll);
                 >
                   {{ row.enabled ? "停用" : "解停" }}
                 </el-button>
+                <el-button size="small" link type="primary" @click="openEdit(row)">编辑</el-button>
+                <el-button size="small" link type="danger" @click="removeAccount(row, 'member')">
+                  删除
+                </el-button>
               </template>
             </el-table-column>
             <template #empty>
@@ -812,6 +893,7 @@ onMounted(loadAll);
               <el-button type="primary" :loading="submitting" @click="submitMember">
                 开通会员
               </el-button>
+              <span class="tip inline">初始密码统一 a123456，会员首登必须自己改密</span>
             </el-form-item>
           </el-form>
         </el-tab-pane>
@@ -1105,6 +1187,34 @@ onMounted(loadAll);
       <div class="tip">只读视图：代理看不到任何下级会员的业务数据。</div>
     </el-drawer>
 
+    <el-dialog v-model="editVisible" title="编辑账号" width="460px">
+      <el-form label-width="110px" class="open-form">
+        <el-form-item label="登录账号">
+          <span class="tip inline">{{ editRow?.username || "" }}</span>
+        </el-form-item>
+        <el-form-item label="显示名">
+          <el-input v-model="editForm.display_name" placeholder="客户名 / 渠道名，可留空" />
+        </el-form-item>
+        <el-form-item label="密码">
+          <el-radio-group v-model="editForm.mode">
+            <el-radio value="keep">不改密码</el-radio>
+            <el-radio value="reset">重置为初始密码 a123456</el-radio>
+            <el-radio value="custom">指定新密码</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="editForm.mode === 'custom'" label="新密码">
+          <el-input v-model="editForm.password" placeholder="至少 8 位，含字母和数字" show-password />
+        </el-form-item>
+        <div class="tip">
+          客户忘记密码时在这里重置：旧密码与在线会话立即失效，对方重新登录后必须自己改密。
+        </div>
+      </el-form>
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" @click="submitEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="issuedOpen" title="开通成功（初始密码只显示这一次）" width="460px">
       <div v-if="issued">
         <div class="issued-line">账号：{{ issued.account.username }}</div>
@@ -1112,6 +1222,7 @@ onMounted(loadAll);
         <div class="issued-line">
           功能块：{{ (issued.module_labels || []).join(" · ") || "仅基础功能" }}
         </div>
+        <div class="tip">这是平台统一下发的临时口令，对方登录后必须自己改掉。</div>
       </div>
       <template #footer>
         <el-button @click="issuedOpen = false">关闭</el-button>
